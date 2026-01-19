@@ -1,5 +1,9 @@
+use crate::config;
 use crate::editor::highlight::MatchPosition;
 use crate::editor::{Position, TextBuffer, highlight};
+use crate::keymap::{KeyAction, Keymap};
+use crate::plugins::PluginManager;
+use crate::theme::ThemePalette;
 use iced::alignment::{Horizontal, Vertical};
 use iced::theme;
 use iced::widget::button;
@@ -40,6 +44,9 @@ pub struct RoxanneApp {
     completion_prefix: String,
     completion_panel_open: bool,
     status_message: Option<String>,
+    theme: ThemePalette,
+    keymap: Keymap,
+    plugins: PluginManager,
     active_menu: Option<Menu>,
 }
 
@@ -62,6 +69,8 @@ pub enum Message {
     CompletionRequested,
     CompletionSelected(usize),
     CompletionClosed,
+    Event(event::Event),
+    KeyAction(KeyAction),
     FilenameChanged(String),
     OpenPressed,
     SavePressed,
@@ -160,11 +169,14 @@ enum SearchMatcher {
 }
 
 impl RoxanneApp {
-    pub fn run() -> iced::Result {
-        RoxanneApp::run_with(Settings::default())
+    pub fn run_with_config(config: config::AppConfig) -> iced::Result {
+        RoxanneApp::run_with(Settings {
+            flags: config,
+            ..Settings::default()
+        })
     }
 
-    pub fn run_with(settings: Settings<()>) -> iced::Result {
+    pub fn run_with(settings: Settings<config::AppConfig>) -> iced::Result {
         <Self as Application>::run(settings)
     }
 }
@@ -173,15 +185,25 @@ impl Application for RoxanneApp {
     type Executor = executor::Default;
     type Message = Message;
     type Theme = Theme;
-    type Flags = ();
+    type Flags = config::AppConfig;
 
-    fn new(_flags: ()) -> (Self, Command<Message>) {
+    fn new(flags: config::AppConfig) -> (Self, Command<Message>) {
         let initial_text = "Roxanne – éditeur en mode Iced\n\n\
             Objectif: MVP inspiré de Sublime Text\n\
             - Menu bar, tabs, status bar\n\
             - Zone d'édition monospace";
         let buffer = TextBuffer::from(initial_text);
         let diagnostics = analyze_diagnostics(&buffer);
+        let mut plugins = PluginManager::new(&flags.plugins);
+        plugins.on_text_changed(initial_text, "untitled.txt");
+        let status_message = if flags.load_warnings.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "Config: {} alerte(s) lors du chargement.",
+                flags.load_warnings.len()
+            ))
+        };
         (
             Self {
                 filename: "untitled.txt".to_string(),
@@ -203,7 +225,10 @@ impl Application for RoxanneApp {
                 completion_items: Vec::new(),
                 completion_prefix: String::new(),
                 completion_panel_open: false,
-                status_message: None,
+                status_message,
+                theme: flags.theme,
+                keymap: flags.keymap,
+                plugins,
                 active_menu: None,
             },
             Command::none(),
@@ -227,6 +252,8 @@ impl Application for RoxanneApp {
                 }
                 self.refresh_search_matches(true);
                 self.refresh_diagnostics();
+                self.plugins
+                    .on_text_changed(&self.content.text(), &self.filename);
                 Command::none()
             }
             Message::SearchChanged(value) => {
@@ -282,6 +309,18 @@ impl Application for RoxanneApp {
                 self.completion_items.clear();
                 Command::none()
             }
+            Message::Event(event) => {
+                if let event::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key, modifiers, ..
+                }) = event
+                {
+                    if let Some(action) = self.keymap.match_event(&key, modifiers) {
+                        return self.handle_key_action(action);
+                    }
+                }
+                Command::none()
+            }
+            Message::KeyAction(action) => self.handle_key_action(action),
             Message::SearchInFiles => self.search_in_files(),
             Message::SearchResultsLoaded(result) => {
                 match result {
@@ -307,6 +346,7 @@ impl Application for RoxanneApp {
                         self.last_saved_text = text;
                         self.refresh_search_matches(false);
                         self.refresh_diagnostics();
+                        self.plugins.on_text_changed(&self.content.text(), &self.filename);
                         self.jump_to_position(nav.line, nav.column);
                         self.status_message = Some(format!(
                             "Recherche: ouvert {} (ligne {}, colonne {}).",
@@ -416,6 +456,7 @@ impl Application for RoxanneApp {
                         self.last_saved_text = text;
                         self.refresh_search_matches(false);
                         self.refresh_diagnostics();
+                        self.plugins.on_text_changed(&self.content.text(), &self.filename);
                         self.status_message = Some("Fichier chargé.".to_string());
                     }
                     Err(message) => {
@@ -468,54 +509,14 @@ impl Application for RoxanneApp {
         Container::new(content)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(theme::Container::Custom(Box::new(AppBackground)))
+            .style(theme::Container::Custom(Box::new(AppBackground {
+                palette: self.theme,
+            })))
             .into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        event::listen_with(|event, status| {
-            if status == event::Status::Captured {
-                return None;
-            }
-
-            match event {
-                event::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                    let key = key.as_ref();
-                    if modifiers.command() {
-                        match key {
-                            keyboard::Key::Character("s") => Some(Message::SavePressed),
-                            keyboard::Key::Character("o") => Some(Message::OpenPressed),
-                            keyboard::Key::Character("f") => {
-                                Some(Message::MenuAction(MenuAction::Find))
-                            }
-                            _ => None,
-                        }
-                    } else if modifiers.control() {
-                        match key {
-                            keyboard::Key::Named(keyboard::key::Named::Space) => {
-                                Some(Message::CompletionRequested)
-                            }
-                            _ => None,
-                        }
-                    } else {
-                        match key {
-                            keyboard::Key::Named(keyboard::key::Named::Escape) => {
-                                Some(Message::CompletionClosed)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::F3) => {
-                                if modifiers.shift() {
-                                    Some(Message::SearchPrevious)
-                                } else {
-                                    Some(Message::SearchNext)
-                                }
-                            }
-                            _ => None,
-                        }
-                    }
-                }
-                _ => None,
-            }
-        })
+        event::listen().map(Message::Event)
     }
 }
 
@@ -546,6 +547,32 @@ impl RoxanneApp {
         )
     }
 
+    fn handle_key_action(&mut self, action: KeyAction) -> Command<Message> {
+        match action {
+            KeyAction::Save => self.save_file(),
+            KeyAction::Open => self.open_file(),
+            KeyAction::Find => {
+                self.status_message = Some(
+                    "Recherche: utilisez le champ de recherche dans la barre d'état."
+                        .to_string(),
+                );
+                Command::none()
+            }
+            KeyAction::FindNext => self.find_next_match(true),
+            KeyAction::FindPrevious => self.find_next_match(false),
+            KeyAction::Completion => {
+                self.refresh_completions();
+                self.completion_panel_open = !self.completion_items.is_empty();
+                Command::none()
+            }
+            KeyAction::CompletionClose => {
+                self.completion_panel_open = false;
+                self.completion_items.clear();
+                Command::none()
+            }
+        }
+    }
+
     fn menu_bar(&self) -> Element<Message> {
         let menu_items = row![
             self.menu_button("File", Menu::File),
@@ -562,7 +589,9 @@ impl RoxanneApp {
         let top_row = Container::new(menu_items)
             .width(Length::Fill)
             .padding([6, 16])
-            .style(theme::Container::Custom(Box::new(MenuBarStyle)));
+            .style(theme::Container::Custom(Box::new(MenuBarStyle {
+                palette: self.theme,
+            })));
 
         let mut column = column![top_row];
         if let Some(submenu) = self.submenu() {
@@ -583,6 +612,7 @@ impl RoxanneApp {
         .padding([2, 6])
         .style(theme::Button::Custom(Box::new(MenuButtonStyle {
             active: is_active,
+            palette: self.theme,
         })))
         .on_press(Message::MenuSelected(menu))
         .into()
@@ -634,7 +664,9 @@ impl RoxanneApp {
                     .map(|(name, action)| {
                         Button::new(text(name).size(12).font(Font::MONOSPACE))
                             .padding([2, 8])
-                            .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
+                            .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
+                                palette: self.theme,
+                            })))
                             .on_press(Message::MenuAction(action))
                             .into()
                     })
@@ -649,7 +681,9 @@ impl RoxanneApp {
         Some(
             Container::new(row)
                 .width(Length::Fill)
-                .style(theme::Container::Custom(Box::new(SubmenuStyle)))
+                .style(theme::Container::Custom(Box::new(SubmenuStyle {
+                    palette: self.theme,
+                })))
                 .into(),
         )
     }
@@ -677,7 +711,9 @@ impl RoxanneApp {
 
         let row = row![
             Container::new(tab)
-                .style(theme::Container::Custom(Box::new(ActiveTabStyle)))
+                .style(theme::Container::Custom(Box::new(ActiveTabStyle {
+                    palette: self.theme,
+                })))
                 .height(Length::Fill)
         ]
         .spacing(4)
@@ -687,7 +723,9 @@ impl RoxanneApp {
         Container::new(row)
             .width(Length::Fill)
             .height(Length::Fixed(32.0))
-            .style(theme::Container::Custom(Box::new(TabBarStyle)))
+            .style(theme::Container::Custom(Box::new(TabBarStyle {
+                palette: self.theme,
+            })))
             .into()
     }
 
@@ -704,7 +742,9 @@ impl RoxanneApp {
         Container::new(editor)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(theme::Container::Custom(Box::new(EditorStyle)))
+            .style(theme::Container::Custom(Box::new(EditorStyle {
+                palette: self.theme,
+            })))
             .into()
     }
 
@@ -751,11 +791,15 @@ impl RoxanneApp {
         let action_row = row![
             Button::new(text("Rechercher fichiers").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
+                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
+                    palette: self.theme,
+                })))
                 .on_press(Message::SearchInFiles),
             Button::new(text("Effacer résultats").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
+                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
+                    palette: self.theme,
+                })))
                 .on_press(Message::SearchResultsCleared),
         ]
         .spacing(8)
@@ -791,9 +835,13 @@ impl RoxanneApp {
                     Button::new(
                         Container::new(column![title, preview].spacing(2))
                             .padding([4, 12])
-                            .style(theme::Container::Custom(Box::new(SearchResultStyle))),
+                            .style(theme::Container::Custom(Box::new(SearchResultStyle {
+                                palette: self.theme,
+                            }))),
                     )
-                    .style(theme::Button::Custom(Box::new(SearchResultButtonStyle)))
+                    .style(theme::Button::Custom(Box::new(SearchResultButtonStyle {
+                        palette: self.theme,
+                    })))
                     .on_press(Message::SearchResultSelected(index))
                     .into()
                 })
@@ -811,7 +859,9 @@ impl RoxanneApp {
         Some(
             Container::new(panel)
                 .width(Length::Fill)
-                .style(theme::Container::Custom(Box::new(SearchPanelStyle)))
+                .style(theme::Container::Custom(Box::new(SearchPanelStyle {
+                    palette: self.theme,
+                })))
                 .into(),
         )
     }
@@ -861,7 +911,9 @@ impl RoxanneApp {
 
                     Container::new(column![title, message].spacing(2))
                         .padding([4, 12])
-                        .style(theme::Container::Custom(Box::new(SearchResultStyle)))
+                        .style(theme::Container::Custom(Box::new(SearchResultStyle {
+                            palette: self.theme,
+                        })))
                         .into()
                 })
                 .collect::<Vec<Element<Message>>>();
@@ -876,7 +928,9 @@ impl RoxanneApp {
         Some(
             Container::new(panel)
                 .width(Length::Fill)
-                .style(theme::Container::Custom(Box::new(SearchPanelStyle)))
+                .style(theme::Container::Custom(Box::new(SearchPanelStyle {
+                    palette: self.theme,
+                })))
                 .into(),
         )
     }
@@ -923,9 +977,13 @@ impl RoxanneApp {
                     Button::new(
                         Container::new(column![label, detail].spacing(2))
                             .padding([4, 12])
-                            .style(theme::Container::Custom(Box::new(SearchResultStyle))),
+                            .style(theme::Container::Custom(Box::new(SearchResultStyle {
+                                palette: self.theme,
+                            }))),
                     )
-                    .style(theme::Button::Custom(Box::new(SearchResultButtonStyle)))
+                    .style(theme::Button::Custom(Box::new(SearchResultButtonStyle {
+                        palette: self.theme,
+                    })))
                     .on_press(Message::CompletionSelected(index))
                     .into()
                 })
@@ -941,7 +999,9 @@ impl RoxanneApp {
         Some(
             Container::new(panel)
                 .width(Length::Fill)
-                .style(theme::Container::Custom(Box::new(SearchPanelStyle)))
+                .style(theme::Container::Custom(Box::new(SearchPanelStyle {
+                    palette: self.theme,
+                })))
                 .into(),
         )
     }
@@ -973,11 +1033,15 @@ impl RoxanneApp {
             self.toggle_button(".*", self.search_regex, Message::SearchToggleRegex),
             Button::new(text("◀").size(12).font(Font::MONOSPACE))
                 .padding([2, 6])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
+                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
+                    palette: self.theme,
+                })))
                 .on_press_maybe(has_matches.then_some(Message::SearchPrevious)),
             Button::new(text("▶").size(12).font(Font::MONOSPACE))
                 .padding([2, 6])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
+                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
+                    palette: self.theme,
+                })))
                 .on_press_maybe(has_matches.then_some(Message::SearchNext)),
             TextInput::new("fichier…", &self.filename)
                 .on_input(Message::FilenameChanged)
@@ -992,15 +1056,28 @@ impl RoxanneApp {
             .status_message
             .clone()
             .unwrap_or_else(|| "Prêt.".to_string());
+        let plugin_text = self
+            .plugins
+            .statuses()
+            .into_iter()
+            .map(|status| format!("{}: {}", status.label, status.value))
+            .collect::<Vec<_>>()
+            .join("   ");
+        let plugin_segment = if plugin_text.is_empty() {
+            String::new()
+        } else {
+            format!("   {plugin_text}")
+        };
 
         let right = text(format!(
-            "Occurrences: {}   Cursors: {}   Diagnostics: {}   Ln {}, Col {}   UTF-8   LF   {}",
+            "Occurrences: {}   Cursors: {}   Diagnostics: {}   Ln {}, Col {}   UTF-8   LF   {}{}",
             matches,
             cursor_count,
             diagnostics_count,
             cursor_position.0 + 1,
             cursor_position.1 + 1,
-            status_text
+            status_text,
+            plugin_segment
         ))
         .size(12)
         .font(Font::MONOSPACE)
@@ -1016,7 +1093,9 @@ impl RoxanneApp {
 
         Container::new(row)
             .width(Length::Fill)
-            .style(theme::Container::Custom(Box::new(StatusBarStyle)))
+            .style(theme::Container::Custom(Box::new(StatusBarStyle {
+                palette: self.theme,
+            })))
             .into()
     }
 
@@ -1025,6 +1104,7 @@ impl RoxanneApp {
             .padding([2, 6])
             .style(theme::Button::Custom(Box::new(ToggleButtonStyle {
                 active,
+                palette: self.theme,
             })))
             .on_press(message)
             .into()
@@ -1041,6 +1121,7 @@ impl RoxanneApp {
         .padding([2, 8])
         .style(theme::Button::Custom(Box::new(ToggleButtonStyle {
             active,
+            palette: self.theme,
         })))
         .on_press(Message::SearchScopeSelected(scope))
         .into()
@@ -1363,19 +1444,23 @@ impl RoxanneApp {
         }
         self.refresh_search_matches(true);
         self.refresh_diagnostics();
+        self.plugins
+            .on_text_changed(&self.content.text(), &self.filename);
         self.completion_panel_open = false;
         self.completion_items.clear();
     }
 }
 
-struct AppBackground;
+struct AppBackground {
+    palette: ThemePalette,
+}
 
 impl container::StyleSheet for AppBackground {
     type Style = Theme;
 
     fn appearance(&self, _style: &Self::Style) -> container::Appearance {
         container::Appearance {
-            background: Some(Background::Color(Color::from_rgb8(30, 30, 32))),
+            background: Some(Background::Color(self.palette.app_background)),
             text_color: None,
             border: Default::default(),
             shadow: Default::default(),
@@ -1383,14 +1468,16 @@ impl container::StyleSheet for AppBackground {
     }
 }
 
-struct MenuBarStyle;
+struct MenuBarStyle {
+    palette: ThemePalette,
+}
 
 impl container::StyleSheet for MenuBarStyle {
     type Style = Theme;
 
     fn appearance(&self, _style: &Self::Style) -> container::Appearance {
         container::Appearance {
-            background: Some(Background::Color(Color::from_rgb8(45, 45, 48))),
+            background: Some(Background::Color(self.palette.menu_bar)),
             text_color: None,
             border: Default::default(),
             shadow: Default::default(),
@@ -1400,6 +1487,7 @@ impl container::StyleSheet for MenuBarStyle {
 
 struct MenuButtonStyle {
     active: bool,
+    palette: ThemePalette,
 }
 
 impl button::StyleSheet for MenuButtonStyle {
@@ -1409,7 +1497,7 @@ impl button::StyleSheet for MenuButtonStyle {
         button::Appearance {
             background: self
                 .active
-                .then(|| Background::Color(Color::from_rgb8(65, 65, 70))),
+                .then(|| Background::Color(self.palette.menu_button_active)),
             text_color: Color::from_rgb8(220, 220, 220),
             border: Default::default(),
             shadow_offset: Default::default(),
@@ -1419,19 +1507,21 @@ impl button::StyleSheet for MenuButtonStyle {
 
     fn hovered(&self, style: &Self::Style) -> button::Appearance {
         let mut appearance = self.active(style);
-        appearance.background = Some(Background::Color(Color::from_rgb8(70, 70, 74)));
+        appearance.background = Some(Background::Color(self.palette.menu_button_hover));
         appearance
     }
 }
 
-struct SubmenuStyle;
+struct SubmenuStyle {
+    palette: ThemePalette,
+}
 
 impl container::StyleSheet for SubmenuStyle {
     type Style = Theme;
 
     fn appearance(&self, _style: &Self::Style) -> container::Appearance {
         container::Appearance {
-            background: Some(Background::Color(Color::from_rgb8(40, 40, 44))),
+            background: Some(Background::Color(self.palette.submenu_bar)),
             text_color: None,
             border: Default::default(),
             shadow: Default::default(),
@@ -1439,14 +1529,16 @@ impl container::StyleSheet for SubmenuStyle {
     }
 }
 
-struct SubmenuButtonStyle;
+struct SubmenuButtonStyle {
+    palette: ThemePalette,
+}
 
 impl button::StyleSheet for SubmenuButtonStyle {
     type Style = Theme;
 
     fn active(&self, _style: &Self::Style) -> button::Appearance {
         button::Appearance {
-            background: Some(Background::Color(Color::from_rgb8(55, 55, 60))),
+            background: Some(Background::Color(self.palette.button_base)),
             text_color: Color::from_rgb8(230, 230, 230),
             border: Default::default(),
             shadow_offset: Default::default(),
@@ -1456,13 +1548,14 @@ impl button::StyleSheet for SubmenuButtonStyle {
 
     fn hovered(&self, style: &Self::Style) -> button::Appearance {
         let mut appearance = self.active(style);
-        appearance.background = Some(Background::Color(Color::from_rgb8(65, 65, 70)));
+        appearance.background = Some(Background::Color(self.palette.button_hover));
         appearance
     }
 }
 
 struct ToggleButtonStyle {
     active: bool,
+    palette: ThemePalette,
 }
 
 impl button::StyleSheet for ToggleButtonStyle {
@@ -1470,9 +1563,9 @@ impl button::StyleSheet for ToggleButtonStyle {
 
     fn active(&self, _style: &Self::Style) -> button::Appearance {
         let background = if self.active {
-            Background::Color(Color::from_rgb8(90, 90, 96))
+            Background::Color(self.palette.toggle_active)
         } else {
-            Background::Color(Color::from_rgb8(55, 55, 60))
+            Background::Color(self.palette.toggle_inactive)
         };
 
         button::Appearance {
@@ -1486,19 +1579,21 @@ impl button::StyleSheet for ToggleButtonStyle {
 
     fn hovered(&self, style: &Self::Style) -> button::Appearance {
         let mut appearance = self.active(style);
-        appearance.background = Some(Background::Color(Color::from_rgb8(100, 100, 106)));
+        appearance.background = Some(Background::Color(self.palette.button_hover));
         appearance
     }
 }
 
-struct TabBarStyle;
+struct TabBarStyle {
+    palette: ThemePalette,
+}
 
 impl container::StyleSheet for TabBarStyle {
     type Style = Theme;
 
     fn appearance(&self, _style: &Self::Style) -> container::Appearance {
         container::Appearance {
-            background: Some(Background::Color(Color::from_rgb8(37, 37, 40))),
+            background: Some(Background::Color(self.palette.tab_bar)),
             text_color: None,
             border: Default::default(),
             shadow: Default::default(),
@@ -1506,14 +1601,16 @@ impl container::StyleSheet for TabBarStyle {
     }
 }
 
-struct ActiveTabStyle;
+struct ActiveTabStyle {
+    palette: ThemePalette,
+}
 
 impl container::StyleSheet for ActiveTabStyle {
     type Style = Theme;
 
     fn appearance(&self, _style: &Self::Style) -> container::Appearance {
         container::Appearance {
-            background: Some(Background::Color(Color::from_rgb8(50, 50, 54))),
+            background: Some(Background::Color(self.palette.tab_active)),
             text_color: None,
             border: Default::default(),
             shadow: Default::default(),
@@ -1521,14 +1618,16 @@ impl container::StyleSheet for ActiveTabStyle {
     }
 }
 
-struct EditorStyle;
+struct EditorStyle {
+    palette: ThemePalette,
+}
 
 impl container::StyleSheet for EditorStyle {
     type Style = Theme;
 
     fn appearance(&self, _style: &Self::Style) -> container::Appearance {
         container::Appearance {
-            background: Some(Background::Color(Color::from_rgb8(28, 28, 30))),
+            background: Some(Background::Color(self.palette.editor_background)),
             text_color: None,
             border: Default::default(),
             shadow: Default::default(),
@@ -1536,14 +1635,16 @@ impl container::StyleSheet for EditorStyle {
     }
 }
 
-struct StatusBarStyle;
+struct StatusBarStyle {
+    palette: ThemePalette,
+}
 
 impl container::StyleSheet for StatusBarStyle {
     type Style = Theme;
 
     fn appearance(&self, _style: &Self::Style) -> container::Appearance {
         container::Appearance {
-            background: Some(Background::Color(Color::from_rgb8(45, 45, 48))),
+            background: Some(Background::Color(self.palette.status_bar)),
             text_color: None,
             border: Default::default(),
             shadow: Default::default(),
@@ -1551,14 +1652,16 @@ impl container::StyleSheet for StatusBarStyle {
     }
 }
 
-struct SearchPanelStyle;
+struct SearchPanelStyle {
+    palette: ThemePalette,
+}
 
 impl container::StyleSheet for SearchPanelStyle {
     type Style = Theme;
 
     fn appearance(&self, _style: &Self::Style) -> container::Appearance {
         container::Appearance {
-            background: Some(Background::Color(Color::from_rgb8(36, 36, 40))),
+            background: Some(Background::Color(self.palette.panel_background)),
             text_color: None,
             border: Default::default(),
             shadow: Default::default(),
@@ -1566,14 +1669,16 @@ impl container::StyleSheet for SearchPanelStyle {
     }
 }
 
-struct SearchResultStyle;
+struct SearchResultStyle {
+    palette: ThemePalette,
+}
 
 impl container::StyleSheet for SearchResultStyle {
     type Style = Theme;
 
     fn appearance(&self, _style: &Self::Style) -> container::Appearance {
         container::Appearance {
-            background: Some(Background::Color(Color::from_rgb8(42, 42, 46))),
+            background: Some(Background::Color(self.palette.panel_item_background)),
             text_color: None,
             border: Default::default(),
             shadow: Default::default(),
@@ -1581,7 +1686,9 @@ impl container::StyleSheet for SearchResultStyle {
     }
 }
 
-struct SearchResultButtonStyle;
+struct SearchResultButtonStyle {
+    palette: ThemePalette,
+}
 
 impl button::StyleSheet for SearchResultButtonStyle {
     type Style = Theme;
@@ -1598,7 +1705,7 @@ impl button::StyleSheet for SearchResultButtonStyle {
 
     fn hovered(&self, style: &Self::Style) -> button::Appearance {
         let mut appearance = self.active(style);
-        appearance.background = Some(Background::Color(Color::from_rgb8(60, 60, 66)));
+        appearance.background = Some(Background::Color(self.palette.panel_item_hover));
         appearance
     }
 }
