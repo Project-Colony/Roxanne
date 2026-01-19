@@ -19,4 +19,10 @@
 
 ## Décisions à figer
 - Structure interne du buffer (rope vs gap vs piece table).
+  - **Décision** : adopter une **rope** pour optimiser les insertions/suppressions sur gros fichiers.
+  - **Raison** : bonnes performances sur les éditions au milieu du document, coût mémoire acceptable.
+  - **Impact** : nécessité d’implémenter un mapping précis entre positions logiques et index.
 - Backend de rendu (CPU/GPU) et bibliothèque graphique.
+  - **Décision** : rendu **CPU** initial avec une bibliothèque multiplateforme (à préciser).
+  - **Raison** : prioriser la simplicité et la stabilité pour le MVP.
+  - **Impact** : prévoir une abstraction pour migrer vers un backend GPU plus tard.
