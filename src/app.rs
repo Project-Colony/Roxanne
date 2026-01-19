@@ -293,30 +293,31 @@ impl RoxanneApp {
             Menu::Help => ("Help", vec![("About", MenuAction::About)]),
         };
 
-        let buttons = actions
-            .into_iter()
-            .map(|(name, action)| {
-                Button::new(text(name).size(12).font(Font::MONOSPACE))
-                    .padding([2, 8])
-                    .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
-                    .on_press(Message::MenuAction(action))
-                    .into()
-            })
-            .collect::<Vec<Element<Message>>>();
-
-        let column = column![
+        let row = row![
             text(label)
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(180, 180, 180)),
-            column(buttons).spacing(6),
+            Row::with_children(
+                actions
+                    .into_iter()
+                    .map(|(name, action)| {
+                        Button::new(text(name).size(12).font(Font::MONOSPACE))
+                            .padding([2, 8])
+                            .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
+                            .on_press(Message::MenuAction(action))
+                            .into()
+                    })
+                    .collect::<Vec<Element<Message>>>(),
+            )
+            .spacing(8),
         ]
-        .spacing(8)
-        .align_items(Alignment::Start)
-        .padding([6, 16]);
+        .spacing(12)
+        .align_items(Alignment::Center)
+        .padding([4, 16]);
 
         Some(
-            Container::new(column)
+            Container::new(row)
                 .width(Length::Fill)
                 .style(theme::Container::Custom(Box::new(SubmenuStyle)))
                 .into(),
