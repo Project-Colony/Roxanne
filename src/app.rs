@@ -1,21 +1,30 @@
 use iced::alignment::{Horizontal, Vertical};
 use iced::theme;
-use iced::widget::{Column, Container, Row, Scrollable, column, container, row, scrollable, text};
+use iced::widget::text_editor::{Action as EditorAction, Content as EditorContent};
+use iced::widget::{Button, Container, Row, TextInput, column, container, row, text, text_editor};
 use iced::{
     Alignment, Application, Background, Color, Command, Element, Font, Length, Settings, Theme,
     executor,
 };
 
-#[derive(Debug, Clone)]
-pub enum Message {}
-
 #[derive(Debug)]
 pub struct RoxanneApp {
     filename: String,
-    is_modified: bool,
-    cursor_line: usize,
-    cursor_col: usize,
-    buffer: Vec<String>,
+    content: EditorContent,
+    last_saved_text: String,
+    search_query: String,
+    status_message: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    Edit(EditorAction),
+    SearchChanged(String),
+    FilenameChanged(String),
+    OpenPressed,
+    SavePressed,
+    FileLoaded(Result<String, String>),
+    FileSaved(Result<(), String>),
 }
 
 impl RoxanneApp {
@@ -35,19 +44,17 @@ impl Application for RoxanneApp {
     type Flags = ();
 
     fn new(_flags: ()) -> (Self, Command<Message>) {
+        let initial_text = "Roxanne – éditeur en mode Iced\n\n\
+            Objectif: MVP inspiré de Sublime Text\n\
+            - Menu bar, tabs, status bar\n\
+            - Zone d'édition monospace";
         (
             Self {
                 filename: "untitled.txt".to_string(),
-                is_modified: false,
-                cursor_line: 1,
-                cursor_col: 1,
-                buffer: vec![
-                    "Roxanne – éditeur en mode Iced".to_string(),
-                    "".to_string(),
-                    "Objectif: MVP inspiré de Sublime Text".to_string(),
-                    "- Menu bar, tabs, status bar".to_string(),
-                    "- Zone d'édition monospace".to_string(),
-                ],
+                content: EditorContent::with_text(initial_text),
+                last_saved_text: initial_text.to_string(),
+                search_query: String::new(),
+                status_message: None,
             },
             Command::none(),
         )
@@ -57,8 +64,71 @@ impl Application for RoxanneApp {
         "Roxanne".to_string()
     }
 
-    fn update(&mut self, _message: Message) -> Command<Message> {
-        Command::none()
+    fn update(&mut self, message: Message) -> Command<Message> {
+        match message {
+            Message::Edit(action) => {
+                self.content.perform(action);
+                Command::none()
+            }
+            Message::SearchChanged(value) => {
+                self.search_query = value;
+                Command::none()
+            }
+            Message::FilenameChanged(value) => {
+                self.filename = value;
+                Command::none()
+            }
+            Message::OpenPressed => {
+                if self.filename.trim().is_empty() {
+                    self.status_message = Some("Nom de fichier manquant.".to_string());
+                    return Command::none();
+                }
+                let filename = self.filename.clone();
+                Command::perform(
+                    async move {
+                        std::fs::read_to_string(&filename).map_err(|err| err.to_string())
+                    },
+                    Message::FileLoaded,
+                )
+            }
+            Message::SavePressed => {
+                if self.filename.trim().is_empty() {
+                    self.status_message = Some("Nom de fichier manquant.".to_string());
+                    return Command::none();
+                }
+                let filename = self.filename.clone();
+                let text = self.content.text().to_string();
+                Command::perform(
+                    async move { std::fs::write(&filename, text).map_err(|err| err.to_string()) },
+                    Message::FileSaved,
+                )
+            }
+            Message::FileLoaded(result) => {
+                match result {
+                    Ok(text) => {
+                        self.content = EditorContent::with_text(&text);
+                        self.last_saved_text = text;
+                        self.status_message = Some("Fichier chargé.".to_string());
+                    }
+                    Err(message) => {
+                        self.status_message = Some(format!("Erreur d'ouverture: {message}"));
+                    }
+                }
+                Command::none()
+            }
+            Message::FileSaved(result) => {
+                match result {
+                    Ok(()) => {
+                        self.last_saved_text = self.content.text().to_string();
+                        self.status_message = Some("Fichier sauvegardé.".to_string());
+                    }
+                    Err(message) => {
+                        self.status_message = Some(format!("Erreur de sauvegarde: {message}"));
+                    }
+                }
+                Command::none()
+            }
+        }
     }
 
     fn view(&self) -> Element<Message> {
@@ -93,7 +163,18 @@ impl RoxanneApp {
             })
             .collect::<Vec<_>>();
 
-        let row = Row::with_children(items)
+        let file_controls = row![
+            Button::new(text("Open").size(13).font(Font::MONOSPACE))
+                .padding([2, 8])
+                .on_press(Message::OpenPressed),
+            Button::new(text("Save").size(13).font(Font::MONOSPACE))
+                .padding([2, 8])
+                .on_press(Message::SavePressed)
+        ]
+        .spacing(8)
+        .align_items(Alignment::Center);
+
+        let row = row![Row::with_children(items).spacing(24), file_controls]
             .spacing(24)
             .padding([6, 16])
             .align_items(Alignment::Center);
@@ -105,15 +186,16 @@ impl RoxanneApp {
     }
 
     fn tab_bar(&self) -> Element<Message> {
+        let is_modified = self.content.text() != self.last_saved_text;
         let tab = row![
             text("untitled.txt")
                 .size(13)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(230, 230, 230)),
-            text("×")
-                .size(13)
+            text(if is_modified { "●" } else { "×" })
+                .size(12)
                 .font(Font::MONOSPACE)
-                .style(Color::from_rgb8(180, 180, 180))
+                .style(Color::from_rgb8(180, 180, 180)),
         ]
         .spacing(8)
         .padding([6, 12])
@@ -136,35 +218,13 @@ impl RoxanneApp {
     }
 
     fn editor_area(&self) -> Element<Message> {
-        let line_items = self.buffer.iter().enumerate().map(|(index, line)| {
-            let number = format!("{:>4}", index + 1);
-            row![
-                text(number)
-                    .size(13)
-                    .font(Font::MONOSPACE)
-                    .style(Color::from_rgb8(120, 120, 120)),
-                text(line)
-                    .size(13)
-                    .font(Font::MONOSPACE)
-                    .style(Color::from_rgb8(210, 210, 210))
-            ]
-            .spacing(16)
-            .align_items(Alignment::Start)
-            .into()
-        });
-
-        let content = Column::with_children(line_items)
-            .spacing(4)
+        let editor = text_editor(&self.content)
+            .on_action(Message::Edit)
+            .font(Font::MONOSPACE)
+            .font_size(14)
             .padding([12, 16]);
 
-        let scroll = Scrollable::new(content)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .direction(scrollable::Direction::Vertical(
-                scrollable::Properties::new(),
-            ));
-
-        Container::new(scroll)
+        Container::new(editor)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(theme::Container::Custom(Box::new(EditorStyle)))
@@ -172,18 +232,37 @@ impl RoxanneApp {
     }
 
     fn status_bar(&self) -> Element<Message> {
-        let left = text(format!(
-            "{}{}",
-            self.filename,
-            if self.is_modified { " ●" } else { "" }
-        ))
-        .size(12)
-        .font(Font::MONOSPACE)
-        .style(Color::from_rgb8(200, 200, 200));
+        let is_modified = self.content.text() != self.last_saved_text;
+        let left = row![
+            text(format!(
+                "{}{}",
+                self.filename,
+                if is_modified { " ●" } else { "" }
+            ))
+            .size(12)
+            .font(Font::MONOSPACE)
+            .style(Color::from_rgb8(200, 200, 200)),
+            TextInput::new("search…", &self.search_query)
+                .on_input(Message::SearchChanged)
+                .padding([2, 8])
+                .size(12),
+            TextInput::new("fichier…", &self.filename)
+                .on_input(Message::FilenameChanged)
+                .padding([2, 8])
+                .size(12),
+        ]
+        .spacing(12)
+        .align_items(Alignment::Center);
+
+        let matches = count_matches(&self.content.text(), &self.search_query);
+        let status_text = self
+            .status_message
+            .clone()
+            .unwrap_or_else(|| "Prêt.".to_string());
 
         let right = text(format!(
-            "Ln {}, Col {}   UTF-8   LF",
-            self.cursor_line, self.cursor_col
+            "Occurrences: {}   UTF-8   LF   {}",
+            matches, status_text
         ))
         .size(12)
         .font(Font::MONOSPACE)
@@ -292,4 +371,11 @@ impl container::StyleSheet for StatusBarStyle {
             shadow: Default::default(),
         }
     }
+}
+
+fn count_matches(haystack: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    haystack.match_indices(needle).count()
 }
