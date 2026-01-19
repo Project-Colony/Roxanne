@@ -1,7 +1,7 @@
 use crate::config;
 use crate::editor::highlight::MatchPosition;
 use crate::editor::{Position, TextBuffer, highlight};
-use crate::keymap::{KeyAction, Keymap};
+use crate::keymap::{KeyAction, Keymap, KeymapMode};
 use crate::plugins::PluginManager;
 use crate::theme::ThemePalette;
 use iced::alignment::{Horizontal, Vertical};
@@ -46,6 +46,7 @@ pub struct RoxanneApp {
     status_message: Option<String>,
     theme: ThemePalette,
     keymap: Keymap,
+    mode: KeymapMode,
     plugins: PluginManager,
     active_menu: Option<Menu>,
 }
@@ -194,16 +195,19 @@ impl Application for RoxanneApp {
             - Zone d'édition monospace";
         let buffer = TextBuffer::from(initial_text);
         let diagnostics = analyze_diagnostics(&buffer);
-        let mut plugins = PluginManager::new(&flags.plugins);
+        let (mut plugins, plugin_warnings) = PluginManager::new(&flags.plugins);
         plugins.on_text_changed(initial_text, "untitled.txt");
-        let status_message = if flags.load_warnings.is_empty() {
+        let mut warnings = flags.load_warnings.clone();
+        warnings.extend(plugin_warnings);
+        let status_message = if warnings.is_empty() {
             None
         } else {
             Some(format!(
                 "Config: {} alerte(s) lors du chargement.",
-                flags.load_warnings.len()
+                warnings.len()
             ))
         };
+        highlight::set_syntax_palette(flags.theme.syntax);
         (
             Self {
                 filename: "untitled.txt".to_string(),
@@ -228,6 +232,7 @@ impl Application for RoxanneApp {
                 status_message,
                 theme: flags.theme,
                 keymap: flags.keymap,
+                mode: KeymapMode::Insert,
                 plugins,
                 active_menu: None,
             },
@@ -314,7 +319,7 @@ impl Application for RoxanneApp {
                     key, modifiers, ..
                 }) = event
                 {
-                    if let Some(action) = self.keymap.match_event(&key, modifiers) {
+                    if let Some(action) = self.keymap.match_event(&key, modifiers, self.mode) {
                         return self.handle_key_action(action);
                     }
                 }
@@ -568,6 +573,16 @@ impl RoxanneApp {
             KeyAction::CompletionClose => {
                 self.completion_panel_open = false;
                 self.completion_items.clear();
+                Command::none()
+            }
+            KeyAction::EnterInsertMode => {
+                self.mode = KeymapMode::Insert;
+                self.status_message = Some("Mode insertion.".to_string());
+                Command::none()
+            }
+            KeyAction::EnterNormalMode => {
+                self.mode = KeymapMode::Normal;
+                self.status_message = Some("Mode normal.".to_string());
                 Command::none()
             }
         }
@@ -1070,7 +1085,8 @@ impl RoxanneApp {
         };
 
         let right = text(format!(
-            "Occurrences: {}   Cursors: {}   Diagnostics: {}   Ln {}, Col {}   UTF-8   LF   {}{}",
+            "Mode: {}   Occurrences: {}   Cursors: {}   Diagnostics: {}   Ln {}, Col {}   UTF-8   LF   {}{}",
+            self.mode.label(),
             matches,
             cursor_count,
             diagnostics_count,

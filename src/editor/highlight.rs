@@ -1,6 +1,8 @@
+use crate::theme::SyntaxPalette;
 use iced::advanced::text::highlighter::{self, Highlighter};
-use iced::{Color, Font, Theme};
+use iced::{Font, Theme};
 use std::ops::Range;
+use std::sync::{LazyLock, RwLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
@@ -103,19 +105,36 @@ impl Highlighter for RoxanneHighlighter {
 }
 
 pub fn highlight_format(token: &HighlightToken, _theme: &Theme) -> highlighter::Format<Font> {
+    let palette = current_syntax_palette();
     let color = match token {
-        HighlightToken::Keyword => Color::from_rgb8(86, 156, 214),
-        HighlightToken::Type => Color::from_rgb8(78, 201, 176),
-        HighlightToken::String => Color::from_rgb8(206, 145, 120),
-        HighlightToken::Comment => Color::from_rgb8(106, 153, 85),
-        HighlightToken::Number => Color::from_rgb8(181, 206, 168),
-        HighlightToken::SearchMatch => Color::from_rgb8(255, 213, 79),
+        HighlightToken::Keyword => palette.keyword,
+        HighlightToken::Type => palette.r#type,
+        HighlightToken::String => palette.string,
+        HighlightToken::Comment => palette.comment,
+        HighlightToken::Number => palette.number,
+        HighlightToken::SearchMatch => palette.search_match,
     };
 
     highlighter::Format {
         color: Some(color),
         font: None,
     }
+}
+
+static SYNTAX_PALETTE: LazyLock<RwLock<SyntaxPalette>> =
+    LazyLock::new(|| RwLock::new(SyntaxPalette::default()));
+
+pub fn set_syntax_palette(palette: SyntaxPalette) {
+    if let Ok(mut current) = SYNTAX_PALETTE.write() {
+        *current = palette;
+    }
+}
+
+fn current_syntax_palette() -> SyntaxPalette {
+    SYNTAX_PALETTE
+        .read()
+        .map(|palette| *palette)
+        .unwrap_or_else(|_| SyntaxPalette::default())
 }
 
 fn highlight_rust_line(line: &str) -> Vec<(Range<usize>, HighlightToken)> {

@@ -35,6 +35,13 @@ impl AppConfig {
         if let Ok(path) = std::env::current_dir() {
             let workspace_path = path.join(".roxanne.toml");
             if let Some(file) = load_file(&workspace_path, &mut warnings) {
+                if let Some(profile) = file.profile.as_deref() {
+                    if let Some(profile_path) = profile_config_path(profile) {
+                        if let Some(profile_file) = load_file(&profile_path, &mut warnings) {
+                            config.apply_file(&profile_file, &mut warnings);
+                        }
+                    }
+                }
                 config.apply_file(&file, &mut warnings);
             }
         }

@@ -1,4 +1,7 @@
+use libloading::Library;
 use serde::{Deserialize, Serialize};
+use std::ffi::{CStr, CString};
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct PluginStatus {
@@ -33,8 +36,9 @@ impl std::fmt::Debug for PluginManager {
 }
 
 impl PluginManager {
-    pub fn new(config: &PluginConfig) -> Self {
+    pub fn new(config: &PluginConfig) -> (Self, Vec<String>) {
         let mut manager = Self { plugins: Vec::new() };
+        let mut warnings = Vec::new();
         for plugin in &config.enabled {
             match plugin.as_str() {
                 "word_count" => manager.register(Box::new(WordCountPlugin::default())),
@@ -42,7 +46,13 @@ impl PluginManager {
                 _ => {}
             }
         }
-        manager
+        for plugin_path in &config.dynamic {
+            match DynamicPlugin::load(plugin_path) {
+                Ok(plugin) => manager.register(Box::new(plugin)),
+                Err(err) => warnings.push(format!("Plugins: {plugin_path}: {err}")),
+            }
+        }
+        (manager, warnings)
     }
 
     pub fn on_text_changed(&mut self, text: &str, filename: &str) {
@@ -70,6 +80,8 @@ impl PluginManager {
 pub struct PluginConfig {
     #[serde(default = "default_plugins")]
     pub enabled: Vec<String>,
+    #[serde(default)]
+    pub dynamic: Vec<String>,
 }
 
 impl PluginConfig {
@@ -84,6 +96,81 @@ impl PluginConfig {
 
 fn default_plugins() -> Vec<String> {
     vec!["word_count".to_string(), "line_count".to_string()]
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PluginStatusV1 {
+    label: *const std::ffi::c_char,
+    value: *const std::ffi::c_char,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PluginApiV1 {
+    name: unsafe extern "C" fn() -> *const std::ffi::c_char,
+    on_text_changed: Option<unsafe extern "C" fn(*const std::ffi::c_char, *const std::ffi::c_char)>,
+    status: Option<unsafe extern "C" fn() -> PluginStatusV1>,
+}
+
+struct DynamicPlugin {
+    _library: Library,
+    api: PluginApiV1,
+    name: String,
+}
+
+impl DynamicPlugin {
+    fn load(path: &str) -> Result<Self, String> {
+        let library = unsafe { Library::new(Path::new(path)) }
+            .map_err(|err| format!("chargement impossible: {err}"))?;
+        let symbol: libloading::Symbol<unsafe extern "C" fn() -> PluginApiV1> = unsafe {
+            library
+                .get(b"roxanne_plugin_api_v1")
+                .map_err(|err| format!("symbole manquant: {err}"))?
+        };
+        let api = unsafe { symbol() };
+        let name = cstr_to_string(unsafe { (api.name)() })?;
+        Ok(Self {
+            _library: library,
+            api,
+            name,
+        })
+    }
+}
+
+impl Plugin for DynamicPlugin {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn on_text_changed(&mut self, text: &str, context: &PluginContext) {
+        if let Some(callback) = self.api.on_text_changed {
+            let text = CString::new(text).unwrap_or_default();
+            let filename = CString::new(context.filename.as_str()).unwrap_or_default();
+            unsafe {
+                callback(text.as_ptr(), filename.as_ptr());
+            }
+        }
+    }
+
+    fn status(&self) -> Option<PluginStatus> {
+        let callback = self.api.status?;
+        let status = unsafe { callback() };
+        let label = cstr_to_string(status.label).ok()?;
+        let value = cstr_to_string(status.value).ok()?;
+        Some(PluginStatus { label, value })
+    }
+}
+
+fn cstr_to_string(ptr: *const std::ffi::c_char) -> Result<String, String> {
+    if ptr.is_null() {
+        return Err("chaîne nulle".to_string());
+    }
+    let value = unsafe { CStr::from_ptr(ptr) };
+    value
+        .to_str()
+        .map(|value| value.to_string())
+        .map_err(|err| format!("chaîne invalide: {err}"))
 }
 
 #[derive(Default)]
