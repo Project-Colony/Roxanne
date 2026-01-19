@@ -52,6 +52,7 @@ impl AppConfig {
         }
         if let Some(plugins) = &file.plugins {
             self.plugins = plugins.clone();
+            warnings.extend(plugins.warnings());
         }
     }
 }

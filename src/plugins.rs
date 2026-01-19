@@ -22,6 +22,8 @@ pub struct PluginManager {
     plugins: Vec<Box<dyn Plugin>>,
 }
 
+const KNOWN_PLUGINS: &[&str] = &["word_count", "line_count"];
+
 impl std::fmt::Debug for PluginManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PluginManager")
@@ -68,6 +70,16 @@ impl PluginManager {
 pub struct PluginConfig {
     #[serde(default = "default_plugins")]
     pub enabled: Vec<String>,
+}
+
+impl PluginConfig {
+    pub fn warnings(&self) -> Vec<String> {
+        self.enabled
+            .iter()
+            .filter(|plugin| !KNOWN_PLUGINS.contains(&plugin.as_str()))
+            .map(|plugin| format!("Plugins: plugin inconnu '{plugin}'"))
+            .collect()
+    }
 }
 
 fn default_plugins() -> Vec<String> {

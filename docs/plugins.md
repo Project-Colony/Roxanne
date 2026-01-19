@@ -16,6 +16,7 @@
 
 ## Activation
 Les plugins sont activés via la clé `plugins.enabled` dans la configuration TOML.
+Plugins disponibles : `word_count`, `line_count`.
 
 ## Lifecycle
 1. Chargement.
