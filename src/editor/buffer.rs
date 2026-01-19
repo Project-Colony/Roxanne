@@ -86,7 +86,7 @@ impl TextBuffer {
         Position { line, column }
     }
 
-    fn index_from_position(&self, position: Position) -> usize {
+    pub fn index_from_position(&self, position: Position) -> usize {
         let position = self.clamp_position(position);
         let mut index = 0;
         for (line_index, line) in self.lines.iter().enumerate() {
@@ -98,7 +98,7 @@ impl TextBuffer {
         index
     }
 
-    fn position_from_index(&self, mut index: usize) -> Position {
+    pub fn position_from_index(&self, mut index: usize) -> Position {
         for (line_index, line) in self.lines.iter().enumerate() {
             if index <= line.len() {
                 return Position {

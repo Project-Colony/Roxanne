@@ -1,4 +1,4 @@
 pub mod buffer;
 pub mod highlight;
 
-pub use buffer::TextBuffer;
+pub use buffer::{Position, TextBuffer};

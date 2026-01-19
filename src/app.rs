@@ -1,9 +1,11 @@
 use crate::editor::highlight::MatchPosition;
-use crate::editor::{TextBuffer, highlight};
+use crate::editor::{Position, TextBuffer, highlight};
 use iced::alignment::{Horizontal, Vertical};
 use iced::theme;
 use iced::widget::button;
-use iced::widget::text_editor::{Action as EditorAction, Content as EditorContent, Motion};
+use iced::widget::text_editor::{
+    Action as EditorAction, Content as EditorContent, Edit as EditorEdit, Motion,
+};
 use iced::widget::{
     Button, Container, Row, Scrollable, TextInput, column, container, row, text, text_editor,
 };
@@ -12,6 +14,7 @@ use iced::{
     Subscription, Theme, event, executor, keyboard,
 };
 use regex::{Regex, RegexBuilder};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use walkdir::{DirEntry, WalkDir};
 
@@ -30,6 +33,12 @@ pub struct RoxanneApp {
     search_scope: SearchScope,
     search_results: Vec<SearchResult>,
     highlight_settings: highlight::Settings,
+    multi_cursors: Vec<Position>,
+    diagnostics: Vec<Diagnostic>,
+    diagnostics_panel_open: bool,
+    completion_items: Vec<CompletionItem>,
+    completion_prefix: String,
+    completion_panel_open: bool,
     status_message: Option<String>,
     active_menu: Option<Menu>,
 }
@@ -49,6 +58,10 @@ pub enum Message {
     SearchResultsLoaded(Result<Vec<SearchResult>, String>),
     SearchResultOpened(Result<(String, SearchResult), String>),
     SearchResultsCleared,
+    DiagnosticsToggled,
+    CompletionRequested,
+    CompletionSelected(usize),
+    CompletionClosed,
     FilenameChanged(String),
     OpenPressed,
     SavePressed,
@@ -78,6 +91,10 @@ pub enum MenuAction {
     FindPrevious,
     FindInFiles,
     SelectAll,
+    AddCursorNextMatch,
+    AddCursorsAllMatches,
+    ClearMultiCursors,
+    ToggleDiagnosticsPanel,
     ToggleStatusBar,
     ToggleSearchPanel,
     GoToLine,
@@ -106,6 +123,26 @@ pub struct SearchResult {
     line: usize,
     column: usize,
     preview: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct Diagnostic {
+    line: usize,
+    column: usize,
+    message: String,
+    severity: DiagnosticSeverity,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum DiagnosticSeverity {
+    Error,
+    Warning,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletionItem {
+    label: String,
+    detail: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -144,6 +181,7 @@ impl Application for RoxanneApp {
             - Menu bar, tabs, status bar\n\
             - Zone d'édition monospace";
         let buffer = TextBuffer::from(initial_text);
+        let diagnostics = analyze_diagnostics(&buffer);
         (
             Self {
                 filename: "untitled.txt".to_string(),
@@ -159,6 +197,12 @@ impl Application for RoxanneApp {
                 search_scope: SearchScope::CurrentFile,
                 search_results: Vec::new(),
                 highlight_settings: highlight::Settings::default(),
+                multi_cursors: Vec::new(),
+                diagnostics,
+                diagnostics_panel_open: false,
+                completion_items: Vec::new(),
+                completion_prefix: String::new(),
+                completion_panel_open: false,
                 status_message: None,
                 active_menu: None,
             },
@@ -173,9 +217,16 @@ impl Application for RoxanneApp {
     fn update(&mut self, message: Message) -> Command<Message> {
         match message {
             Message::Edit(action) => {
-                self.content.perform(action);
-                self.buffer.replace(&self.content.text());
+                if action.is_edit() && !self.multi_cursors.is_empty() {
+                    if let EditorAction::Edit(edit) = action {
+                        self.apply_multi_cursor_edit(&edit);
+                    }
+                } else {
+                    self.content.perform(action);
+                    self.buffer.replace(&self.content.text());
+                }
                 self.refresh_search_matches(true);
+                self.refresh_diagnostics();
                 Command::none()
             }
             Message::SearchChanged(value) => {
@@ -213,6 +264,24 @@ impl Application for RoxanneApp {
                 self.search_panel_open = !self.search_panel_open;
                 Command::none()
             }
+            Message::DiagnosticsToggled => {
+                self.diagnostics_panel_open = !self.diagnostics_panel_open;
+                Command::none()
+            }
+            Message::CompletionRequested => {
+                self.refresh_completions();
+                self.completion_panel_open = !self.completion_items.is_empty();
+                Command::none()
+            }
+            Message::CompletionSelected(index) => {
+                self.apply_completion(index);
+                Command::none()
+            }
+            Message::CompletionClosed => {
+                self.completion_panel_open = false;
+                self.completion_items.clear();
+                Command::none()
+            }
             Message::SearchInFiles => self.search_in_files(),
             Message::SearchResultsLoaded(result) => {
                 match result {
@@ -237,6 +306,7 @@ impl Application for RoxanneApp {
                         self.buffer.replace(&text);
                         self.last_saved_text = text;
                         self.refresh_search_matches(false);
+                        self.refresh_diagnostics();
                         self.jump_to_position(nav.line, nav.column);
                         self.status_message = Some(format!(
                             "Recherche: ouvert {} (ligne {}, colonne {}).",
@@ -294,6 +364,24 @@ impl Application for RoxanneApp {
                             Some("Sélection: Ctrl+A ou Cmd+A pour tout sélectionner.".to_string());
                         Command::none()
                     }
+                    MenuAction::AddCursorNextMatch => {
+                        self.add_cursor_next_match();
+                        Command::none()
+                    }
+                    MenuAction::AddCursorsAllMatches => {
+                        self.add_cursors_all_matches();
+                        Command::none()
+                    }
+                    MenuAction::ClearMultiCursors => {
+                        self.multi_cursors.clear();
+                        self.status_message =
+                            Some("Multi-curseurs: positions effacées.".to_string());
+                        Command::none()
+                    }
+                    MenuAction::ToggleDiagnosticsPanel => {
+                        self.diagnostics_panel_open = !self.diagnostics_panel_open;
+                        Command::none()
+                    }
                     MenuAction::ToggleStatusBar => {
                         self.status_message =
                             Some("Affichage: options avancées à venir.".to_string());
@@ -327,6 +415,7 @@ impl Application for RoxanneApp {
                         self.buffer.replace(&text);
                         self.last_saved_text = text;
                         self.refresh_search_matches(false);
+                        self.refresh_diagnostics();
                         self.status_message = Some("Fichier chargé.".to_string());
                     }
                     Err(message) => {
@@ -354,11 +443,19 @@ impl Application for RoxanneApp {
         let menu_bar = self.menu_bar();
         let tab_bar = self.tab_bar();
         let search_panel = self.search_panel();
+        let diagnostics_panel = self.diagnostics_panel();
+        let completion_panel = self.completion_panel();
         let editor = self.editor_area();
         let status_bar = self.status_bar();
 
         let mut content = column![menu_bar, tab_bar];
         if let Some(panel) = search_panel {
+            content = content.push(panel);
+        }
+        if let Some(panel) = diagnostics_panel {
+            content = content.push(panel);
+        }
+        if let Some(panel) = completion_panel {
             content = content.push(panel);
         }
         let content = content
@@ -393,8 +490,18 @@ impl Application for RoxanneApp {
                             }
                             _ => None,
                         }
+                    } else if modifiers.control() {
+                        match key {
+                            keyboard::Key::Named(keyboard::key::Named::Space) => {
+                                Some(Message::CompletionRequested)
+                            }
+                            _ => None,
+                        }
                     } else {
                         match key {
+                            keyboard::Key::Named(keyboard::key::Named::Escape) => {
+                                Some(Message::CompletionClosed)
+                            }
                             keyboard::Key::Named(keyboard::key::Named::F3) => {
                                 if modifiers.shift() {
                                     Some(Message::SearchPrevious)
@@ -496,12 +603,21 @@ impl RoxanneApp {
                     ("Find in Files", MenuAction::FindInFiles),
                 ],
             ),
-            Menu::Selection => ("Selection", vec![("Select All", MenuAction::SelectAll)]),
+            Menu::Selection => (
+                "Selection",
+                vec![
+                    ("Select All", MenuAction::SelectAll),
+                    ("Add Cursor Next", MenuAction::AddCursorNextMatch),
+                    ("Add Cursors All", MenuAction::AddCursorsAllMatches),
+                    ("Clear Cursors", MenuAction::ClearMultiCursors),
+                ],
+            ),
             Menu::View => (
                 "View",
                 vec![
                     ("Status Bar", MenuAction::ToggleStatusBar),
                     ("Search Panel", MenuAction::ToggleSearchPanel),
+                    ("Diagnostics Panel", MenuAction::ToggleDiagnosticsPanel),
                 ],
             ),
             Menu::Goto => ("Goto", vec![("Go to Line", MenuAction::GoToLine)]),
@@ -702,10 +818,142 @@ impl RoxanneApp {
         )
     }
 
+    fn diagnostics_panel(&self) -> Option<Element<Message>> {
+        if !self.diagnostics_panel_open {
+            return None;
+        }
+
+        let header = row![
+            text("Diagnostics LSP")
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(Color::from_rgb8(220, 220, 220)),
+            text(format!("{} élément(s)", self.diagnostics.len()))
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(Color::from_rgb8(160, 160, 160)),
+        ]
+        .spacing(12)
+        .align_items(Alignment::Center);
+
+        let content: Element<Message> = if self.diagnostics.is_empty() {
+            text("Aucun diagnostic.")
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(Color::from_rgb8(150, 150, 150)))
+                .into()
+        } else {
+            let entries = self
+                .diagnostics
+                .iter()
+                .map(|diagnostic| {
+                    let severity_color = match diagnostic.severity {
+                        DiagnosticSeverity::Error => Color::from_rgb8(242, 94, 92),
+                        DiagnosticSeverity::Warning => Color::from_rgb8(240, 200, 120),
+                    };
+                    let title = text(format!("{}:{}", diagnostic.line + 1, diagnostic.column + 1))
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(severity_color);
+
+                    let message = text(&diagnostic.message)
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(Color::from_rgb8(180, 180, 180));
+
+                    Container::new(column![title, message].spacing(2))
+                        .padding([4, 12])
+                        .style(theme::Container::Custom(Box::new(SearchResultStyle)))
+                        .into()
+                })
+                .collect::<Vec<Element<Message>>>();
+
+            Scrollable::new(column(entries).spacing(4))
+                .height(Length::Fixed(160.0))
+                .into()
+        };
+
+        let panel = column![header, content].spacing(10).padding([8, 16]);
+
+        Some(
+            Container::new(panel)
+                .width(Length::Fill)
+                .style(theme::Container::Custom(Box::new(SearchPanelStyle)))
+                .into(),
+        )
+    }
+
+    fn completion_panel(&self) -> Option<Element<Message>> {
+        if !self.completion_panel_open {
+            return None;
+        }
+
+        let header = row![
+            text("Complétions LSP")
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(Color::from_rgb8(220, 220, 220)),
+            text(format!("Préfixe: {}", self.completion_prefix))
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(Color::from_rgb8(160, 160, 160)),
+        ]
+        .spacing(12)
+        .align_items(Alignment::Center);
+
+        let list: Element<Message> = if self.completion_items.is_empty() {
+            text("Aucune suggestion.")
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(Color::from_rgb8(150, 150, 150)))
+                .into()
+        } else {
+            let entries = self
+                .completion_items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let label = text(&item.label)
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(Color::from_rgb8(200, 200, 200));
+                    let detail = text(&item.detail)
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(Color::from_rgb8(150, 150, 150));
+
+                    Button::new(
+                        Container::new(column![label, detail].spacing(2))
+                            .padding([4, 12])
+                            .style(theme::Container::Custom(Box::new(SearchResultStyle))),
+                    )
+                    .style(theme::Button::Custom(Box::new(SearchResultButtonStyle)))
+                    .on_press(Message::CompletionSelected(index))
+                    .into()
+                })
+                .collect::<Vec<Element<Message>>>();
+
+            Scrollable::new(column(entries).spacing(4))
+                .height(Length::Fixed(160.0))
+                .into()
+        };
+
+        let panel = column![header, list].spacing(10).padding([8, 16]);
+
+        Some(
+            Container::new(panel)
+                .width(Length::Fill)
+                .style(theme::Container::Custom(Box::new(SearchPanelStyle)))
+                .into(),
+        )
+    }
+
     fn status_bar(&self) -> Element<Message> {
         let is_modified = self.content.text() != self.last_saved_text;
         let has_matches = !self.search_matches.is_empty();
         let cursor_position = self.content.cursor_position();
+        let cursor_count = self.multi_cursors.len() + 1;
+        let diagnostics_count = self.diagnostics.len();
         let left = row![
             text(format!(
                 "{}{}",
@@ -737,6 +985,10 @@ impl RoxanneApp {
                 .padding([2, 8])
                 .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
                 .on_press(Message::SearchPanelToggled),
+            Button::new(text("Diagnostics").size(12).font(Font::MONOSPACE))
+                .padding([2, 8])
+                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
+                .on_press(Message::DiagnosticsToggled),
             TextInput::new("fichier…", &self.filename)
                 .on_input(Message::FilenameChanged)
                 .padding([2, 8])
@@ -752,8 +1004,10 @@ impl RoxanneApp {
             .unwrap_or_else(|| "Prêt.".to_string());
 
         let right = text(format!(
-            "Occurrences: {}   Ln {}, Col {}   UTF-8   LF   {}",
+            "Occurrences: {}   Cursors: {}   Diagnostics: {}   Ln {}, Col {}   UTF-8   LF   {}",
             matches,
+            cursor_count,
+            diagnostics_count,
             cursor_position.0 + 1,
             cursor_position.1 + 1,
             status_text
@@ -964,6 +1218,163 @@ impl RoxanneApp {
         for _ in 0..column {
             self.content.perform(EditorAction::Move(Motion::Right));
         }
+    }
+
+    fn add_cursor_next_match(&mut self) {
+        if self.search_matches.is_empty() {
+            self.status_message = Some("Multi-curseurs: aucune occurrence.".to_string());
+            return;
+        }
+
+        let (line, column) = self.content.cursor_position();
+        let next_match = self
+            .search_matches
+            .iter()
+            .find(|match_position| {
+                match_position.line > line
+                    || (match_position.line == line && match_position.column > column)
+            })
+            .or_else(|| self.search_matches.first());
+
+        if let Some(match_position) = next_match {
+            let position = Position::new(match_position.line, match_position.column);
+            if !self.multi_cursors.contains(&position) {
+                self.multi_cursors.push(position);
+            }
+            self.status_message = Some("Multi-curseurs: ajout d'une position.".to_string());
+        }
+    }
+
+    fn add_cursors_all_matches(&mut self) {
+        if self.search_matches.is_empty() {
+            self.status_message = Some("Multi-curseurs: aucune occurrence.".to_string());
+            return;
+        }
+        let (line, column) = self.content.cursor_position();
+        let primary = Position::new(line, column);
+        self.multi_cursors = self
+            .search_matches
+            .iter()
+            .map(|match_position| Position::new(match_position.line, match_position.column))
+            .filter(|position| *position != primary)
+            .collect();
+        self.status_message = Some(format!(
+            "Multi-curseurs: {} position(s).",
+            self.multi_cursors.len()
+        ));
+    }
+
+    fn apply_multi_cursor_edit(&mut self, edit: &EditorEdit) {
+        let (line, column) = self.content.cursor_position();
+        let mut cursor_positions = Vec::with_capacity(self.multi_cursors.len() + 1);
+        cursor_positions.push(Position::new(line, column));
+        cursor_positions.extend(self.multi_cursors.iter().copied());
+
+        let mut seen_indices = HashSet::new();
+        let mut cursor_slots = Vec::new();
+        for (id, position) in cursor_positions.iter().copied().enumerate() {
+            let index = self.buffer.index_from_position(position);
+            if seen_indices.insert(index) {
+                cursor_slots.push(CursorSlot {
+                    id,
+                    position,
+                    index,
+                });
+            }
+        }
+
+        cursor_slots.sort_by_key(|slot| slot.index);
+        let text = self.buffer.text();
+
+        let mut operations = Vec::new();
+        for slot in &cursor_slots {
+            if let Some(operation) = EditOperation::from_edit(slot, edit, &text) {
+                operations.push(operation);
+            }
+        }
+
+        operations
+            .sort_by(|left, right| left.start.cmp(&right.start).then(left.end.cmp(&right.end)));
+
+        let mut filtered = Vec::new();
+        let mut last_end = 0;
+        for operation in operations {
+            if operation.start < last_end {
+                continue;
+            }
+            last_end = operation.end;
+            filtered.push(operation);
+        }
+
+        let new_text = apply_operations(&text, &filtered);
+        self.buffer.replace(&new_text);
+        self.content = EditorContent::with_text(&self.buffer.text());
+
+        let new_indices = compute_new_indices(&cursor_slots, &filtered);
+        let mut new_positions = Vec::new();
+        for (index, position) in cursor_positions.iter().enumerate() {
+            let new_index = new_indices
+                .get(&index)
+                .copied()
+                .unwrap_or_else(|| self.buffer.index_from_position(*position));
+            new_positions.push(self.buffer.position_from_index(new_index));
+        }
+
+        if let Some(primary) = new_positions.first() {
+            self.move_cursor_to(primary.line, primary.column);
+        }
+        self.multi_cursors = new_positions.into_iter().skip(1).collect();
+        self.status_message = Some(format!(
+            "Multi-curseurs: édition sur {} curseur(s).",
+            self.multi_cursors.len() + 1
+        ));
+    }
+
+    fn refresh_diagnostics(&mut self) {
+        self.diagnostics = analyze_diagnostics(&self.buffer);
+    }
+
+    fn refresh_completions(&mut self) {
+        let (line, column) = self.content.cursor_position();
+        let line_text = self.buffer.line(line).unwrap_or("");
+        let column = column.min(line_text.len());
+        let prefix = extract_prefix(line_text, column);
+        self.completion_prefix = prefix.clone();
+        self.completion_items = build_completion_items(&prefix);
+        if self.completion_items.is_empty() {
+            self.status_message = Some("Complétions: aucune suggestion.".to_string());
+        } else {
+            self.status_message = Some(format!(
+                "Complétions: {} suggestion(s).",
+                self.completion_items.len()
+            ));
+        }
+    }
+
+    fn apply_completion(&mut self, index: usize) {
+        let Some(item) = self.completion_items.get(index) else {
+            return;
+        };
+
+        let remainder = item
+            .label
+            .strip_prefix(&self.completion_prefix)
+            .unwrap_or(&item.label);
+        if remainder.is_empty() {
+            return;
+        }
+
+        let insert = EditorEdit::Paste(std::sync::Arc::new(remainder.to_string()));
+        if self.multi_cursors.is_empty() {
+            self.content.perform(EditorAction::Edit(insert.clone()));
+            self.buffer.replace(&self.content.text());
+        } else {
+            self.apply_multi_cursor_edit(&insert);
+        }
+        self.refresh_search_matches(true);
+        self.refresh_diagnostics();
+        self.completion_panel_open = false;
+        self.completion_items.clear();
     }
 }
 
@@ -1385,4 +1796,241 @@ struct SearchResultLine {
     column: usize,
     length: usize,
     preview: String,
+}
+
+#[derive(Debug, Clone)]
+struct CursorSlot {
+    id: usize,
+    position: Position,
+    index: usize,
+}
+
+#[derive(Debug, Clone)]
+struct EditOperation {
+    id: usize,
+    start: usize,
+    end: usize,
+    insert: String,
+    base: usize,
+}
+
+impl EditOperation {
+    fn from_edit(slot: &CursorSlot, edit: &EditorEdit, text: &str) -> Option<Self> {
+        match edit {
+            EditorEdit::Insert(ch) => {
+                let insert = ch.to_string();
+                Some(Self {
+                    id: slot.id,
+                    start: slot.index,
+                    end: slot.index,
+                    base: slot.index + insert.len(),
+                    insert,
+                })
+            }
+            EditorEdit::Paste(contents) => {
+                let insert = contents.as_str().to_string();
+                Some(Self {
+                    id: slot.id,
+                    start: slot.index,
+                    end: slot.index,
+                    base: slot.index + insert.len(),
+                    insert,
+                })
+            }
+            EditorEdit::Enter => Some(Self {
+                id: slot.id,
+                start: slot.index,
+                end: slot.index,
+                base: slot.index + 1,
+                insert: "\n".to_string(),
+            }),
+            EditorEdit::Backspace => {
+                let start = prev_char_boundary(text, slot.index)?;
+                Some(Self {
+                    id: slot.id,
+                    start,
+                    end: slot.index,
+                    base: start,
+                    insert: String::new(),
+                })
+            }
+            EditorEdit::Delete => {
+                let end = next_char_boundary(text, slot.index)?;
+                Some(Self {
+                    id: slot.id,
+                    start: slot.index,
+                    end,
+                    base: slot.index,
+                    insert: String::new(),
+                })
+            }
+        }
+    }
+
+    fn delta(&self) -> isize {
+        self.insert.len() as isize - (self.end - self.start) as isize
+    }
+}
+
+fn apply_operations(text: &str, operations: &[EditOperation]) -> String {
+    let mut output = String::with_capacity(text.len().saturating_add(operations.len() * 2));
+    let mut cursor = 0;
+    for operation in operations {
+        if operation.start > text.len() || operation.end > text.len() || operation.start < cursor {
+            continue;
+        }
+        output.push_str(&text[cursor..operation.start]);
+        output.push_str(&operation.insert);
+        cursor = operation.end;
+    }
+    output.push_str(&text[cursor..]);
+    output
+}
+
+fn compute_new_indices(
+    cursor_slots: &[CursorSlot],
+    operations: &[EditOperation],
+) -> std::collections::HashMap<usize, usize> {
+    let mut new_indices = std::collections::HashMap::new();
+    for slot in cursor_slots {
+        let mut base = slot.index;
+        if let Some(operation) = operations.iter().find(|op| op.id == slot.id) {
+            base = operation.base;
+        }
+        let mut delta = 0isize;
+        for operation in operations {
+            if operation.start < slot.index {
+                delta += operation.delta();
+            }
+        }
+        let adjusted = (base as isize + delta).max(0) as usize;
+        new_indices.insert(slot.id, adjusted);
+    }
+    new_indices
+}
+
+fn prev_char_boundary(text: &str, index: usize) -> Option<usize> {
+    if index == 0 {
+        return None;
+    }
+    text[..index].char_indices().last().map(|(i, _)| i)
+}
+
+fn next_char_boundary(text: &str, index: usize) -> Option<usize> {
+    if index >= text.len() {
+        return None;
+    }
+    let next = text[index..]
+        .chars()
+        .next()
+        .map(|ch| index + ch.len_utf8())?;
+    Some(next.min(text.len()))
+}
+
+fn extract_prefix(line: &str, column: usize) -> String {
+    let mut start = column;
+    for (index, ch) in line.char_indices() {
+        if index >= column {
+            break;
+        }
+        if !is_word_char(ch) {
+            start = index + ch.len_utf8();
+        }
+    }
+    line[start..column].to_string()
+}
+
+fn is_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+fn build_completion_items(prefix: &str) -> Vec<CompletionItem> {
+    if prefix.is_empty() {
+        return Vec::new();
+    }
+    let keywords = [
+        "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn",
+        "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
+        "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe",
+        "use", "where", "while",
+    ];
+    let types = [
+        "bool", "char", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64",
+        "u128", "usize", "f32", "f64", "str", "String", "Option", "Result", "Vec",
+    ];
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+    for keyword in keywords.iter().chain(types.iter()) {
+        if keyword.starts_with(prefix) && seen.insert(*keyword) {
+            let detail = if types.contains(keyword) {
+                "Type"
+            } else {
+                "Keyword"
+            };
+            items.push(CompletionItem {
+                label: (*keyword).to_string(),
+                detail: detail.to_string(),
+            });
+        }
+    }
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items
+}
+
+fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    let mut stack: Vec<(char, Position)> = Vec::new();
+
+    for (line_index, line) in buffer.lines().enumerate() {
+        let mut quotes = 0usize;
+        for (column, ch) in line.char_indices() {
+            match ch {
+                '{' | '(' | '[' => stack.push((ch, Position::new(line_index, column))),
+                '}' | ')' | ']' => {
+                    if let Some((open, position)) = stack.pop() {
+                        if !matches!((open, ch), ('{', '}') | ('(', ')') | ('[', ']')) {
+                            diagnostics.push(Diagnostic {
+                                line: line_index,
+                                column,
+                                message: format!(
+                                    "Fermeture inattendue '{ch}' (ouverture '{open}' ligne {}).",
+                                    position.line + 1
+                                ),
+                                severity: DiagnosticSeverity::Error,
+                            });
+                        }
+                    } else {
+                        diagnostics.push(Diagnostic {
+                            line: line_index,
+                            column,
+                            message: format!("Fermeture inattendue '{ch}'."),
+                            severity: DiagnosticSeverity::Error,
+                        });
+                    }
+                }
+                '"' => quotes += 1,
+                _ => {}
+            }
+        }
+
+        if quotes % 2 == 1 {
+            diagnostics.push(Diagnostic {
+                line: line_index,
+                column: line.len().saturating_sub(1),
+                message: "Chaîne non terminée.".to_string(),
+                severity: DiagnosticSeverity::Warning,
+            });
+        }
+    }
+
+    for (open, position) in stack {
+        diagnostics.push(Diagnostic {
+            line: position.line,
+            column: position.column,
+            message: format!("Ouverture '{open}' sans fermeture."),
+            severity: DiagnosticSeverity::Warning,
+        });
+    }
+
+    diagnostics
 }
