@@ -1,7 +1,6 @@
 use iced::alignment::{Horizontal, Vertical};
 use iced::theme;
 use iced::widget::text_editor::{Action as EditorAction, Content as EditorContent};
-use iced::widget::button;
 use iced::widget::{Button, Container, Row, TextInput, column, container, row, text, text_editor};
 use iced::{
     Alignment, Application, Background, Color, Command, Element, Font, Length, Settings, Theme,
@@ -15,7 +14,6 @@ pub struct RoxanneApp {
     last_saved_text: String,
     search_query: String,
     status_message: Option<String>,
-    active_menu: Option<Menu>,
 }
 
 #[derive(Debug, Clone)]
@@ -25,33 +23,8 @@ pub enum Message {
     FilenameChanged(String),
     OpenPressed,
     SavePressed,
-    MenuSelected(Menu),
-    MenuAction(MenuAction),
     FileLoaded(Result<String, String>),
     FileSaved(Result<(), String>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Menu {
-    File,
-    Edit,
-    Selection,
-    View,
-    Goto,
-    Tools,
-    Help,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum MenuAction {
-    Open,
-    Save,
-    Find,
-    SelectAll,
-    ToggleStatusBar,
-    GoToLine,
-    ToolsSettings,
-    About,
 }
 
 impl RoxanneApp {
@@ -82,7 +55,6 @@ impl Application for RoxanneApp {
                 last_saved_text: initial_text.to_string(),
                 search_query: String::new(),
                 status_message: None,
-                active_menu: None,
             },
             Command::none(),
         )
@@ -107,56 +79,29 @@ impl Application for RoxanneApp {
                 Command::none()
             }
             Message::OpenPressed => {
-                self.open_file()
+                if self.filename.trim().is_empty() {
+                    self.status_message = Some("Nom de fichier manquant.".to_string());
+                    return Command::none();
+                }
+                let filename = self.filename.clone();
+                Command::perform(
+                    async move {
+                        std::fs::read_to_string(&filename).map_err(|err| err.to_string())
+                    },
+                    Message::FileLoaded,
+                )
             }
             Message::SavePressed => {
-                self.save_file()
-            }
-            Message::MenuSelected(menu) => {
-                if self.active_menu == Some(menu) {
-                    self.active_menu = None;
-                } else {
-                    self.active_menu = Some(menu);
+                if self.filename.trim().is_empty() {
+                    self.status_message = Some("Nom de fichier manquant.".to_string());
+                    return Command::none();
                 }
-                Command::none()
-            }
-            Message::MenuAction(action) => {
-                self.active_menu = None;
-                match action {
-                    MenuAction::Open => self.open_file(),
-                    MenuAction::Save => self.save_file(),
-                    MenuAction::Find => {
-                        self.status_message = Some(
-                            "Recherche: utilisez le champ de recherche dans la barre d'état."
-                                .to_string(),
-                        );
-                        Command::none()
-                    }
-                    MenuAction::SelectAll => {
-                        self.status_message =
-                            Some("Sélection: Ctrl+A ou Cmd+A pour tout sélectionner.".to_string());
-                        Command::none()
-                    }
-                    MenuAction::ToggleStatusBar => {
-                        self.status_message = Some("Affichage: options avancées à venir.".to_string());
-                        Command::none()
-                    }
-                    MenuAction::GoToLine => {
-                        self.status_message =
-                            Some("Aller à: fonctionnalité à venir (ligne).".to_string());
-                        Command::none()
-                    }
-                    MenuAction::ToolsSettings => {
-                        self.status_message =
-                            Some("Outils: paramètres disponibles prochainement.".to_string());
-                        Command::none()
-                    }
-                    MenuAction::About => {
-                        self.status_message =
-                            Some("Roxanne MVP: éditeur inspiré de Sublime Text.".to_string());
-                        Command::none()
-                    }
-                }
+                let filename = self.filename.clone();
+                let text = self.content.text().to_string();
+                Command::perform(
+                    async move { std::fs::write(&filename, text).map_err(|err| err.to_string()) },
+                    Message::FileSaved,
+                )
             }
             Message::FileLoaded(result) => {
                 match result {
@@ -206,122 +151,38 @@ impl Application for RoxanneApp {
 }
 
 impl RoxanneApp {
-    fn open_file(&mut self) -> Command<Message> {
-        if self.filename.trim().is_empty() {
-            self.status_message = Some("Nom de fichier manquant.".to_string());
-            return Command::none();
-        }
-        let filename = self.filename.clone();
-        Command::perform(
-            async move { std::fs::read_to_string(&filename).map_err(|err| err.to_string()) },
-            Message::FileLoaded,
-        )
-    }
-
-    fn save_file(&mut self) -> Command<Message> {
-        if self.filename.trim().is_empty() {
-            self.status_message = Some("Nom de fichier manquant.".to_string());
-            return Command::none();
-        }
-        let filename = self.filename.clone();
-        let text = self.content.text().to_string();
-        Command::perform(
-            async move { std::fs::write(&filename, text).map_err(|err| err.to_string()) },
-            Message::FileSaved,
-        )
-    }
-
     fn menu_bar(&self) -> Element<Message> {
-        let menu_items = row![
-            self.menu_button("File", Menu::File),
-            self.menu_button("Edit", Menu::Edit),
-            self.menu_button("Selection", Menu::Selection),
-            self.menu_button("View", Menu::View),
-            self.menu_button("Goto", Menu::Goto),
-            self.menu_button("Tools", Menu::Tools),
-            self.menu_button("Help", Menu::Help),
+        let items = ["File", "Edit", "Selection", "View", "Goto", "Tools", "Help"]
+            .iter()
+            .map(|label| {
+                text(*label)
+                    .size(14)
+                    .style(Color::from_rgb8(220, 220, 220))
+                    .font(Font::MONOSPACE)
+                    .into()
+            })
+            .collect::<Vec<_>>();
+
+        let file_controls = row![
+            Button::new(text("Open").size(13).font(Font::MONOSPACE))
+                .padding([2, 8])
+                .on_press(Message::OpenPressed),
+            Button::new(text("Save").size(13).font(Font::MONOSPACE))
+                .padding([2, 8])
+                .on_press(Message::SavePressed)
         ]
-        .spacing(16)
+        .spacing(8)
         .align_items(Alignment::Center);
 
-        let top_row = Container::new(menu_items)
-            .width(Length::Fill)
+        let row = row![Row::with_children(items).spacing(24), file_controls]
+            .spacing(24)
             .padding([6, 16])
-            .style(theme::Container::Custom(Box::new(MenuBarStyle)));
+            .align_items(Alignment::Center);
 
-        let mut column = column![top_row];
-        if let Some(submenu) = self.submenu() {
-            column = column.push(submenu);
-        }
-
-        Container::new(column)
+        Container::new(row)
             .width(Length::Fill)
+            .style(theme::Container::Custom(Box::new(MenuBarStyle)))
             .into()
-    }
-
-    fn menu_button(&self, label: &str, menu: Menu) -> Element<Message> {
-        let is_active = self.active_menu == Some(menu);
-        Button::new(
-            text(label)
-                .size(14)
-                .style(Color::from_rgb8(220, 220, 220))
-                .font(Font::MONOSPACE),
-        )
-        .padding([2, 6])
-        .style(theme::Button::Custom(Box::new(MenuButtonStyle { active: is_active })))
-        .on_press(Message::MenuSelected(menu))
-        .into()
-    }
-
-    fn submenu(&self) -> Option<Element<Message>> {
-        let (label, actions) = match self.active_menu? {
-            Menu::File => (
-                "File",
-                vec![
-                    ("Open", MenuAction::Open),
-                    ("Save", MenuAction::Save),
-                ],
-            ),
-            Menu::Edit => ("Edit", vec![("Find", MenuAction::Find)]),
-            Menu::Selection => ("Selection", vec![("Select All", MenuAction::SelectAll)]),
-            Menu::View => (
-                "View",
-                vec![("Status Bar", MenuAction::ToggleStatusBar)],
-            ),
-            Menu::Goto => ("Goto", vec![("Go to Line", MenuAction::GoToLine)]),
-            Menu::Tools => ("Tools", vec![("Settings", MenuAction::ToolsSettings)]),
-            Menu::Help => ("Help", vec![("About", MenuAction::About)]),
-        };
-
-        let row = row![
-            text(label)
-                .size(12)
-                .font(Font::MONOSPACE)
-                .style(Color::from_rgb8(180, 180, 180)),
-            Row::with_children(
-                actions
-                    .into_iter()
-                    .map(|(name, action)| {
-                        Button::new(text(name).size(12).font(Font::MONOSPACE))
-                            .padding([2, 8])
-                            .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
-                            .on_press(Message::MenuAction(action))
-                            .into()
-                    })
-                    .collect::<Vec<Element<Message>>>(),
-            )
-            .spacing(8),
-        ]
-        .spacing(12)
-        .align_items(Alignment::Center)
-        .padding([4, 16]);
-
-        Some(
-            Container::new(row)
-                .width(Length::Fill)
-                .style(theme::Container::Custom(Box::new(SubmenuStyle)))
-                .into(),
-        )
     }
 
     fn tab_bar(&self) -> Element<Message> {
@@ -448,67 +309,6 @@ impl container::StyleSheet for MenuBarStyle {
             border: Default::default(),
             shadow: Default::default(),
         }
-    }
-}
-
-struct MenuButtonStyle {
-    active: bool,
-}
-
-impl button::StyleSheet for MenuButtonStyle {
-    type Style = Theme;
-
-    fn active(&self, _style: &Self::Style) -> button::Appearance {
-        button::Appearance {
-            background: self
-                .active
-                .then(|| Background::Color(Color::from_rgb8(65, 65, 70))),
-            text_color: Color::from_rgb8(220, 220, 220),
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-
-    fn hovered(&self, style: &Self::Style) -> button::Appearance {
-        let mut appearance = self.active(style);
-        appearance.background = Some(Background::Color(Color::from_rgb8(70, 70, 74)));
-        appearance
-    }
-}
-
-struct SubmenuStyle;
-
-impl container::StyleSheet for SubmenuStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(Color::from_rgb8(40, 40, 44))),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct SubmenuButtonStyle;
-
-impl button::StyleSheet for SubmenuButtonStyle {
-    type Style = Theme;
-
-    fn active(&self, _style: &Self::Style) -> button::Appearance {
-        button::Appearance {
-            background: Some(Background::Color(Color::from_rgb8(55, 55, 60))),
-            text_color: Color::from_rgb8(230, 230, 230),
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-
-    fn hovered(&self, style: &Self::Style) -> button::Appearance {
-        let mut appearance = self.active(style);
-        appearance.background = Some(Background::Color(Color::from_rgb8(65, 65, 70)));
-        appearance
     }
 }
 
