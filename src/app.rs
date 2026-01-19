@@ -40,12 +40,14 @@ pub enum Message {
     SearchChanged(String),
     SearchNext,
     SearchPrevious,
+    SearchResultSelected(usize),
     SearchToggleCaseSensitive,
     SearchToggleRegex,
     SearchScopeSelected(SearchScope),
     SearchPanelToggled,
     SearchInFiles,
     SearchResultsLoaded(Result<Vec<SearchResult>, String>),
+    SearchResultOpened(Result<(String, SearchResult), String>),
     SearchResultsCleared,
     FilenameChanged(String),
     OpenPressed,
@@ -185,6 +187,7 @@ impl Application for RoxanneApp {
             }
             Message::SearchNext => self.find_next_match(true),
             Message::SearchPrevious => self.find_next_match(false),
+            Message::SearchResultSelected(index) => self.open_search_result(index),
             Message::SearchToggleCaseSensitive => {
                 self.search_case_sensitive = !self.search_case_sensitive;
                 if self.search_scope == SearchScope::CurrentFile {
@@ -218,6 +221,28 @@ impl Application for RoxanneApp {
                         self.status_message = Some(format!(
                             "Recherche fichiers: {} résultat(s).",
                             self.search_results.len()
+                        ));
+                    }
+                    Err(message) => {
+                        self.status_message = Some(format!("Recherche fichiers: {message}"));
+                    }
+                }
+                Command::none()
+            }
+            Message::SearchResultOpened(result) => {
+                match result {
+                    Ok((text, nav)) => {
+                        self.filename = nav.path.clone();
+                        self.content = EditorContent::with_text(&text);
+                        self.buffer.replace(&text);
+                        self.last_saved_text = text;
+                        self.refresh_search_matches(false);
+                        self.jump_to_position(nav.line, nav.column);
+                        self.status_message = Some(format!(
+                            "Recherche: ouvert {} (ligne {}, colonne {}).",
+                            nav.path,
+                            nav.line + 1,
+                            nav.column + 1
                         ));
                     }
                     Err(message) => {
@@ -632,7 +657,8 @@ impl RoxanneApp {
             let entries = self
                 .search_results
                 .iter()
-                .map(|result| {
+                .enumerate()
+                .map(|(index, result)| {
                     let title = text(format!(
                         "{}:{}:{}",
                         result.path,
@@ -648,10 +674,14 @@ impl RoxanneApp {
                         .font(Font::MONOSPACE)
                         .style(Color::from_rgb8(160, 160, 160));
 
-                    Container::new(column![title, preview].spacing(2))
-                        .padding([4, 12])
-                        .style(theme::Container::Custom(Box::new(SearchResultStyle)))
-                        .into()
+                    Button::new(
+                        Container::new(column![title, preview].spacing(2))
+                            .padding([4, 12])
+                            .style(theme::Container::Custom(Box::new(SearchResultStyle))),
+                    )
+                    .style(theme::Button::Custom(Box::new(SearchResultButtonStyle)))
+                    .on_press(Message::SearchResultSelected(index))
+                    .into()
                 })
                 .collect::<Vec<Element<Message>>>();
 
@@ -886,7 +916,7 @@ impl RoxanneApp {
         if let Some(match_position) = self.search_matches.get(index) {
             let line = match_position.line;
             let column = match_position.column;
-            self.move_cursor_to(line, column);
+            self.jump_to_position(line, column);
             self.status_message = Some(format!(
                 "Recherche: {}/{} (ligne {}, colonne {}).",
                 index + 1,
@@ -895,6 +925,34 @@ impl RoxanneApp {
                 column + 1
             ));
         }
+    }
+
+    fn open_search_result(&mut self, index: usize) -> Command<Message> {
+        let Some(result) = self.search_results.get(index).cloned() else {
+            return Command::none();
+        };
+
+        let path = result.path.clone();
+        Command::perform(
+            async move {
+                std::fs::read_to_string(&path)
+                    .map(|text| (text, result))
+                    .map_err(|err| err.to_string())
+            },
+            Message::SearchResultOpened,
+        )
+    }
+
+    fn jump_to_position(&mut self, line: usize, column: usize) {
+        let max_line = self.buffer.line_count().saturating_sub(1);
+        let clamped_line = line.min(max_line);
+        let clamped_column = self
+            .buffer
+            .line(clamped_line)
+            .map(|line| line.len())
+            .unwrap_or(0)
+            .min(column);
+        self.move_cursor_to(clamped_line, clamped_column);
     }
 
     fn move_cursor_to(&mut self, line: usize, column: usize) {
@@ -1119,6 +1177,28 @@ impl container::StyleSheet for SearchResultStyle {
             border: Default::default(),
             shadow: Default::default(),
         }
+    }
+}
+
+struct SearchResultButtonStyle;
+
+impl button::StyleSheet for SearchResultButtonStyle {
+    type Style = Theme;
+
+    fn active(&self, _style: &Self::Style) -> button::Appearance {
+        button::Appearance {
+            background: None,
+            text_color: Color::WHITE,
+            border: Default::default(),
+            shadow_offset: Default::default(),
+            shadow: Default::default(),
+        }
+    }
+
+    fn hovered(&self, style: &Self::Style) -> button::Appearance {
+        let mut appearance = self.active(style);
+        appearance.background = Some(Background::Color(Color::from_rgb8(60, 60, 66)));
+        appearance
     }
 }
 
