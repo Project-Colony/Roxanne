@@ -1,13 +1,19 @@
+use crate::editor::highlight::MatchPosition;
+use crate::editor::{TextBuffer, highlight};
 use iced::alignment::{Horizontal, Vertical};
 use iced::theme;
-use iced::widget::text_editor::{Action as EditorAction, Content as EditorContent, Motion};
 use iced::widget::button;
-use iced::widget::{Button, Container, Row, TextInput, column, container, row, text, text_editor};
+use iced::widget::text_editor::{Action as EditorAction, Content as EditorContent, Motion};
+use iced::widget::{
+    Button, Container, Row, Scrollable, TextInput, column, container, row, text, text_editor,
+};
 use iced::{
     Alignment, Application, Background, Color, Command, Element, Font, Length, Settings,
     Subscription, Theme, event, executor, keyboard,
 };
-use crate::editor::TextBuffer;
+use regex::{Regex, RegexBuilder};
+use std::path::{Path, PathBuf};
+use walkdir::{DirEntry, WalkDir};
 
 #[derive(Debug)]
 pub struct RoxanneApp {
@@ -16,8 +22,14 @@ pub struct RoxanneApp {
     buffer: TextBuffer,
     last_saved_text: String,
     search_query: String,
-    search_matches: Vec<(usize, usize)>,
+    search_matches: Vec<MatchPosition>,
     current_match_index: Option<usize>,
+    search_case_sensitive: bool,
+    search_regex: bool,
+    search_panel_open: bool,
+    search_scope: SearchScope,
+    search_results: Vec<SearchResult>,
+    highlight_settings: highlight::Settings,
     status_message: Option<String>,
     active_menu: Option<Menu>,
 }
@@ -28,6 +40,13 @@ pub enum Message {
     SearchChanged(String),
     SearchNext,
     SearchPrevious,
+    SearchToggleCaseSensitive,
+    SearchToggleRegex,
+    SearchScopeSelected(SearchScope),
+    SearchPanelToggled,
+    SearchInFiles,
+    SearchResultsLoaded(Result<Vec<SearchResult>, String>),
+    SearchResultsCleared,
     FilenameChanged(String),
     OpenPressed,
     SavePressed,
@@ -38,7 +57,7 @@ pub enum Message {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Menu {
+pub enum Menu {
     File,
     Edit,
     Selection,
@@ -49,17 +68,56 @@ enum Menu {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum MenuAction {
+pub enum MenuAction {
     Open,
     Save,
     Find,
     FindNext,
     FindPrevious,
+    FindInFiles,
     SelectAll,
     ToggleStatusBar,
+    ToggleSearchPanel,
     GoToLine,
     ToolsSettings,
     About,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchScope {
+    CurrentFile,
+    Workspace,
+}
+
+impl SearchScope {
+    fn label(self) -> &'static str {
+        match self {
+            SearchScope::CurrentFile => "Fichier",
+            SearchScope::Workspace => "Workspace",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    path: String,
+    line: usize,
+    column: usize,
+    preview: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SearchOptions {
+    regex: bool,
+    case_sensitive: bool,
+}
+
+enum SearchMatcher {
+    Plain {
+        needle: String,
+        case_sensitive: bool,
+    },
+    Regex(Regex),
 }
 
 impl RoxanneApp {
@@ -93,6 +151,12 @@ impl Application for RoxanneApp {
                 search_query: String::new(),
                 search_matches: Vec::new(),
                 current_match_index: None,
+                search_case_sensitive: false,
+                search_regex: false,
+                search_panel_open: false,
+                search_scope: SearchScope::CurrentFile,
+                search_results: Vec::new(),
+                highlight_settings: highlight::Settings::default(),
                 status_message: None,
                 active_menu: None,
             },
@@ -114,25 +178,65 @@ impl Application for RoxanneApp {
             }
             Message::SearchChanged(value) => {
                 self.search_query = value;
-                self.refresh_search_matches(false);
+                if self.search_scope == SearchScope::CurrentFile {
+                    self.refresh_search_matches(false);
+                }
                 Command::none()
             }
-            Message::SearchNext => {
-                self.find_next_match(true)
+            Message::SearchNext => self.find_next_match(true),
+            Message::SearchPrevious => self.find_next_match(false),
+            Message::SearchToggleCaseSensitive => {
+                self.search_case_sensitive = !self.search_case_sensitive;
+                if self.search_scope == SearchScope::CurrentFile {
+                    self.refresh_search_matches(false);
+                }
+                Command::none()
             }
-            Message::SearchPrevious => {
-                self.find_next_match(false)
+            Message::SearchToggleRegex => {
+                self.search_regex = !self.search_regex;
+                if self.search_scope == SearchScope::CurrentFile {
+                    self.refresh_search_matches(false);
+                }
+                Command::none()
+            }
+            Message::SearchScopeSelected(scope) => {
+                self.search_scope = scope;
+                if self.search_scope == SearchScope::CurrentFile {
+                    self.refresh_search_matches(false);
+                }
+                Command::none()
+            }
+            Message::SearchPanelToggled => {
+                self.search_panel_open = !self.search_panel_open;
+                Command::none()
+            }
+            Message::SearchInFiles => self.search_in_files(),
+            Message::SearchResultsLoaded(result) => {
+                match result {
+                    Ok(results) => {
+                        self.search_results = results;
+                        self.status_message = Some(format!(
+                            "Recherche fichiers: {} résultat(s).",
+                            self.search_results.len()
+                        ));
+                    }
+                    Err(message) => {
+                        self.status_message = Some(format!("Recherche fichiers: {message}"));
+                    }
+                }
+                Command::none()
+            }
+            Message::SearchResultsCleared => {
+                self.search_results.clear();
+                self.status_message = Some("Recherche fichiers: résultats effacés.".to_string());
+                Command::none()
             }
             Message::FilenameChanged(value) => {
                 self.filename = value;
                 Command::none()
             }
-            Message::OpenPressed => {
-                self.open_file()
-            }
-            Message::SavePressed => {
-                self.save_file()
-            }
+            Message::OpenPressed => self.open_file(),
+            Message::SavePressed => self.save_file(),
             Message::MenuSelected(menu) => {
                 if self.active_menu == Some(menu) {
                     self.active_menu = None;
@@ -155,13 +259,23 @@ impl Application for RoxanneApp {
                     }
                     MenuAction::FindNext => self.find_next_match(true),
                     MenuAction::FindPrevious => self.find_next_match(false),
+                    MenuAction::FindInFiles => {
+                        self.search_panel_open = true;
+                        self.search_scope = SearchScope::Workspace;
+                        self.search_in_files()
+                    }
                     MenuAction::SelectAll => {
                         self.status_message =
                             Some("Sélection: Ctrl+A ou Cmd+A pour tout sélectionner.".to_string());
                         Command::none()
                     }
                     MenuAction::ToggleStatusBar => {
-                        self.status_message = Some("Affichage: options avancées à venir.".to_string());
+                        self.status_message =
+                            Some("Affichage: options avancées à venir.".to_string());
+                        Command::none()
+                    }
+                    MenuAction::ToggleSearchPanel => {
+                        self.search_panel_open = !self.search_panel_open;
                         Command::none()
                     }
                     MenuAction::GoToLine => {
@@ -214,10 +328,17 @@ impl Application for RoxanneApp {
     fn view(&self) -> Element<Message> {
         let menu_bar = self.menu_bar();
         let tab_bar = self.tab_bar();
+        let search_panel = self.search_panel();
         let editor = self.editor_area();
         let status_bar = self.status_bar();
 
-        let content = column![menu_bar, tab_bar, editor, status_bar]
+        let mut content = column![menu_bar, tab_bar];
+        if let Some(panel) = search_panel {
+            content = content.push(panel);
+        }
+        let content = content
+            .push(editor)
+            .push(status_bar)
             .spacing(0)
             .width(Length::Fill)
             .height(Length::Fill);
@@ -242,7 +363,9 @@ impl Application for RoxanneApp {
                         match key {
                             keyboard::Key::Character("s") => Some(Message::SavePressed),
                             keyboard::Key::Character("o") => Some(Message::OpenPressed),
-                            keyboard::Key::Character("f") => Some(Message::MenuAction(MenuAction::Find)),
+                            keyboard::Key::Character("f") => {
+                                Some(Message::MenuAction(MenuAction::Find))
+                            }
                             _ => None,
                         }
                     } else {
@@ -314,9 +437,7 @@ impl RoxanneApp {
             column = column.push(submenu);
         }
 
-        Container::new(column)
-            .width(Length::Fill)
-            .into()
+        Container::new(column).width(Length::Fill).into()
     }
 
     fn menu_button(&self, label: &str, menu: Menu) -> Element<Message> {
@@ -328,7 +449,9 @@ impl RoxanneApp {
                 .font(Font::MONOSPACE),
         )
         .padding([2, 6])
-        .style(theme::Button::Custom(Box::new(MenuButtonStyle { active: is_active })))
+        .style(theme::Button::Custom(Box::new(MenuButtonStyle {
+            active: is_active,
+        })))
         .on_press(Message::MenuSelected(menu))
         .into()
     }
@@ -337,10 +460,7 @@ impl RoxanneApp {
         let (label, actions) = match self.active_menu? {
             Menu::File => (
                 "File",
-                vec![
-                    ("Open", MenuAction::Open),
-                    ("Save", MenuAction::Save),
-                ],
+                vec![("Open", MenuAction::Open), ("Save", MenuAction::Save)],
             ),
             Menu::Edit => (
                 "Edit",
@@ -348,12 +468,16 @@ impl RoxanneApp {
                     ("Find", MenuAction::Find),
                     ("Find Next", MenuAction::FindNext),
                     ("Find Previous", MenuAction::FindPrevious),
+                    ("Find in Files", MenuAction::FindInFiles),
                 ],
             ),
             Menu::Selection => ("Selection", vec![("Select All", MenuAction::SelectAll)]),
             Menu::View => (
                 "View",
-                vec![("Status Bar", MenuAction::ToggleStatusBar)],
+                vec![
+                    ("Status Bar", MenuAction::ToggleStatusBar),
+                    ("Search Panel", MenuAction::ToggleSearchPanel),
+                ],
             ),
             Menu::Goto => ("Goto", vec![("Go to Line", MenuAction::GoToLine)]),
             Menu::Tools => ("Tools", vec![("Settings", MenuAction::ToolsSettings)]),
@@ -432,13 +556,120 @@ impl RoxanneApp {
         let editor = text_editor(&self.content)
             .on_action(Message::Edit)
             .font(Font::MONOSPACE)
-            .padding([12, 16]);
+            .padding([12, 16])
+            .highlight::<highlight::RoxanneHighlighter>(
+                self.highlight_settings.clone(),
+                highlight::highlight_format,
+            );
 
         Container::new(editor)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(theme::Container::Custom(Box::new(EditorStyle)))
             .into()
+    }
+
+    fn search_panel(&self) -> Option<Element<Message>> {
+        if !self.search_panel_open {
+            return None;
+        }
+
+        let header = row![
+            text("Recherche avancée")
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(Color::from_rgb8(220, 220, 220)),
+            text(format!("{} résultat(s)", self.search_results.len()))
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(Color::from_rgb8(160, 160, 160)),
+        ]
+        .spacing(12)
+        .align_items(Alignment::Center);
+
+        let query_row = row![
+            TextInput::new("Recherche globale…", &self.search_query)
+                .on_input(Message::SearchChanged)
+                .padding([4, 8])
+                .size(12),
+            self.toggle_button(
+                "Aa",
+                self.search_case_sensitive,
+                Message::SearchToggleCaseSensitive
+            ),
+            self.toggle_button(".*", self.search_regex, Message::SearchToggleRegex),
+        ]
+        .spacing(8)
+        .align_items(Alignment::Center);
+
+        let scope_row = row![
+            self.search_scope_button(SearchScope::CurrentFile),
+            self.search_scope_button(SearchScope::Workspace),
+        ]
+        .spacing(8)
+        .align_items(Alignment::Center);
+
+        let action_row = row![
+            Button::new(text("Rechercher fichiers").size(12).font(Font::MONOSPACE))
+                .padding([4, 10])
+                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
+                .on_press(Message::SearchInFiles),
+            Button::new(text("Effacer résultats").size(12).font(Font::MONOSPACE))
+                .padding([4, 10])
+                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
+                .on_press(Message::SearchResultsCleared),
+        ]
+        .spacing(8)
+        .align_items(Alignment::Center);
+
+        let results: Element<Message> = if self.search_results.is_empty() {
+            text("Aucun résultat. Lancez une recherche pour le workspace.")
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(Color::from_rgb8(150, 150, 150)))
+                .into()
+        } else {
+            let entries = self
+                .search_results
+                .iter()
+                .map(|result| {
+                    let title = text(format!(
+                        "{}:{}:{}",
+                        result.path,
+                        result.line + 1,
+                        result.column + 1
+                    ))
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(Color::from_rgb8(200, 200, 200));
+
+                    let preview = text(result.preview.trim())
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .style(Color::from_rgb8(160, 160, 160));
+
+                    Container::new(column![title, preview].spacing(2))
+                        .padding([4, 12])
+                        .style(theme::Container::Custom(Box::new(SearchResultStyle)))
+                        .into()
+                })
+                .collect::<Vec<Element<Message>>>();
+
+            Scrollable::new(column(entries).spacing(4))
+                .height(Length::Fixed(180.0))
+                .into()
+        };
+
+        let panel = column![header, query_row, scope_row, action_row, results]
+            .spacing(10)
+            .padding([8, 16]);
+
+        Some(
+            Container::new(panel)
+                .width(Length::Fill)
+                .style(theme::Container::Custom(Box::new(SearchPanelStyle)))
+                .into(),
+        )
     }
 
     fn status_bar(&self) -> Element<Message> {
@@ -458,6 +689,12 @@ impl RoxanneApp {
                 .on_input(Message::SearchChanged)
                 .padding([2, 8])
                 .size(12),
+            self.toggle_button(
+                "Aa",
+                self.search_case_sensitive,
+                Message::SearchToggleCaseSensitive
+            ),
+            self.toggle_button(".*", self.search_regex, Message::SearchToggleRegex),
             Button::new(text("◀").size(12).font(Font::MONOSPACE))
                 .padding([2, 6])
                 .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
@@ -466,6 +703,10 @@ impl RoxanneApp {
                 .padding([2, 6])
                 .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
                 .on_press_maybe(has_matches.then_some(Message::SearchNext)),
+            Button::new(text("Recherche +").size(12).font(Font::MONOSPACE))
+                .padding([2, 8])
+                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
+                .on_press(Message::SearchPanelToggled),
             TextInput::new("fichier…", &self.filename)
                 .on_input(Message::FilenameChanged)
                 .padding([2, 8])
@@ -505,8 +746,85 @@ impl RoxanneApp {
             .into()
     }
 
+    fn toggle_button(&self, label: &str, active: bool, message: Message) -> Element<Message> {
+        Button::new(text(label).size(12).font(Font::MONOSPACE))
+            .padding([2, 6])
+            .style(theme::Button::Custom(Box::new(ToggleButtonStyle {
+                active,
+            })))
+            .on_press(message)
+            .into()
+    }
+
+    fn search_scope_button(&self, scope: SearchScope) -> Element<Message> {
+        let active = self.search_scope == scope;
+        Button::new(
+            text(scope.label())
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(Color::from_rgb8(220, 220, 220)),
+        )
+        .padding([2, 8])
+        .style(theme::Button::Custom(Box::new(ToggleButtonStyle {
+            active,
+        })))
+        .on_press(Message::SearchScopeSelected(scope))
+        .into()
+    }
+
+    fn search_options(&self) -> SearchOptions {
+        SearchOptions {
+            regex: self.search_regex,
+            case_sensitive: self.search_case_sensitive,
+        }
+    }
+
+    fn search_in_files(&mut self) -> Command<Message> {
+        if self.search_query.trim().is_empty() {
+            self.status_message = Some("Recherche fichiers: saisissez un terme.".to_string());
+            return Command::none();
+        }
+
+        if self.search_scope == SearchScope::CurrentFile {
+            self.refresh_search_matches(false);
+            self.status_message = Some(format!(
+                "Recherche fichier: {} occurrence(s).",
+                self.search_matches.len()
+            ));
+            return Command::none();
+        }
+
+        let query = self.search_query.clone();
+        let options = self.search_options();
+        let root = match std::env::current_dir() {
+            Ok(path) => path,
+            Err(err) => {
+                self.status_message = Some(format!("Recherche fichiers: {err}"));
+                return Command::none();
+            }
+        };
+
+        Command::perform(
+            search_in_workspace(root, query, options),
+            Message::SearchResultsLoaded,
+        )
+    }
+
     fn refresh_search_matches(&mut self, preserve_index: bool) {
-        self.search_matches = find_matches(&self.buffer, &self.search_query);
+        let options = self.search_options();
+        self.search_matches = match find_matches(&self.buffer, &self.search_query, options) {
+            Ok(matches) => matches,
+            Err(message) => {
+                self.current_match_index = None;
+                self.search_matches.clear();
+                self.highlight_settings.search_matches.clear();
+                if !self.search_query.is_empty() {
+                    self.status_message = Some(format!("Recherche: {message}"));
+                }
+                return;
+            }
+        };
+        self.highlight_settings.search_matches = self.search_matches.clone();
         if self.search_matches.is_empty() {
             self.current_match_index = None;
             if !self.search_query.is_empty() {
@@ -565,7 +883,9 @@ impl RoxanneApp {
     }
 
     fn jump_to_match(&mut self, index: usize) {
-        if let Some(&(line, column)) = self.search_matches.get(index) {
+        if let Some(match_position) = self.search_matches.get(index) {
+            let line = match_position.line;
+            let column = match_position.column;
             self.move_cursor_to(line, column);
             self.status_message = Some(format!(
                 "Recherche: {}/{} (ligne {}, colonne {}).",
@@ -682,6 +1002,36 @@ impl button::StyleSheet for SubmenuButtonStyle {
     }
 }
 
+struct ToggleButtonStyle {
+    active: bool,
+}
+
+impl button::StyleSheet for ToggleButtonStyle {
+    type Style = Theme;
+
+    fn active(&self, _style: &Self::Style) -> button::Appearance {
+        let background = if self.active {
+            Background::Color(Color::from_rgb8(90, 90, 96))
+        } else {
+            Background::Color(Color::from_rgb8(55, 55, 60))
+        };
+
+        button::Appearance {
+            background: Some(background),
+            text_color: Color::from_rgb8(230, 230, 230),
+            border: Default::default(),
+            shadow_offset: Default::default(),
+            shadow: Default::default(),
+        }
+    }
+
+    fn hovered(&self, style: &Self::Style) -> button::Appearance {
+        let mut appearance = self.active(style);
+        appearance.background = Some(Background::Color(Color::from_rgb8(100, 100, 106)));
+        appearance
+    }
+}
+
 struct TabBarStyle;
 
 impl container::StyleSheet for TabBarStyle {
@@ -742,20 +1092,217 @@ impl container::StyleSheet for StatusBarStyle {
     }
 }
 
-fn find_matches(buffer: &TextBuffer, needle: &str) -> Vec<(usize, usize)> {
-    if needle.is_empty() {
-        return Vec::new();
+struct SearchPanelStyle;
+
+impl container::StyleSheet for SearchPanelStyle {
+    type Style = Theme;
+
+    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
+        container::Appearance {
+            background: Some(Background::Color(Color::from_rgb8(36, 36, 40))),
+            text_color: None,
+            border: Default::default(),
+            shadow: Default::default(),
+        }
+    }
+}
+
+struct SearchResultStyle;
+
+impl container::StyleSheet for SearchResultStyle {
+    type Style = Theme;
+
+    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
+        container::Appearance {
+            background: Some(Background::Color(Color::from_rgb8(42, 42, 46))),
+            text_color: None,
+            border: Default::default(),
+            shadow: Default::default(),
+        }
+    }
+}
+
+fn find_matches(
+    buffer: &TextBuffer,
+    needle: &str,
+    options: SearchOptions,
+) -> Result<Vec<MatchPosition>, String> {
+    if needle.trim().is_empty() {
+        return Ok(Vec::new());
     }
 
+    let matcher = build_matcher(needle, options)?;
     let mut matches = Vec::new();
     for (line_index, line) in buffer.lines().enumerate() {
-        let mut search_start = 0;
-        while let Some(found) = line[search_start..].find(needle) {
-            let column = search_start + found;
-            matches.push((line_index, column));
-            search_start = column + needle.len();
+        for (column, length) in find_matches_in_line(line, &matcher) {
+            matches.push(MatchPosition {
+                line: line_index,
+                column,
+                length,
+            });
+        }
+    }
+
+    Ok(matches)
+}
+
+async fn search_in_workspace(
+    root: PathBuf,
+    query: String,
+    options: SearchOptions,
+) -> Result<Vec<SearchResult>, String> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let matcher = build_matcher(&query, options)?;
+    let mut results = Vec::new();
+    let mut collected = 0usize;
+    let max_results = 500usize;
+
+    for entry in WalkDir::new(&root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| !should_skip_entry(entry))
+    {
+        let entry = entry.map_err(|err| err.to_string())?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        if should_skip_file(entry.path()) {
+            continue;
+        }
+
+        let metadata = entry.metadata().map_err(|err| err.to_string())?;
+        if metadata.len() > 1_000_000 {
+            continue;
+        }
+
+        let contents = match std::fs::read_to_string(entry.path()) {
+            Ok(contents) => contents,
+            Err(_) => continue,
+        };
+
+        for line_match in find_matches_in_text(&contents, &matcher) {
+            results.push(SearchResult {
+                path: entry.path().display().to_string(),
+                line: line_match.line,
+                column: line_match.column,
+                preview: line_match.preview,
+            });
+            collected += 1;
+            if collected >= max_results {
+                return Ok(results);
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+fn build_matcher(needle: &str, options: SearchOptions) -> Result<SearchMatcher, String> {
+    if options.regex {
+        RegexBuilder::new(needle)
+            .case_insensitive(!options.case_sensitive)
+            .build()
+            .map(SearchMatcher::Regex)
+            .map_err(|err| format!("regex invalide ({err})"))
+    } else {
+        Ok(SearchMatcher::Plain {
+            needle: needle.to_string(),
+            case_sensitive: options.case_sensitive,
+        })
+    }
+}
+
+fn find_matches_in_line(line: &str, matcher: &SearchMatcher) -> Vec<(usize, usize)> {
+    match matcher {
+        SearchMatcher::Regex(regex) => regex
+            .find_iter(line)
+            .map(|found| (found.start(), found.end() - found.start()))
+            .collect(),
+        SearchMatcher::Plain {
+            needle,
+            case_sensitive,
+        } => {
+            let mut matches = Vec::new();
+            if needle.is_empty() {
+                return matches;
+            }
+
+            let search_line = if *case_sensitive {
+                line.to_string()
+            } else {
+                line.to_lowercase()
+            };
+            let search_needle = if *case_sensitive {
+                needle.clone()
+            } else {
+                needle.to_lowercase()
+            };
+
+            let mut search_start = 0;
+            while let Some(found) = search_line[search_start..].find(&search_needle) {
+                let column = search_start + found;
+                matches.push((column, needle.len()));
+                search_start = column + needle.len();
+            }
+
+            matches
+        }
+    }
+}
+
+fn find_matches_in_text(text: &str, matcher: &SearchMatcher) -> Vec<SearchResultLine> {
+    let mut matches = Vec::new();
+    for (line_index, line) in text.lines().enumerate() {
+        for (column, length) in find_matches_in_line(line, matcher) {
+            matches.push(SearchResultLine {
+                line: line_index,
+                column,
+                length,
+                preview: line.to_string(),
+            });
         }
     }
 
     matches
+}
+
+fn should_skip_entry(entry: &DirEntry) -> bool {
+    if entry.depth() == 0 {
+        return false;
+    }
+    let name = entry.file_name().to_string_lossy();
+    let skip_dirs = [".git", "target", "node_modules", "dist", "build", "out"];
+    if entry.file_type().is_dir() && skip_dirs.contains(&name.as_ref()) {
+        return true;
+    }
+    name.starts_with('.')
+}
+
+fn should_skip_file(path: &Path) -> bool {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if file_name.starts_with('.') {
+        return true;
+    }
+
+    let skip_extensions = [
+        "png", "jpg", "jpeg", "gif", "svg", "ico", "zip", "tar", "gz", "pdf", "mp4", "mp3",
+    ];
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| skip_extensions.contains(&ext))
+        .unwrap_or(false)
+}
+
+struct SearchResultLine {
+    line: usize,
+    column: usize,
+    length: usize,
+    preview: String,
 }

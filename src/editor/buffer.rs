@@ -111,10 +111,7 @@ impl TextBuffer {
         let last_line = self.lines.len().saturating_sub(1);
         Position {
             line: last_line,
-            column: self
-                .lines
-                .last()
-                .map_or(0, |line| line.len().min(index)),
+            column: self.lines.last().map_or(0, |line| line.len().min(index)),
         }
     }
 }
