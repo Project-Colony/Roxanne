@@ -1,5 +1,3 @@
-mod app;
-
-fn main() -> iced::Result {
-    app::RoxanneApp::run()
+fn main() {
+    println!("Roxanne démarre.");
 }
