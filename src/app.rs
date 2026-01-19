@@ -221,7 +221,6 @@ impl RoxanneApp {
         let editor = text_editor(&self.content)
             .on_action(Message::Edit)
             .font(Font::MONOSPACE)
-            .font_size(14)
             .padding([12, 16]);
 
         Container::new(editor)
