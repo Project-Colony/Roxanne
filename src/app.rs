@@ -601,6 +601,8 @@ impl RoxanneApp {
                     ("Find Next", MenuAction::FindNext),
                     ("Find Previous", MenuAction::FindPrevious),
                     ("Find in Files", MenuAction::FindInFiles),
+                    ("Search Panel", MenuAction::ToggleSearchPanel),
+                    ("Diagnostics Panel", MenuAction::ToggleDiagnosticsPanel),
                 ],
             ),
             Menu::Selection => (
@@ -614,11 +616,7 @@ impl RoxanneApp {
             ),
             Menu::View => (
                 "View",
-                vec![
-                    ("Status Bar", MenuAction::ToggleStatusBar),
-                    ("Search Panel", MenuAction::ToggleSearchPanel),
-                    ("Diagnostics Panel", MenuAction::ToggleDiagnosticsPanel),
-                ],
+                vec![("Status Bar", MenuAction::ToggleStatusBar)],
             ),
             Menu::Goto => ("Goto", vec![("Go to Line", MenuAction::GoToLine)]),
             Menu::Tools => ("Tools", vec![("Settings", MenuAction::ToolsSettings)]),
@@ -981,14 +979,6 @@ impl RoxanneApp {
                 .padding([2, 6])
                 .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
                 .on_press_maybe(has_matches.then_some(Message::SearchNext)),
-            Button::new(text("Recherche +").size(12).font(Font::MONOSPACE))
-                .padding([2, 8])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
-                .on_press(Message::SearchPanelToggled),
-            Button::new(text("Diagnostics").size(12).font(Font::MONOSPACE))
-                .padding([2, 8])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
-                .on_press(Message::DiagnosticsToggled),
             TextInput::new("fichier…", &self.filename)
                 .on_input(Message::FilenameChanged)
                 .padding([2, 8])
