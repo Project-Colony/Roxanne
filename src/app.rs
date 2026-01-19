@@ -1,11 +1,11 @@
 use iced::alignment::{Horizontal, Vertical};
 use iced::theme;
-use iced::widget::text_editor::{Action as EditorAction, Content as EditorContent};
+use iced::widget::text_editor::{Action as EditorAction, Content as EditorContent, Motion};
 use iced::widget::button;
 use iced::widget::{Button, Container, Row, TextInput, column, container, row, text, text_editor};
 use iced::{
-    Alignment, Application, Background, Color, Command, Element, Font, Length, Settings, Theme,
-    executor,
+    Alignment, Application, Background, Color, Command, Element, Font, Length, Settings,
+    Subscription, Theme, event, executor, keyboard,
 };
 
 #[derive(Debug)]
@@ -14,6 +14,8 @@ pub struct RoxanneApp {
     content: EditorContent,
     last_saved_text: String,
     search_query: String,
+    search_matches: Vec<(usize, usize)>,
+    current_match_index: Option<usize>,
     status_message: Option<String>,
     active_menu: Option<Menu>,
 }
@@ -22,6 +24,8 @@ pub struct RoxanneApp {
 pub enum Message {
     Edit(EditorAction),
     SearchChanged(String),
+    SearchNext,
+    SearchPrevious,
     FilenameChanged(String),
     OpenPressed,
     SavePressed,
@@ -47,6 +51,8 @@ enum MenuAction {
     Open,
     Save,
     Find,
+    FindNext,
+    FindPrevious,
     SelectAll,
     ToggleStatusBar,
     GoToLine,
@@ -81,6 +87,8 @@ impl Application for RoxanneApp {
                 content: EditorContent::with_text(initial_text),
                 last_saved_text: initial_text.to_string(),
                 search_query: String::new(),
+                search_matches: Vec::new(),
+                current_match_index: None,
                 status_message: None,
                 active_menu: None,
             },
@@ -96,11 +104,19 @@ impl Application for RoxanneApp {
         match message {
             Message::Edit(action) => {
                 self.content.perform(action);
+                self.refresh_search_matches(true);
                 Command::none()
             }
             Message::SearchChanged(value) => {
                 self.search_query = value;
+                self.refresh_search_matches(false);
                 Command::none()
+            }
+            Message::SearchNext => {
+                self.find_next_match(true)
+            }
+            Message::SearchPrevious => {
+                self.find_next_match(false)
             }
             Message::FilenameChanged(value) => {
                 self.filename = value;
@@ -132,6 +148,8 @@ impl Application for RoxanneApp {
                         );
                         Command::none()
                     }
+                    MenuAction::FindNext => self.find_next_match(true),
+                    MenuAction::FindPrevious => self.find_next_match(false),
                     MenuAction::SelectAll => {
                         self.status_message =
                             Some("Sélection: Ctrl+A ou Cmd+A pour tout sélectionner.".to_string());
@@ -163,6 +181,7 @@ impl Application for RoxanneApp {
                     Ok(text) => {
                         self.content = EditorContent::with_text(&text);
                         self.last_saved_text = text;
+                        self.refresh_search_matches(false);
                         self.status_message = Some("Fichier chargé.".to_string());
                     }
                     Err(message) => {
@@ -202,6 +221,40 @@ impl Application for RoxanneApp {
             .height(Length::Fill)
             .style(theme::Container::Custom(Box::new(AppBackground)))
             .into()
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        event::listen_with(|event, status| {
+            if status == event::Status::Captured {
+                return None;
+            }
+
+            match event {
+                event::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+                    let key = key.as_ref();
+                    if modifiers.command() {
+                        match key {
+                            keyboard::Key::Character("s") => Some(Message::SavePressed),
+                            keyboard::Key::Character("o") => Some(Message::OpenPressed),
+                            keyboard::Key::Character("f") => Some(Message::MenuAction(MenuAction::Find)),
+                            _ => None,
+                        }
+                    } else {
+                        match key {
+                            keyboard::Key::Named(keyboard::key::Named::F3) => {
+                                if modifiers.shift() {
+                                    Some(Message::SearchPrevious)
+                                } else {
+                                    Some(Message::SearchNext)
+                                }
+                            }
+                            _ => None,
+                        }
+                    }
+                }
+                _ => None,
+            }
+        })
     }
 }
 
@@ -282,7 +335,14 @@ impl RoxanneApp {
                     ("Save", MenuAction::Save),
                 ],
             ),
-            Menu::Edit => ("Edit", vec![("Find", MenuAction::Find)]),
+            Menu::Edit => (
+                "Edit",
+                vec![
+                    ("Find", MenuAction::Find),
+                    ("Find Next", MenuAction::FindNext),
+                    ("Find Previous", MenuAction::FindPrevious),
+                ],
+            ),
             Menu::Selection => ("Selection", vec![("Select All", MenuAction::SelectAll)]),
             Menu::View => (
                 "View",
@@ -326,8 +386,13 @@ impl RoxanneApp {
 
     fn tab_bar(&self) -> Element<Message> {
         let is_modified = self.content.text() != self.last_saved_text;
+        let filename = if self.filename.trim().is_empty() {
+            "untitled.txt"
+        } else {
+            self.filename.as_str()
+        };
         let tab = row![
-            text("untitled.txt")
+            text(filename)
                 .size(13)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(230, 230, 230)),
@@ -371,6 +436,8 @@ impl RoxanneApp {
 
     fn status_bar(&self) -> Element<Message> {
         let is_modified = self.content.text() != self.last_saved_text;
+        let has_matches = !self.search_matches.is_empty();
+        let cursor_position = self.content.cursor_position();
         let left = row![
             text(format!(
                 "{}{}",
@@ -384,6 +451,14 @@ impl RoxanneApp {
                 .on_input(Message::SearchChanged)
                 .padding([2, 8])
                 .size(12),
+            Button::new(text("◀").size(12).font(Font::MONOSPACE))
+                .padding([2, 6])
+                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
+                .on_press_maybe(has_matches.then_some(Message::SearchPrevious)),
+            Button::new(text("▶").size(12).font(Font::MONOSPACE))
+                .padding([2, 6])
+                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle)))
+                .on_press_maybe(has_matches.then_some(Message::SearchNext)),
             TextInput::new("fichier…", &self.filename)
                 .on_input(Message::FilenameChanged)
                 .padding([2, 8])
@@ -392,15 +467,18 @@ impl RoxanneApp {
         .spacing(12)
         .align_items(Alignment::Center);
 
-        let matches = count_matches(&self.content.text(), &self.search_query);
+        let matches = self.search_matches.len();
         let status_text = self
             .status_message
             .clone()
             .unwrap_or_else(|| "Prêt.".to_string());
 
         let right = text(format!(
-            "Occurrences: {}   UTF-8   LF   {}",
-            matches, status_text
+            "Occurrences: {}   Ln {}, Col {}   UTF-8   LF   {}",
+            matches,
+            cursor_position.0 + 1,
+            cursor_position.1 + 1,
+            status_text
         ))
         .size(12)
         .font(Font::MONOSPACE)
@@ -418,6 +496,89 @@ impl RoxanneApp {
             .width(Length::Fill)
             .style(theme::Container::Custom(Box::new(StatusBarStyle)))
             .into()
+    }
+
+    fn refresh_search_matches(&mut self, preserve_index: bool) {
+        self.search_matches = find_matches(&self.content, &self.search_query);
+        if self.search_matches.is_empty() {
+            self.current_match_index = None;
+            if !self.search_query.is_empty() {
+                self.status_message = Some("Recherche: aucune occurrence.".to_string());
+            }
+            return;
+        }
+
+        self.current_match_index = if preserve_index {
+            self.current_match_index
+                .filter(|index| *index < self.search_matches.len())
+        } else {
+            None
+        };
+
+        if !self.search_query.is_empty() {
+            self.status_message = Some(format!(
+                "Recherche: {} occurrence(s).",
+                self.search_matches.len()
+            ));
+        }
+    }
+
+    fn find_next_match(&mut self, forward: bool) -> Command<Message> {
+        if self.search_query.trim().is_empty() {
+            self.status_message = Some("Recherche: saisissez un terme.".to_string());
+            return Command::none();
+        }
+
+        if self.search_matches.is_empty() {
+            self.status_message = Some("Recherche: aucune occurrence.".to_string());
+            return Command::none();
+        }
+
+        let total = self.search_matches.len();
+        let next_index = match self.current_match_index {
+            Some(index) => {
+                if forward {
+                    (index + 1) % total
+                } else {
+                    (index + total - 1) % total
+                }
+            }
+            None => {
+                if forward {
+                    0
+                } else {
+                    total - 1
+                }
+            }
+        };
+
+        self.current_match_index = Some(next_index);
+        self.jump_to_match(next_index);
+        Command::none()
+    }
+
+    fn jump_to_match(&mut self, index: usize) {
+        if let Some(&(line, column)) = self.search_matches.get(index) {
+            self.move_cursor_to(line, column);
+            self.status_message = Some(format!(
+                "Recherche: {}/{} (ligne {}, colonne {}).",
+                index + 1,
+                self.search_matches.len(),
+                line + 1,
+                column + 1
+            ));
+        }
+    }
+
+    fn move_cursor_to(&mut self, line: usize, column: usize) {
+        self.content
+            .perform(EditorAction::Move(Motion::DocumentStart));
+        for _ in 0..line {
+            self.content.perform(EditorAction::Move(Motion::Down));
+        }
+        for _ in 0..column {
+            self.content.perform(EditorAction::Move(Motion::Right));
+        }
     }
 }
 
@@ -574,9 +735,21 @@ impl container::StyleSheet for StatusBarStyle {
     }
 }
 
-fn count_matches(haystack: &str, needle: &str) -> usize {
+fn find_matches(content: &EditorContent, needle: &str) -> Vec<(usize, usize)> {
     if needle.is_empty() {
-        return 0;
+        return Vec::new();
     }
-    haystack.match_indices(needle).count()
+
+    let mut matches = Vec::new();
+    for (line_index, line) in content.lines().enumerate() {
+        let line_str: &str = &line;
+        let mut search_start = 0;
+        while let Some(found) = line_str[search_start..].find(needle) {
+            let column = search_start + found;
+            matches.push((line_index, column));
+            search_start = column + needle.len();
+        }
+    }
+
+    matches
 }
