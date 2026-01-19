@@ -10,40 +10,85 @@ pub enum KeyAction {
     FindPrevious,
     Completion,
     CompletionClose,
+    EnterInsertMode,
+    EnterNormalMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeymapMode {
+    Insert,
+    Normal,
+}
+
+impl KeymapMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            KeymapMode::Insert => "Insert",
+            KeymapMode::Normal => "Normal",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Keymap {
-    bindings: Vec<KeyBinding>,
+    insert: Vec<KeyBinding>,
+    normal: Vec<KeyBinding>,
 }
 
 impl Keymap {
     pub fn default() -> Self {
-        let mut bindings = Vec::new();
-        bindings.push(KeyBinding::new(KeyAction::Save, KeyCombo::parse("cmd+s").unwrap()));
-        bindings.push(KeyBinding::new(KeyAction::Open, KeyCombo::parse("cmd+o").unwrap()));
-        bindings.push(KeyBinding::new(KeyAction::Find, KeyCombo::parse("cmd+f").unwrap()));
-        bindings.push(KeyBinding::new(KeyAction::FindNext, KeyCombo::parse("f3").unwrap()));
-        bindings.push(KeyBinding::new(
-            KeyAction::FindPrevious,
-            KeyCombo::parse("shift+f3").unwrap(),
-        ));
-        bindings.push(KeyBinding::new(
+        let mut insert = Vec::new();
+        let mut normal = Vec::new();
+
+        let default_bindings = [
+            (KeyAction::Save, "cmd+s"),
+            (KeyAction::Open, "cmd+o"),
+            (KeyAction::Find, "cmd+f"),
+            (KeyAction::FindNext, "f3"),
+            (KeyAction::FindPrevious, "shift+f3"),
+        ];
+
+        for (action, combo) in default_bindings {
+            let binding = KeyBinding::new(action, KeyCombo::parse(combo).unwrap());
+            insert.push(binding);
+            normal.push(binding);
+        }
+
+        insert.push(KeyBinding::new(
             KeyAction::Completion,
             KeyCombo::parse("ctrl+space").unwrap(),
         ));
-        bindings.push(KeyBinding::new(
+        insert.push(KeyBinding::new(
             KeyAction::CompletionClose,
             KeyCombo::parse("escape").unwrap(),
         ));
-        Self { bindings }
+        insert.push(KeyBinding::new(
+            KeyAction::EnterNormalMode,
+            KeyCombo::parse("ctrl+[").unwrap(),
+        ));
+
+        normal.push(KeyBinding::new(
+            KeyAction::EnterInsertMode,
+            KeyCombo::parse("i").unwrap(),
+        ));
+
+        Self { insert, normal }
     }
 
     pub fn apply_config(&mut self, config: &KeymapConfig) -> Vec<String> {
         let mut warnings = Vec::new();
-        for entry in config.entries() {
+        for entry in config.entries_for_mode(KeymapMode::Insert) {
             match KeyCombo::parse(entry.shortcut) {
-                Ok(combo) => self.set_binding(entry.action, combo),
+                Ok(combo) => self.set_binding(KeymapMode::Insert, entry.action, combo),
+                Err(err) => warnings.push(format!(
+                    "Keymap: action {:?}: {err}",
+                    entry.action
+                )),
+            }
+        }
+        for entry in config.entries_for_mode(KeymapMode::Normal) {
+            match KeyCombo::parse(entry.shortcut) {
+                Ok(combo) => self.set_binding(KeymapMode::Normal, entry.action, combo),
                 Err(err) => warnings.push(format!(
                     "Keymap: action {:?}: {err}",
                     entry.action
@@ -53,15 +98,18 @@ impl Keymap {
         warnings
     }
 
-    fn set_binding(&mut self, action: KeyAction, combo: KeyCombo) {
-        if let Some(binding) = self
-            .bindings
+    fn set_binding(&mut self, mode: KeymapMode, action: KeyAction, combo: KeyCombo) {
+        let bindings = match mode {
+            KeymapMode::Insert => &mut self.insert,
+            KeymapMode::Normal => &mut self.normal,
+        };
+        if let Some(binding) = bindings
             .iter_mut()
             .find(|binding| binding.action == action)
         {
             binding.combo = combo;
         } else {
-            self.bindings.push(KeyBinding::new(action, combo));
+            bindings.push(KeyBinding::new(action, combo));
         }
     }
 
@@ -69,9 +117,14 @@ impl Keymap {
         &self,
         key: &keyboard::Key,
         modifiers: keyboard::Modifiers,
+        mode: KeymapMode,
     ) -> Option<KeyAction> {
         let combo = KeyCombo::from_event(key, modifiers)?;
-        self.bindings
+        let bindings = match mode {
+            KeymapMode::Insert => &self.insert,
+            KeymapMode::Normal => &self.normal,
+        };
+        bindings
             .iter()
             .find(|binding| binding.combo == combo)
             .map(|binding| binding.action)
@@ -87,54 +140,181 @@ pub struct KeymapConfig {
     pub find_previous: Option<String>,
     pub completion: Option<String>,
     pub completion_close: Option<String>,
+    pub enter_insert_mode: Option<String>,
+    pub enter_normal_mode: Option<String>,
+    #[serde(default)]
+    pub insert: Option<KeymapModeConfig>,
+    #[serde(default)]
+    pub normal: Option<KeymapModeConfig>,
 }
 
 impl KeymapConfig {
-    fn entries(&self) -> Vec<KeymapEntry<'_>> {
+    fn entries_for_mode(&self, mode: KeymapMode) -> Vec<KeymapEntry<'_>> {
         let mut entries = Vec::new();
-        if let Some(value) = self.save.as_deref() {
+        let mode_config = match mode {
+            KeymapMode::Insert => self.insert.as_ref(),
+            KeymapMode::Normal => self.normal.as_ref(),
+        };
+
+        entries.extend(self.entries_from_config(self, mode));
+        if let Some(mode_config) = mode_config {
+            entries.extend(self.entries_from_config(mode_config, mode));
+        }
+
+        entries
+    }
+
+    fn entries_from_config<'a>(
+        &self,
+        config: &'a impl KeymapEntries,
+        mode: KeymapMode,
+    ) -> Vec<KeymapEntry<'a>> {
+        let mut entries = Vec::new();
+        if let Some(value) = config.save() {
             entries.push(KeymapEntry {
                 action: KeyAction::Save,
                 shortcut: value,
             });
         }
-        if let Some(value) = self.open.as_deref() {
+        if let Some(value) = config.open() {
             entries.push(KeymapEntry {
                 action: KeyAction::Open,
                 shortcut: value,
             });
         }
-        if let Some(value) = self.find.as_deref() {
+        if let Some(value) = config.find() {
             entries.push(KeymapEntry {
                 action: KeyAction::Find,
                 shortcut: value,
             });
         }
-        if let Some(value) = self.find_next.as_deref() {
+        if let Some(value) = config.find_next() {
             entries.push(KeymapEntry {
                 action: KeyAction::FindNext,
                 shortcut: value,
             });
         }
-        if let Some(value) = self.find_previous.as_deref() {
+        if let Some(value) = config.find_previous() {
             entries.push(KeymapEntry {
                 action: KeyAction::FindPrevious,
                 shortcut: value,
             });
         }
-        if let Some(value) = self.completion.as_deref() {
+        if let Some(value) = config.completion() {
             entries.push(KeymapEntry {
                 action: KeyAction::Completion,
                 shortcut: value,
             });
         }
-        if let Some(value) = self.completion_close.as_deref() {
+        if let Some(value) = config.completion_close() {
             entries.push(KeymapEntry {
                 action: KeyAction::CompletionClose,
                 shortcut: value,
             });
         }
+        if let Some(value) = config.enter_insert_mode() {
+            entries.push(KeymapEntry {
+                action: KeyAction::EnterInsertMode,
+                shortcut: value,
+            });
+        }
+        if let Some(value) = config.enter_normal_mode() {
+            entries.push(KeymapEntry {
+                action: KeyAction::EnterNormalMode,
+                shortcut: value,
+            });
+        }
+
+        if mode == KeymapMode::Normal {
+            entries.retain(|entry| entry.action != KeyAction::Completion);
+        }
+
         entries
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct KeymapModeConfig {
+    pub save: Option<String>,
+    pub open: Option<String>,
+    pub find: Option<String>,
+    pub find_next: Option<String>,
+    pub find_previous: Option<String>,
+    pub completion: Option<String>,
+    pub completion_close: Option<String>,
+    pub enter_insert_mode: Option<String>,
+    pub enter_normal_mode: Option<String>,
+}
+
+trait KeymapEntries {
+    fn save(&self) -> Option<&str>;
+    fn open(&self) -> Option<&str>;
+    fn find(&self) -> Option<&str>;
+    fn find_next(&self) -> Option<&str>;
+    fn find_previous(&self) -> Option<&str>;
+    fn completion(&self) -> Option<&str>;
+    fn completion_close(&self) -> Option<&str>;
+    fn enter_insert_mode(&self) -> Option<&str>;
+    fn enter_normal_mode(&self) -> Option<&str>;
+}
+
+impl KeymapEntries for KeymapConfig {
+    fn save(&self) -> Option<&str> {
+        self.save.as_deref()
+    }
+    fn open(&self) -> Option<&str> {
+        self.open.as_deref()
+    }
+    fn find(&self) -> Option<&str> {
+        self.find.as_deref()
+    }
+    fn find_next(&self) -> Option<&str> {
+        self.find_next.as_deref()
+    }
+    fn find_previous(&self) -> Option<&str> {
+        self.find_previous.as_deref()
+    }
+    fn completion(&self) -> Option<&str> {
+        self.completion.as_deref()
+    }
+    fn completion_close(&self) -> Option<&str> {
+        self.completion_close.as_deref()
+    }
+    fn enter_insert_mode(&self) -> Option<&str> {
+        self.enter_insert_mode.as_deref()
+    }
+    fn enter_normal_mode(&self) -> Option<&str> {
+        self.enter_normal_mode.as_deref()
+    }
+}
+
+impl KeymapEntries for KeymapModeConfig {
+    fn save(&self) -> Option<&str> {
+        self.save.as_deref()
+    }
+    fn open(&self) -> Option<&str> {
+        self.open.as_deref()
+    }
+    fn find(&self) -> Option<&str> {
+        self.find.as_deref()
+    }
+    fn find_next(&self) -> Option<&str> {
+        self.find_next.as_deref()
+    }
+    fn find_previous(&self) -> Option<&str> {
+        self.find_previous.as_deref()
+    }
+    fn completion(&self) -> Option<&str> {
+        self.completion.as_deref()
+    }
+    fn completion_close(&self) -> Option<&str> {
+        self.completion_close.as_deref()
+    }
+    fn enter_insert_mode(&self) -> Option<&str> {
+        self.enter_insert_mode.as_deref()
+    }
+    fn enter_normal_mode(&self) -> Option<&str> {
+        self.enter_normal_mode.as_deref()
     }
 }
 

@@ -19,6 +19,7 @@ pub struct ThemePalette {
     pub panel_background: Color,
     pub panel_item_background: Color,
     pub panel_item_hover: Color,
+    pub syntax: SyntaxPalette,
 }
 
 impl Default for ThemePalette {
@@ -40,6 +41,30 @@ impl Default for ThemePalette {
             panel_background: Color::from_rgb8(36, 36, 40),
             panel_item_background: Color::from_rgb8(42, 42, 46),
             panel_item_hover: Color::from_rgb8(60, 60, 66),
+            syntax: SyntaxPalette::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SyntaxPalette {
+    pub keyword: Color,
+    pub r#type: Color,
+    pub string: Color,
+    pub comment: Color,
+    pub number: Color,
+    pub search_match: Color,
+}
+
+impl Default for SyntaxPalette {
+    fn default() -> Self {
+        Self {
+            keyword: Color::from_rgb8(86, 156, 214),
+            r#type: Color::from_rgb8(78, 201, 176),
+            string: Color::from_rgb8(206, 145, 120),
+            comment: Color::from_rgb8(106, 153, 85),
+            number: Color::from_rgb8(181, 206, 168),
+            search_match: Color::from_rgb8(255, 213, 79),
         }
     }
 }
@@ -49,6 +74,8 @@ pub struct ThemeConfig {
     pub name: Option<String>,
     #[serde(default)]
     pub palette: PaletteConfig,
+    #[serde(default)]
+    pub syntax: SyntaxConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -69,6 +96,16 @@ pub struct PaletteConfig {
     pub panel_background: Option<String>,
     pub panel_item_background: Option<String>,
     pub panel_item_hover: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SyntaxConfig {
+    pub keyword: Option<String>,
+    pub r#type: Option<String>,
+    pub string: Option<String>,
+    pub comment: Option<String>,
+    pub number: Option<String>,
+    pub search_match: Option<String>,
 }
 
 impl ThemeConfig {
@@ -150,6 +187,36 @@ impl ThemeConfig {
             &self.palette.panel_item_hover,
             &mut palette.panel_item_hover,
             "panel_item_hover",
+        );
+        apply(
+            &self.syntax.keyword,
+            &mut palette.syntax.keyword,
+            "syntax.keyword",
+        );
+        apply(
+            &self.syntax.r#type,
+            &mut palette.syntax.r#type,
+            "syntax.type",
+        );
+        apply(
+            &self.syntax.string,
+            &mut palette.syntax.string,
+            "syntax.string",
+        );
+        apply(
+            &self.syntax.comment,
+            &mut palette.syntax.comment,
+            "syntax.comment",
+        );
+        apply(
+            &self.syntax.number,
+            &mut palette.syntax.number,
+            "syntax.number",
+        );
+        apply(
+            &self.syntax.search_match,
+            &mut palette.syntax.search_match,
+            "syntax.search_match",
         );
 
         warnings
