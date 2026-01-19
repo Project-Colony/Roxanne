@@ -7,11 +7,13 @@ use iced::{
     Alignment, Application, Background, Color, Command, Element, Font, Length, Settings,
     Subscription, Theme, event, executor, keyboard,
 };
+use crate::editor::TextBuffer;
 
 #[derive(Debug)]
 pub struct RoxanneApp {
     filename: String,
     content: EditorContent,
+    buffer: TextBuffer,
     last_saved_text: String,
     search_query: String,
     search_matches: Vec<(usize, usize)>,
@@ -81,10 +83,12 @@ impl Application for RoxanneApp {
             Objectif: MVP inspiré de Sublime Text\n\
             - Menu bar, tabs, status bar\n\
             - Zone d'édition monospace";
+        let buffer = TextBuffer::from(initial_text);
         (
             Self {
                 filename: "untitled.txt".to_string(),
                 content: EditorContent::with_text(initial_text),
+                buffer,
                 last_saved_text: initial_text.to_string(),
                 search_query: String::new(),
                 search_matches: Vec::new(),
@@ -104,6 +108,7 @@ impl Application for RoxanneApp {
         match message {
             Message::Edit(action) => {
                 self.content.perform(action);
+                self.buffer.replace(&self.content.text());
                 self.refresh_search_matches(true);
                 Command::none()
             }
@@ -180,6 +185,7 @@ impl Application for RoxanneApp {
                 match result {
                     Ok(text) => {
                         self.content = EditorContent::with_text(&text);
+                        self.buffer.replace(&text);
                         self.last_saved_text = text;
                         self.refresh_search_matches(false);
                         self.status_message = Some("Fichier chargé.".to_string());
@@ -277,7 +283,8 @@ impl RoxanneApp {
             return Command::none();
         }
         let filename = self.filename.clone();
-        let text = self.content.text().to_string();
+        self.buffer.replace(&self.content.text());
+        let text = self.buffer.text();
         Command::perform(
             async move { std::fs::write(&filename, text).map_err(|err| err.to_string()) },
             Message::FileSaved,
@@ -499,7 +506,7 @@ impl RoxanneApp {
     }
 
     fn refresh_search_matches(&mut self, preserve_index: bool) {
-        self.search_matches = find_matches(&self.content, &self.search_query);
+        self.search_matches = find_matches(&self.buffer, &self.search_query);
         if self.search_matches.is_empty() {
             self.current_match_index = None;
             if !self.search_query.is_empty() {
@@ -735,16 +742,15 @@ impl container::StyleSheet for StatusBarStyle {
     }
 }
 
-fn find_matches(content: &EditorContent, needle: &str) -> Vec<(usize, usize)> {
+fn find_matches(buffer: &TextBuffer, needle: &str) -> Vec<(usize, usize)> {
     if needle.is_empty() {
         return Vec::new();
     }
 
     let mut matches = Vec::new();
-    for (line_index, line) in content.lines().enumerate() {
-        let line_str: &str = &line;
+    for (line_index, line) in buffer.lines().enumerate() {
         let mut search_start = 0;
-        while let Some(found) = line_str[search_start..].find(needle) {
+        while let Some(found) = line[search_start..].find(needle) {
             let column = search_start + found;
             matches.push((line_index, column));
             search_start = column + needle.len();
