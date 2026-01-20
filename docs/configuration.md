@@ -20,7 +20,7 @@
 ## Emplacements
 - Utilisateur : `~/.config/roxanne/config.toml`
 - Profil : `~/.config/roxanne/profiles/<profil>.toml`
-- Workspace : `.roxanne.toml` à la racine du projet
+- Workspace : `.roxanne.toml` dans le workspace (recherche ascendante)
 
 ## Exemple minimal (TOML)
 ```toml
@@ -30,12 +30,23 @@ profile = "work"
 app_background = "#1e1e20"
 status_bar = "#2d2d30"
 
+[theme.syntax]
+keyword = "#569cd6"
+string = "#ce9178"
+
 [keymap]
 save = "cmd+s"
 find_next = "f3"
 
+[keymap.insert]
+completion = "ctrl+space"
+
+[keymap.normal]
+enter_insert_mode = "i"
+
 [plugins]
 enabled = ["word_count", "line_count"]
+dynamic = ["./plugins/roxanne_sample.so"]
 ```
 
 ## Clés disponibles
@@ -61,6 +72,14 @@ Clés possibles dans `[theme.palette]` (valeurs hexadécimales `#RRGGBB`) :
 - `panel_item_background`
 - `panel_item_hover`
 
+Clés possibles dans `[theme.syntax]` :
+- `keyword`
+- `type`
+- `string`
+- `comment`
+- `number`
+- `search_match`
+
 ### Keymaps
 Clés possibles dans `[keymap]` :
 - `save`
@@ -70,7 +89,13 @@ Clés possibles dans `[keymap]` :
 - `find_previous`
 - `completion`
 - `completion_close`
+- `enter_insert_mode`
+- `enter_normal_mode`
+
+Les sections `[keymap.insert]` et `[keymap.normal]` permettent de surcharger par mode.
+Les actions non applicables à un mode sont ignorées avec un avertissement.
 
 ### Plugins
 Clés possibles dans `[plugins]` :
 - `enabled` : liste des plugins internes à activer (`word_count`, `line_count`).
+- `dynamic` : chemins vers des plugins dynamiques (`.so`, `.dylib`, `.dll`).

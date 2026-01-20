@@ -77,7 +77,9 @@ impl Keymap {
 
     pub fn apply_config(&mut self, config: &KeymapConfig) -> Vec<String> {
         let mut warnings = Vec::new();
-        for entry in config.entries_for_mode(KeymapMode::Insert) {
+        let (insert_entries, insert_warnings) = config.entries_for_mode(KeymapMode::Insert);
+        warnings.extend(insert_warnings);
+        for entry in insert_entries {
             match KeyCombo::parse(entry.shortcut) {
                 Ok(combo) => self.set_binding(KeymapMode::Insert, entry.action, combo),
                 Err(err) => warnings.push(format!(
@@ -86,7 +88,9 @@ impl Keymap {
                 )),
             }
         }
-        for entry in config.entries_for_mode(KeymapMode::Normal) {
+        let (normal_entries, normal_warnings) = config.entries_for_mode(KeymapMode::Normal);
+        warnings.extend(normal_warnings);
+        for entry in normal_entries {
             match KeyCombo::parse(entry.shortcut) {
                 Ok(combo) => self.set_binding(KeymapMode::Normal, entry.action, combo),
                 Err(err) => warnings.push(format!(
@@ -149,8 +153,9 @@ pub struct KeymapConfig {
 }
 
 impl KeymapConfig {
-    fn entries_for_mode(&self, mode: KeymapMode) -> Vec<KeymapEntry<'_>> {
+    fn entries_for_mode(&self, mode: KeymapMode) -> (Vec<KeymapEntry<'_>>, Vec<String>) {
         let mut entries = Vec::new();
+        let mut warnings = Vec::new();
         let mode_config = match mode {
             KeymapMode::Insert => self.insert.as_ref(),
             KeymapMode::Normal => self.normal.as_ref(),
@@ -161,7 +166,20 @@ impl KeymapConfig {
             entries.extend(self.entries_from_config(mode_config, mode));
         }
 
-        entries
+        entries.retain(|entry| {
+            if action_allowed_in_mode(entry.action, mode) {
+                true
+            } else {
+                warnings.push(format!(
+                    "Keymap: action {:?} non autorisée en mode {}",
+                    entry.action,
+                    mode.label()
+                ));
+                false
+            }
+        });
+
+        (entries, warnings)
     }
 
     fn entries_from_config<'a>(
@@ -223,10 +241,6 @@ impl KeymapConfig {
                 action: KeyAction::EnterNormalMode,
                 shortcut: value,
             });
-        }
-
-        if mode == KeymapMode::Normal {
-            entries.retain(|entry| entry.action != KeyAction::Completion);
         }
 
         entries
@@ -419,17 +433,46 @@ impl KeySpec {
         if input.is_empty() {
             return Err("touche manquante".to_string());
         }
-        match input {
-            "space" => Ok(Self::Named(keyboard::key::Named::Space)),
-            "escape" | "esc" => Ok(Self::Named(keyboard::key::Named::Escape)),
-            "f3" => Ok(Self::Named(keyboard::key::Named::F3)),
-            _ => {
-                if input.len() == 1 {
-                    Ok(Self::Character(input.chars().next().unwrap()))
-                } else {
-                    Err(format!("touche inconnue '{input}'"))
-                }
-            }
+        let normalized = input.replace(['-', '_'], "");
+        let named_key = match normalized.as_str() {
+            "space" => Some(keyboard::key::Named::Space),
+            "escape" | "esc" => Some(keyboard::key::Named::Escape),
+            "enter" | "return" => Some(keyboard::key::Named::Enter),
+            "tab" => Some(keyboard::key::Named::Tab),
+            "backspace" => Some(keyboard::key::Named::Backspace),
+            "delete" | "del" => Some(keyboard::key::Named::Delete),
+            "home" => Some(keyboard::key::Named::Home),
+            "end" => Some(keyboard::key::Named::End),
+            "pageup" => Some(keyboard::key::Named::PageUp),
+            "pagedown" => Some(keyboard::key::Named::PageDown),
+            "insert" => Some(keyboard::key::Named::Insert),
+            "left" => Some(keyboard::key::Named::ArrowLeft),
+            "right" => Some(keyboard::key::Named::ArrowRight),
+            "up" => Some(keyboard::key::Named::ArrowUp),
+            "down" => Some(keyboard::key::Named::ArrowDown),
+            "f1" => Some(keyboard::key::Named::F1),
+            "f2" => Some(keyboard::key::Named::F2),
+            "f3" => Some(keyboard::key::Named::F3),
+            "f4" => Some(keyboard::key::Named::F4),
+            "f5" => Some(keyboard::key::Named::F5),
+            "f6" => Some(keyboard::key::Named::F6),
+            "f7" => Some(keyboard::key::Named::F7),
+            "f8" => Some(keyboard::key::Named::F8),
+            "f9" => Some(keyboard::key::Named::F9),
+            "f10" => Some(keyboard::key::Named::F10),
+            "f11" => Some(keyboard::key::Named::F11),
+            "f12" => Some(keyboard::key::Named::F12),
+            _ => None,
+        };
+
+        if let Some(named) = named_key {
+            return Ok(Self::Named(named));
+        }
+
+        if input.len() == 1 {
+            Ok(Self::Character(input.chars().next().unwrap()))
+        } else {
+            Err(format!("touche inconnue '{input}'"))
         }
     }
 
@@ -441,6 +484,15 @@ impl KeySpec {
                 .map(|ch| Self::Character(ch.to_ascii_lowercase())),
             keyboard::Key::Named(named) => Some(Self::Named(*named)),
             _ => None,
+        }
+    }
+}
+
+fn action_allowed_in_mode(action: KeyAction, mode: KeymapMode) -> bool {
+    match mode {
+        KeymapMode::Insert => action != KeyAction::EnterInsertMode,
+        KeymapMode::Normal => {
+            action != KeyAction::Completion && action != KeyAction::EnterNormalMode
         }
     }
 }
