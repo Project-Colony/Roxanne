@@ -24,21 +24,32 @@ impl AppConfig {
                 config.apply_file(&file, &mut warnings);
                 if let Some(profile) = profile {
                     if let Some(profile_path) = profile_config_path(&profile) {
-                        if let Some(profile_file) = load_file(&profile_path, &mut warnings) {
-                            config.apply_file(&profile_file, &mut warnings);
+                        if profile_path.exists() {
+                            if let Some(profile_file) = load_file(&profile_path, &mut warnings) {
+                                config.apply_file(&profile_file, &mut warnings);
+                            }
+                        } else {
+                            warnings.push(format!(
+                                "Config: profil '{profile}' introuvable ({profile_path:?})."
+                            ));
                         }
                     }
                 }
             }
         }
 
-        if let Ok(path) = std::env::current_dir() {
-            let workspace_path = path.join(".roxanne.toml");
+        if let Some(workspace_path) = workspace_config_path() {
             if let Some(file) = load_file(&workspace_path, &mut warnings) {
                 if let Some(profile) = file.profile.as_deref() {
                     if let Some(profile_path) = profile_config_path(profile) {
-                        if let Some(profile_file) = load_file(&profile_path, &mut warnings) {
-                            config.apply_file(&profile_file, &mut warnings);
+                        if profile_path.exists() {
+                            if let Some(profile_file) = load_file(&profile_path, &mut warnings) {
+                                config.apply_file(&profile_file, &mut warnings);
+                            }
+                        } else {
+                            warnings.push(format!(
+                                "Config: profil '{profile}' introuvable ({profile_path:?})."
+                            ));
                         }
                     }
                 }
@@ -115,4 +126,15 @@ fn profile_config_path(profile: &str) -> Option<PathBuf> {
             .join(".config/roxanne/profiles")
             .join(format!("{profile}.toml")),
     )
+}
+
+fn workspace_config_path() -> Option<PathBuf> {
+    let current = std::env::current_dir().ok()?;
+    for dir in current.ancestors() {
+        let candidate = dir.join(".roxanne.toml");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
 }

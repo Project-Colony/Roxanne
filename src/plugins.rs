@@ -15,6 +15,8 @@ pub struct PluginContext {
 
 pub trait Plugin {
     fn name(&self) -> &str;
+    fn on_file_opened(&mut self, _text: &str, _context: &PluginContext) {}
+    fn on_file_saved(&mut self, _text: &str, _context: &PluginContext) {}
     fn on_text_changed(&mut self, _text: &str, _context: &PluginContext) {}
     fn status(&self) -> Option<PluginStatus> {
         None
@@ -61,6 +63,24 @@ impl PluginManager {
         };
         for plugin in &mut self.plugins {
             plugin.on_text_changed(text, &context);
+        }
+    }
+
+    pub fn on_file_opened(&mut self, text: &str, filename: &str) {
+        let context = PluginContext {
+            filename: filename.to_string(),
+        };
+        for plugin in &mut self.plugins {
+            plugin.on_file_opened(text, &context);
+        }
+    }
+
+    pub fn on_file_saved(&mut self, text: &str, filename: &str) {
+        let context = PluginContext {
+            filename: filename.to_string(),
+        };
+        for plugin in &mut self.plugins {
+            plugin.on_file_saved(text, &context);
         }
     }
 

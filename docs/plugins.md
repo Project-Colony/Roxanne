@@ -17,6 +17,12 @@
 ## Activation
 Les plugins sont activés via la clé `plugins.enabled` dans la configuration TOML.
 Plugins disponibles : `word_count`, `line_count`.
+Les plugins dynamiques sont chargés via `plugins.dynamic` (chemins absolus ou relatifs).
+
+## Hooks actuels
+- `on_text_changed` : après toute modification du contenu.
+- `on_file_opened` : après ouverture d’un fichier.
+- `on_file_saved` : après sauvegarde d’un fichier.
 
 ## Lifecycle
 1. Chargement.

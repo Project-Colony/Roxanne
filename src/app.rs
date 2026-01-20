@@ -461,6 +461,7 @@ impl Application for RoxanneApp {
                         self.last_saved_text = text;
                         self.refresh_search_matches(false);
                         self.refresh_diagnostics();
+                        self.plugins.on_file_opened(&self.content.text(), &self.filename);
                         self.plugins.on_text_changed(&self.content.text(), &self.filename);
                         self.status_message = Some("Fichier chargé.".to_string());
                     }
@@ -474,6 +475,7 @@ impl Application for RoxanneApp {
                 match result {
                     Ok(()) => {
                         self.last_saved_text = self.content.text().to_string();
+                        self.plugins.on_file_saved(&self.last_saved_text, &self.filename);
                         self.status_message = Some("Fichier sauvegardé.".to_string());
                     }
                     Err(message) => {
