@@ -5,6 +5,21 @@ Roxanne est un éditeur de texte moderne, rapide et extensible, centré sur la
 simplicité d’usage et la performance. Le produit vise à offrir une expérience
 fluide pour l’édition quotidienne tout en restant léger et modulaire.
 
+## Problème utilisateur
+Les utilisateurs qui manipulent des fichiers volumineux ou des projets
+techniques complexes manquent d’un éditeur local qui reste instantané,
+prévisible et simple à personnaliser. Roxanne vise à résoudre ce besoin en
+proposant un éditeur ultra-rapide pour gros fichiers, qui privilégie la
+réactivité, une ergonomie clavier claire et une extensibilité maîtrisée.
+
+## Promesses clés
+1. **Performance tangible** : démarrage rapide et navigation fluide même sur
+   des fichiers très volumineux, sans latence perceptible.
+2. **Extensibilité maîtrisée** : un système de plugins et de configuration
+   documenté, stable, et centré sur les besoins du cœur d’édition.
+3. **Ergonomie claire** : une expérience d’édition simple, cohérente et
+   orientée productivité (flux clavier, raccourcis, interactions prévisibles).
+
 ## Portée (scope)
 - Édition locale de fichiers texte.
 - Expérience clavier prioritaire, souris en support.
@@ -16,11 +31,15 @@ fluide pour l’édition quotidienne tout en restant léger et modulaire.
 - Édition de documents riches (WYSIWYG).
 - IDE complet (debugger intégré, build system avancé).
 - Version web ou mobile native.
+- **MVP** : pas de plugins externes distribués, pas de LSP complet (LSP-lite
+  uniquement), pas d’intégrations cloud avancées.
 
 ## Utilisateurs cibles
 - Développeurs et contributeurs techniques.
 - Utilisateurs avancés recherchant un éditeur minimaliste et rapide.
 - Mainteneurs de dépôts souhaitant un outil ergonomique pour la revue.
+- Ops/SRE et équipes techniques ayant besoin d’un éditeur fiable pour manipuler
+  de gros fichiers de logs ou des configurations.
 
 ## Critères de succès
 - Démarrage rapide et consommation mémoire raisonnable sur des machines
