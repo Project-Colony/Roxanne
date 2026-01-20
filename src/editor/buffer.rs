@@ -22,6 +22,7 @@ pub struct TextBuffer {
     line_offsets: Vec<usize>,
     undo_stack: Vec<BufferSnapshot>,
     redo_stack: Vec<BufferSnapshot>,
+    revision: usize,
 }
 
 impl TextBuffer {
@@ -37,14 +38,19 @@ impl TextBuffer {
             line_offsets,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            revision: 0,
         }
     }
 
     pub fn replace(&mut self, text: &str) {
+        if self.text == text {
+            return;
+        }
         self.text = text.to_string();
         let (lines, line_offsets) = build_lines(text);
         self.lines = lines;
         self.line_offsets = line_offsets;
+        self.bump_revision();
     }
 
     pub fn text(&self) -> String {
@@ -164,6 +170,14 @@ impl TextBuffer {
     pub fn clear_history(&mut self) {
         self.undo_stack.clear();
         self.redo_stack.clear();
+    }
+
+    pub fn revision(&self) -> usize {
+        self.revision
+    }
+
+    fn bump_revision(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 }
 
