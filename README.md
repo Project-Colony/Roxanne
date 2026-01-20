@@ -19,6 +19,8 @@ Roxanne est un projet d’éditeur de texte moderne, personnalisable et extrême
 - Le dossier [`docs/`](./docs/) contiendra la documentation technique et fonctionnelle.
 - Le fichier [`docs.md`](./docs.md) résume la structure documentaire.
 - Le fichier [`tasks.md`](./tasks.md) décrit le plan d’exécution et les phases.
+- Le fichier [`docs/next-additions.md`](./docs/next-additions.md) liste les compléments
+  recommandés (gouvernance, CI, release).
 
 ## Roadmap (résumé)
 - **Phase 0** : cadrage, architecture, documentation.
