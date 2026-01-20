@@ -15,7 +15,7 @@ use iced::widget::{
 };
 use iced::{
     Alignment, Application, Background, Color, Command, Element, Font, Length, Settings,
-    Subscription, Theme, event, executor, keyboard,
+    Subscription, Theme, clipboard, event, executor, keyboard,
 };
 use regex::{Regex, RegexBuilder};
 use std::collections::HashSet;
@@ -49,6 +49,9 @@ pub struct RoxanneApp {
     mode: KeymapMode,
     plugins: PluginManager,
     active_menu: Option<Menu>,
+    undo_stack: Vec<String>,
+    redo_stack: Vec<String>,
+    suppress_undo_snapshot: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +74,7 @@ pub enum Message {
     CompletionRequested,
     CompletionSelected(usize),
     CompletionClosed,
+    PasteFromClipboard(Option<String>),
     Event(event::Event),
     KeyAction(KeyAction),
     FilenameChanged(String),
@@ -236,6 +240,9 @@ impl Application for RoxanneApp {
                 mode: KeymapMode::Insert,
                 plugins,
                 active_menu: None,
+                undo_stack: Vec::new(),
+                redo_stack: Vec::new(),
+                suppress_undo_snapshot: false,
             },
             Command::none(),
         )
@@ -248,6 +255,9 @@ impl Application for RoxanneApp {
     fn update(&mut self, message: Message) -> Command<Message> {
         match message {
             Message::Edit(action) => {
+                if action.is_edit() {
+                    self.record_undo_snapshot();
+                }
                 if action.is_edit() && !self.multi_cursors.is_empty() {
                     if let EditorAction::Edit(edit) = action {
                         self.apply_multi_cursor_edit(&edit);
@@ -315,12 +325,43 @@ impl Application for RoxanneApp {
                 self.completion_items.clear();
                 Command::none()
             }
+            Message::PasteFromClipboard(text) => {
+                if let Some(text) = text {
+                    if text.is_empty() {
+                        return Command::none();
+                    }
+                    let insert = EditorEdit::Paste(std::sync::Arc::new(text));
+                    if self.multi_cursors.is_empty() {
+                        self.record_undo_snapshot();
+                        self.content.perform(EditorAction::Edit(insert));
+                        self.buffer.replace(&self.content.text());
+                    } else {
+                        self.record_undo_snapshot();
+                        self.apply_multi_cursor_edit(&insert);
+                    }
+                    self.refresh_search_matches(true);
+                    self.refresh_diagnostics();
+                    self.plugins
+                        .on_text_changed(&self.content.text(), &self.filename);
+                }
+                Command::none()
+            }
             Message::Event(event) => {
                 if let event::Event::Keyboard(keyboard::Event::KeyPressed {
                     key, modifiers, ..
                 }) = event
                 {
                     if let Some(action) = self.keymap.match_event(&key, modifiers, self.mode) {
+                        if matches!(action, KeyAction::Copy | KeyAction::Cut | KeyAction::Paste) {
+                            if let keyboard::Key::Character(value) = &key {
+                                let key_char = value.to_ascii_lowercase();
+                                if modifiers.command()
+                                    && matches!(key_char.as_str(), "c" | "x" | "v")
+                                {
+                                    return Command::none();
+                                }
+                            }
+                        }
                         return self.handle_key_action(action);
                     }
                 }
@@ -460,6 +501,9 @@ impl Application for RoxanneApp {
                         self.content = EditorContent::with_text(&text);
                         self.buffer.replace(&text);
                         self.last_saved_text = text;
+                        self.undo_stack.clear();
+                        self.redo_stack.clear();
+                        self.suppress_undo_snapshot = false;
                         self.refresh_search_matches(false);
                         self.refresh_diagnostics();
                         self.plugins.on_file_opened(&self.content.text(), &self.filename);
@@ -568,6 +612,47 @@ impl RoxanneApp {
             }
             KeyAction::FindNext => self.find_next_match(true),
             KeyAction::FindPrevious => self.find_next_match(false),
+            KeyAction::SelectAll => {
+                self.content
+                    .perform(EditorAction::Move(Motion::DocumentStart));
+                self.content
+                    .perform(EditorAction::Select(Motion::DocumentEnd));
+                Command::none()
+            }
+            KeyAction::Copy => {
+                if let Some(selection) = self.content.selection() {
+                    if !selection.is_empty() {
+                        return clipboard::write(selection);
+                    }
+                }
+                Command::none()
+            }
+            KeyAction::Cut => {
+                if let Some(selection) = self.content.selection() {
+                    if selection.is_empty() {
+                        return Command::none();
+                    }
+                    self.record_undo_snapshot();
+                    self.content
+                        .perform(EditorAction::Edit(EditorEdit::Backspace));
+                    self.buffer.replace(&self.content.text());
+                    self.refresh_search_matches(true);
+                    self.refresh_diagnostics();
+                    self.plugins
+                        .on_text_changed(&self.content.text(), &self.filename);
+                    return clipboard::write(selection);
+                }
+                Command::none()
+            }
+            KeyAction::Paste => clipboard::read(Message::PasteFromClipboard),
+            KeyAction::Undo => {
+                self.apply_undo();
+                Command::none()
+            }
+            KeyAction::Redo => {
+                self.apply_redo();
+                Command::none()
+            }
             KeyAction::Completion => {
                 self.refresh_completions();
                 self.completion_panel_open = !self.completion_items.is_empty();
@@ -1425,6 +1510,41 @@ impl RoxanneApp {
         ));
     }
 
+    fn record_undo_snapshot(&mut self) {
+        if self.suppress_undo_snapshot {
+            return;
+        }
+        self.undo_stack.push(self.content.text());
+        self.redo_stack.clear();
+    }
+
+    fn apply_undo(&mut self) {
+        let Some(previous) = self.undo_stack.pop() else {
+            return;
+        };
+        self.redo_stack.push(self.content.text());
+        self.apply_snapshot(previous);
+    }
+
+    fn apply_redo(&mut self) {
+        let Some(next) = self.redo_stack.pop() else {
+            return;
+        };
+        self.undo_stack.push(self.content.text());
+        self.apply_snapshot(next);
+    }
+
+    fn apply_snapshot(&mut self, text: String) {
+        self.suppress_undo_snapshot = true;
+        self.content = EditorContent::with_text(&text);
+        self.buffer.replace(&text);
+        self.refresh_search_matches(true);
+        self.refresh_diagnostics();
+        self.plugins
+            .on_text_changed(&self.content.text(), &self.filename);
+        self.suppress_undo_snapshot = false;
+    }
+
     fn refresh_diagnostics(&mut self) {
         self.diagnostics = analyze_diagnostics(&self.buffer);
     }
@@ -1461,9 +1581,11 @@ impl RoxanneApp {
 
         let insert = EditorEdit::Paste(std::sync::Arc::new(remainder.to_string()));
         if self.multi_cursors.is_empty() {
+            self.record_undo_snapshot();
             self.content.perform(EditorAction::Edit(insert.clone()));
             self.buffer.replace(&self.content.text());
         } else {
+            self.record_undo_snapshot();
             self.apply_multi_cursor_edit(&insert);
         }
         self.refresh_search_matches(true);

@@ -8,6 +8,12 @@ pub enum KeyAction {
     Find,
     FindNext,
     FindPrevious,
+    SelectAll,
+    Copy,
+    Cut,
+    Paste,
+    Undo,
+    Redo,
     Completion,
     CompletionClose,
     EnterInsertMode,
@@ -37,8 +43,10 @@ pub struct Keymap {
 
 impl Keymap {
     pub fn default() -> Self {
-        let mut insert = Vec::new();
-        let mut normal = Vec::new();
+        let mut keymap = Self {
+            insert: Vec::new(),
+            normal: Vec::new(),
+        };
 
         let default_bindings = [
             (KeyAction::Save, "cmd+s"),
@@ -46,33 +54,51 @@ impl Keymap {
             (KeyAction::Find, "cmd+f"),
             (KeyAction::FindNext, "f3"),
             (KeyAction::FindPrevious, "shift+f3"),
+            (KeyAction::SelectAll, "cmd+a"),
+            (KeyAction::SelectAll, "ctrl+a"),
+            (KeyAction::Copy, "cmd+c"),
+            (KeyAction::Copy, "ctrl+c"),
+            (KeyAction::Cut, "cmd+x"),
+            (KeyAction::Cut, "ctrl+x"),
+            (KeyAction::Paste, "cmd+v"),
+            (KeyAction::Paste, "ctrl+v"),
+            (KeyAction::Undo, "cmd+z"),
+            (KeyAction::Undo, "ctrl+z"),
+            (KeyAction::Undo, "ctrl+w"),
+            (KeyAction::Redo, "cmd+shift+z"),
+            (KeyAction::Redo, "ctrl+shift+z"),
+            (KeyAction::Redo, "ctrl+y"),
         ];
 
         for (action, combo) in default_bindings {
-            let binding = KeyBinding::new(action, KeyCombo::parse(combo).unwrap());
-            insert.push(binding);
-            normal.push(binding);
+            let combo = KeyCombo::parse(combo).unwrap();
+            keymap.add_binding(KeymapMode::Insert, action, combo);
+            keymap.add_binding(KeymapMode::Normal, action, combo);
         }
 
-        insert.push(KeyBinding::new(
+        keymap.add_binding(
+            KeymapMode::Insert,
             KeyAction::Completion,
             KeyCombo::parse("ctrl+space").unwrap(),
-        ));
-        insert.push(KeyBinding::new(
+        );
+        keymap.add_binding(
+            KeymapMode::Insert,
             KeyAction::CompletionClose,
             KeyCombo::parse("escape").unwrap(),
-        ));
-        insert.push(KeyBinding::new(
+        );
+        keymap.add_binding(
+            KeymapMode::Insert,
             KeyAction::EnterNormalMode,
             KeyCombo::parse("ctrl+[").unwrap(),
-        ));
+        );
 
-        normal.push(KeyBinding::new(
+        keymap.add_binding(
+            KeymapMode::Normal,
             KeyAction::EnterInsertMode,
             KeyCombo::parse("i").unwrap(),
-        ));
+        );
 
-        Self { insert, normal }
+        keymap
     }
 
     pub fn apply_config(&mut self, config: &KeymapConfig) -> Vec<String> {
@@ -107,14 +133,16 @@ impl Keymap {
             KeymapMode::Insert => &mut self.insert,
             KeymapMode::Normal => &mut self.normal,
         };
-        if let Some(binding) = bindings
-            .iter_mut()
-            .find(|binding| binding.action == action)
-        {
-            binding.combo = combo;
-        } else {
-            bindings.push(KeyBinding::new(action, combo));
-        }
+        bindings.retain(|binding| binding.action != action);
+        bindings.push(KeyBinding::new(action, combo));
+    }
+
+    fn add_binding(&mut self, mode: KeymapMode, action: KeyAction, combo: KeyCombo) {
+        let bindings = match mode {
+            KeymapMode::Insert => &mut self.insert,
+            KeymapMode::Normal => &mut self.normal,
+        };
+        bindings.push(KeyBinding::new(action, combo));
     }
 
     pub fn match_event(
@@ -142,6 +170,12 @@ pub struct KeymapConfig {
     pub find: Option<String>,
     pub find_next: Option<String>,
     pub find_previous: Option<String>,
+    pub select_all: Option<String>,
+    pub copy: Option<String>,
+    pub cut: Option<String>,
+    pub paste: Option<String>,
+    pub undo: Option<String>,
+    pub redo: Option<String>,
     pub completion: Option<String>,
     pub completion_close: Option<String>,
     pub enter_insert_mode: Option<String>,
@@ -218,6 +252,42 @@ impl KeymapConfig {
                 shortcut: value,
             });
         }
+        if let Some(value) = config.select_all() {
+            entries.push(KeymapEntry {
+                action: KeyAction::SelectAll,
+                shortcut: value,
+            });
+        }
+        if let Some(value) = config.copy() {
+            entries.push(KeymapEntry {
+                action: KeyAction::Copy,
+                shortcut: value,
+            });
+        }
+        if let Some(value) = config.cut() {
+            entries.push(KeymapEntry {
+                action: KeyAction::Cut,
+                shortcut: value,
+            });
+        }
+        if let Some(value) = config.paste() {
+            entries.push(KeymapEntry {
+                action: KeyAction::Paste,
+                shortcut: value,
+            });
+        }
+        if let Some(value) = config.undo() {
+            entries.push(KeymapEntry {
+                action: KeyAction::Undo,
+                shortcut: value,
+            });
+        }
+        if let Some(value) = config.redo() {
+            entries.push(KeymapEntry {
+                action: KeyAction::Redo,
+                shortcut: value,
+            });
+        }
         if let Some(value) = config.completion() {
             entries.push(KeymapEntry {
                 action: KeyAction::Completion,
@@ -254,6 +324,12 @@ pub struct KeymapModeConfig {
     pub find: Option<String>,
     pub find_next: Option<String>,
     pub find_previous: Option<String>,
+    pub select_all: Option<String>,
+    pub copy: Option<String>,
+    pub cut: Option<String>,
+    pub paste: Option<String>,
+    pub undo: Option<String>,
+    pub redo: Option<String>,
     pub completion: Option<String>,
     pub completion_close: Option<String>,
     pub enter_insert_mode: Option<String>,
@@ -266,6 +342,12 @@ trait KeymapEntries {
     fn find(&self) -> Option<&str>;
     fn find_next(&self) -> Option<&str>;
     fn find_previous(&self) -> Option<&str>;
+    fn select_all(&self) -> Option<&str>;
+    fn copy(&self) -> Option<&str>;
+    fn cut(&self) -> Option<&str>;
+    fn paste(&self) -> Option<&str>;
+    fn undo(&self) -> Option<&str>;
+    fn redo(&self) -> Option<&str>;
     fn completion(&self) -> Option<&str>;
     fn completion_close(&self) -> Option<&str>;
     fn enter_insert_mode(&self) -> Option<&str>;
@@ -287,6 +369,24 @@ impl KeymapEntries for KeymapConfig {
     }
     fn find_previous(&self) -> Option<&str> {
         self.find_previous.as_deref()
+    }
+    fn select_all(&self) -> Option<&str> {
+        self.select_all.as_deref()
+    }
+    fn copy(&self) -> Option<&str> {
+        self.copy.as_deref()
+    }
+    fn cut(&self) -> Option<&str> {
+        self.cut.as_deref()
+    }
+    fn paste(&self) -> Option<&str> {
+        self.paste.as_deref()
+    }
+    fn undo(&self) -> Option<&str> {
+        self.undo.as_deref()
+    }
+    fn redo(&self) -> Option<&str> {
+        self.redo.as_deref()
     }
     fn completion(&self) -> Option<&str> {
         self.completion.as_deref()
@@ -317,6 +417,24 @@ impl KeymapEntries for KeymapModeConfig {
     }
     fn find_previous(&self) -> Option<&str> {
         self.find_previous.as_deref()
+    }
+    fn select_all(&self) -> Option<&str> {
+        self.select_all.as_deref()
+    }
+    fn copy(&self) -> Option<&str> {
+        self.copy.as_deref()
+    }
+    fn cut(&self) -> Option<&str> {
+        self.cut.as_deref()
+    }
+    fn paste(&self) -> Option<&str> {
+        self.paste.as_deref()
+    }
+    fn undo(&self) -> Option<&str> {
+        self.undo.as_deref()
+    }
+    fn redo(&self) -> Option<&str> {
+        self.redo.as_deref()
     }
     fn completion(&self) -> Option<&str> {
         self.completion.as_deref()

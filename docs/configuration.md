@@ -87,6 +87,12 @@ Clés possibles dans `[keymap]` :
 - `find`
 - `find_next`
 - `find_previous`
+- `select_all`
+- `copy`
+- `cut`
+- `paste`
+- `undo`
+- `redo`
 - `completion`
 - `completion_close`
 - `enter_insert_mode`
