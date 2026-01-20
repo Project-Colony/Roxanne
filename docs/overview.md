@@ -40,6 +40,13 @@ fluide pour l’édition quotidienne tout en restant léger et modulaire.
 - Couplage excessif entre UI et core si les abstractions sont mal définies.
 - Sous-estimation de l’effort d’ergonomie (clavier, flux utilisateur).
 
+## Planification macro
+- Phase 0 : cadrage, architecture, standards, documentation.
+- Phase 1 : MVP avec édition, rendu, navigation, recherche simple.
+- Phase 2 : fonctionnalités avancées (highlight, multi-curseurs, LSP-lite).
+- Phase 3 : personnalisation (config, thèmes, keymaps, plugins).
+- Phase 4 : stabilisation, performance, packaging.
+
 ## Livrables attendus par phase
 - **Phase 0** : vision, architecture, standards, planification claire.
 - **Phase 1** : MVP utilisable (édition, rendu, navigation, recherche simple).

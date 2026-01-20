@@ -18,3 +18,8 @@
 ## Décisions à valider
 - Backend (CPU/GPU) et librairie graphique.
 - Gestion de la mise en forme et du shaping.
+
+## Planification du rendu
+- Phase 1 : cache simple par lignes visibles + invalidation locale.
+- Phase 2 : pipeline de surlignage et mise en forme enrichie.
+- Phase 4 : profilage et optimisation ciblée des allocations.

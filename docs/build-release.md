@@ -15,3 +15,7 @@
 - Tests automatiques.
 - Lint et format.
 - Publication des artefacts.
+
+## Planification release
+- Phase 4 : pipeline de build multi-plateforme + packaging.
+- Phase 4 : documentation d'installation et notes de version.

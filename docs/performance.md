@@ -14,3 +14,8 @@
 - Cache de rendu.
 - Allocation mémoire maîtrisée.
 - Profilage régulier.
+
+## Planification
+- Phase 1 : mesures de démarrage et de rendu sur un projet moyen.
+- Phase 2 : seuils de latence pour la recherche et le highlight.
+- Phase 4 : benchmarks automatisés en CI.

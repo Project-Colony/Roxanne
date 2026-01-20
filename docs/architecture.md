@@ -51,3 +51,8 @@
 - Tests unitaires sur le core (buffer, sélection, undo/redo).
 - Tests de performance ciblés (fichier volumineux, scroll rapide).
 - Tests d’intégration sur le pipeline UI -> core -> render.
+
+## Planification technique
+- Valider le choix du buffer avant d’implémenter le cache de rendu.
+- Formaliser les interfaces `Command`/`Event` avant les modules UI avancés.
+- Introduire la persistance et la gestion d’erreurs avant les plugins externes.

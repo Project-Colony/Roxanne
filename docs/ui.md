@@ -23,3 +23,8 @@
 ## Accessibilité
 - Contraste élevé par défaut.
 - Taille de police configurable.
+
+## Planification UI
+- Phase 1 : navigation clavier, barre de statut, recherche simple.
+- Phase 2 : panneau de recherche avancée et surlignages.
+- Phase 3 : palette de commandes et personnalisation des raccourcis.

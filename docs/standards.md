@@ -61,3 +61,7 @@ projet Roxanne.
 - Vérifier que chaque changement est accompagné d’une documentation pertinente.
 - Mettre à jour `tasks.md` si la roadmap évolue.
 - Signaler les impacts sur les performances ou l’architecture.
+
+## Planification qualité
+- S'assurer que chaque phase dispose d'un minimum de tests automatisés.
+- Maintenir la documentation et la roadmap synchronisées avec les décisions.
