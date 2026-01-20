@@ -34,6 +34,8 @@ pub struct RoxanneApp {
     search_case_sensitive: bool,
     search_regex: bool,
     search_panel_open: bool,
+    goto_line_input: String,
+    goto_panel_open: bool,
     search_scope: SearchScope,
     search_results: Vec<SearchResult>,
     highlight_settings: highlight::Settings,
@@ -66,6 +68,9 @@ pub enum Message {
     SearchToggleRegex,
     SearchScopeSelected(SearchScope),
     SearchPanelToggled,
+    GotoLineChanged(String),
+    GotoLineSubmit,
+    GotoLineClosed,
     SearchInFiles,
     SearchResultsLoaded(Result<Vec<SearchResult>, String>),
     SearchResultOpened(Result<(String, SearchResult), String>),
@@ -225,6 +230,8 @@ impl Application for RoxanneApp {
                 search_case_sensitive: false,
                 search_regex: false,
                 search_panel_open: false,
+                goto_line_input: String::new(),
+                goto_panel_open: false,
                 search_scope: SearchScope::CurrentFile,
                 search_results: Vec::new(),
                 highlight_settings: highlight::Settings::default(),
@@ -305,6 +312,18 @@ impl Application for RoxanneApp {
             }
             Message::SearchPanelToggled => {
                 self.search_panel_open = !self.search_panel_open;
+                Command::none()
+            }
+            Message::GotoLineChanged(value) => {
+                self.goto_line_input = value;
+                Command::none()
+            }
+            Message::GotoLineSubmit => {
+                self.handle_goto_line();
+                Command::none()
+            }
+            Message::GotoLineClosed => {
+                self.goto_panel_open = false;
                 Command::none()
             }
             Message::DiagnosticsToggled => {
@@ -479,8 +498,9 @@ impl Application for RoxanneApp {
                         Command::none()
                     }
                     MenuAction::GoToLine => {
-                        self.status_message =
-                            Some("Aller à: fonctionnalité à venir (ligne).".to_string());
+                        let (line, _) = self.content.cursor_position();
+                        self.goto_line_input = format!("{}", line + 1);
+                        self.goto_panel_open = true;
                         Command::none()
                     }
                     MenuAction::ToolsSettings => {
@@ -536,6 +556,7 @@ impl Application for RoxanneApp {
         let menu_bar = self.menu_bar();
         let tab_bar = self.tab_bar();
         let search_panel = self.search_panel();
+        let goto_panel = self.goto_panel();
         let diagnostics_panel = self.diagnostics_panel();
         let completion_panel = self.completion_panel();
         let editor = self.editor_area();
@@ -543,6 +564,9 @@ impl Application for RoxanneApp {
 
         let mut content = column![menu_bar, tab_bar];
         if let Some(panel) = search_panel {
+            content = content.push(panel);
+        }
+        if let Some(panel) = goto_panel {
             content = content.push(panel);
         }
         if let Some(panel) = diagnostics_panel {
@@ -956,6 +980,61 @@ impl RoxanneApp {
         };
 
         let panel = column![header, query_row, scope_row, action_row, results]
+            .spacing(10)
+            .padding([8, 16]);
+
+        Some(
+            Container::new(panel)
+                .width(Length::Fill)
+                .style(theme::Container::Custom(Box::new(SearchPanelStyle {
+                    palette: self.theme,
+                })))
+                .into(),
+        )
+    }
+
+    fn goto_panel(&self) -> Option<Element<'_, Message>> {
+        if !self.goto_panel_open {
+            return None;
+        }
+
+        let header = row![
+            text("Aller à")
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(Color::from_rgb8(220, 220, 220)),
+            text("Ligne[:Colonne]")
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(Color::from_rgb8(160, 160, 160)),
+        ]
+        .spacing(12)
+        .align_items(Alignment::Center);
+
+        let input = TextInput::new("ex: 42:5", &self.goto_line_input)
+            .on_input(Message::GotoLineChanged)
+            .on_submit(Message::GotoLineSubmit)
+            .padding([4, 8])
+            .size(12);
+
+        let actions = row![
+            Button::new(text("Aller").size(12).font(Font::MONOSPACE))
+                .padding([4, 10])
+                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
+                    palette: self.theme,
+                })))
+                .on_press(Message::GotoLineSubmit),
+            Button::new(text("Fermer").size(12).font(Font::MONOSPACE))
+                .padding([4, 10])
+                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
+                    palette: self.theme,
+                })))
+                .on_press(Message::GotoLineClosed),
+        ]
+        .spacing(8)
+        .align_items(Alignment::Center);
+
+        let panel = column![header, input, actions]
             .spacing(10)
             .padding([8, 16]);
 
@@ -1397,6 +1476,29 @@ impl RoxanneApp {
         }
         for _ in 0..column {
             self.content.perform(EditorAction::Move(Motion::Right));
+        }
+    }
+
+    fn handle_goto_line(&mut self) {
+        let input = self.goto_line_input.trim();
+        if input.is_empty() {
+            self.status_message = Some("Aller à: saisissez une ligne.".to_string());
+            return;
+        }
+
+        match parse_goto_input(input) {
+            Ok((line, column)) => {
+                self.jump_to_position(line, column);
+                self.status_message = Some(format!(
+                    "Aller à: ligne {}, colonne {}.",
+                    line + 1,
+                    column + 1
+                ));
+                self.goto_panel_open = false;
+            }
+            Err(message) => {
+                self.status_message = Some(format!("Aller à: {message}"));
+            }
         }
     }
 
@@ -2168,6 +2270,36 @@ fn next_char_boundary(text: &str, index: usize) -> Option<usize> {
         .next()
         .map(|ch| index + ch.len_utf8())?;
     Some(next.min(text.len()))
+}
+
+fn parse_goto_input(input: &str) -> Result<(usize, usize), String> {
+    let mut parts = input.split(|ch| ch == ':' || ch == ',');
+    let line_part = parts.next().unwrap_or("").trim();
+    let column_part = parts.next().map(str::trim);
+
+    if parts.next().is_some() {
+        return Err("format invalide (utilisez ligne[:colonne])".to_string());
+    }
+
+    let line = line_part
+        .parse::<usize>()
+        .map_err(|_| "ligne invalide".to_string())?;
+    if line == 0 {
+        return Err("la ligne commence à 1".to_string());
+    }
+
+    let column = match column_part {
+        Some(value) if !value.is_empty() => value
+            .parse::<usize>()
+            .map_err(|_| "colonne invalide".to_string())?,
+        _ => 1,
+    };
+
+    if column == 0 {
+        return Err("la colonne commence à 1".to_string());
+    }
+
+    Ok((line - 1, column - 1))
 }
 
 fn extract_prefix(line: &str, column: usize) -> String {
