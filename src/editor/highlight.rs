@@ -5,6 +5,7 @@ use std::ops::Range;
 use std::sync::{LazyLock, RwLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum Language {
     Plain,
     Rust,
