@@ -11,7 +11,7 @@ use iced::widget::text_editor::{
     Action as EditorAction, Content as EditorContent, Edit as EditorEdit, Motion,
 };
 use iced::widget::{
-    Button, Container, Scrollable, TextInput, column, container, row, text, text_editor,
+    Button, Container, Row, Scrollable, TextInput, column, container, row, text, text_editor,
 };
 use iced::{
     Alignment, Application, Background, Color, Command, Element, Font, Length, Settings,
@@ -729,7 +729,7 @@ impl RoxanneApp {
                 palette: self.theme,
             })));
 
-        let mut column = column![top_row].align_items(Alignment::Start);
+        let mut column = column![top_row];
         if let Some(submenu) = self.submenu() {
             column = column.push(submenu);
         }
@@ -755,50 +755,68 @@ impl RoxanneApp {
     }
 
     fn submenu(&self) -> Option<Element<'_, Message>> {
-        let actions = match self.active_menu? {
-            Menu::File => vec![("Open", MenuAction::Open), ("Save", MenuAction::Save)],
-            Menu::Edit => vec![
-                ("Find", MenuAction::Find),
-                ("Find Next", MenuAction::FindNext),
-                ("Find Previous", MenuAction::FindPrevious),
-                ("Find in Files", MenuAction::FindInFiles),
-                ("Search Panel", MenuAction::ToggleSearchPanel),
-                ("Diagnostics Panel", MenuAction::ToggleDiagnosticsPanel),
-            ],
-            Menu::Selection => vec![
-                ("Select All", MenuAction::SelectAll),
-                ("Add Cursor Next", MenuAction::AddCursorNextMatch),
-                ("Add Cursors All", MenuAction::AddCursorsAllMatches),
-                ("Clear Cursors", MenuAction::ClearMultiCursors),
-            ],
-            Menu::View => vec![("Status Bar", MenuAction::ToggleStatusBar)],
-            Menu::Goto => vec![("Go to Line", MenuAction::GoToLine)],
-            Menu::Tools => vec![("Settings", MenuAction::ToolsSettings)],
-            Menu::Help => vec![("About", MenuAction::About)],
+        let (label, actions) = match self.active_menu? {
+            Menu::File => (
+                "File",
+                vec![("Open", MenuAction::Open), ("Save", MenuAction::Save)],
+            ),
+            Menu::Edit => (
+                "Edit",
+                vec![
+                    ("Find", MenuAction::Find),
+                    ("Find Next", MenuAction::FindNext),
+                    ("Find Previous", MenuAction::FindPrevious),
+                    ("Find in Files", MenuAction::FindInFiles),
+                    ("Search Panel", MenuAction::ToggleSearchPanel),
+                    ("Diagnostics Panel", MenuAction::ToggleDiagnosticsPanel),
+                ],
+            ),
+            Menu::Selection => (
+                "Selection",
+                vec![
+                    ("Select All", MenuAction::SelectAll),
+                    ("Add Cursor Next", MenuAction::AddCursorNextMatch),
+                    ("Add Cursors All", MenuAction::AddCursorsAllMatches),
+                    ("Clear Cursors", MenuAction::ClearMultiCursors),
+                ],
+            ),
+            Menu::View => (
+                "View",
+                vec![("Status Bar", MenuAction::ToggleStatusBar)],
+            ),
+            Menu::Goto => ("Goto", vec![("Go to Line", MenuAction::GoToLine)]),
+            Menu::Tools => ("Tools", vec![("Settings", MenuAction::ToolsSettings)]),
+            Menu::Help => ("Help", vec![("About", MenuAction::About)]),
         };
 
-        let items = column(
-            actions
-                .into_iter()
-                .map(|(name, action)| {
-                    Button::new(text(name).size(12).font(Font::MONOSPACE))
-                        .padding([4, 12])
-                        .width(Length::Fill)
-                        .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                            palette: self.theme,
-                        })))
-                        .on_press(Message::MenuAction(action))
-                        .into()
-                })
-                .collect::<Vec<Element<Message>>>(),
-        )
-        .spacing(2)
-        .align_items(Alignment::Start)
-        .width(Length::Shrink);
+        let row = row![
+            text(label)
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(Color::from_rgb8(180, 180, 180)),
+            Row::with_children(
+                actions
+                    .into_iter()
+                    .map(|(name, action)| {
+                        Button::new(text(name).size(12).font(Font::MONOSPACE))
+                            .padding([2, 8])
+                            .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
+                                palette: self.theme,
+                            })))
+                            .on_press(Message::MenuAction(action))
+                            .into()
+                    })
+                    .collect::<Vec<Element<Message>>>(),
+            )
+            .spacing(8),
+        ]
+        .spacing(12)
+        .align_items(Alignment::Center)
+        .padding([4, 16]);
 
         Some(
-            Container::new(items)
-                .padding([6, 8])
+            Container::new(row)
+                .width(Length::Fill)
                 .style(theme::Container::Custom(Box::new(SubmenuStyle {
                     palette: self.theme,
                 })))
