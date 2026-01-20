@@ -1,6 +1,6 @@
 use crate::config;
 use crate::editor::highlight::MatchPosition;
-use crate::editor::{Position, TextBuffer, highlight};
+use crate::editor::{Position, TextBuffer, ViewportCache, highlight};
 use crate::keymap::{KeyAction, Keymap, KeymapMode};
 use crate::plugins::PluginManager;
 use crate::theme::ThemePalette;
@@ -22,11 +22,15 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use walkdir::{DirEntry, WalkDir};
 
+const DEFAULT_VIEWPORT_HEIGHT: usize = 24;
+
 #[derive(Debug)]
 pub struct RoxanneApp {
     filename: String,
     content: EditorContent,
     buffer: TextBuffer,
+    viewport_cache: ViewportCache,
+    viewport_height: usize,
     last_saved_text: String,
     search_query: String,
     search_matches: Vec<MatchPosition>,
@@ -202,6 +206,8 @@ impl Application for RoxanneApp {
             - Menu bar, tabs, status bar\n\
             - Zone d'édition monospace";
         let buffer = TextBuffer::from(initial_text);
+        let mut viewport_cache = ViewportCache::new();
+        viewport_cache.update(&buffer, 0, DEFAULT_VIEWPORT_HEIGHT);
         let diagnostics = analyze_diagnostics(&buffer);
         let (mut plugins, plugin_warnings) = PluginManager::new(&flags.plugins);
         plugins.on_text_changed(initial_text, "untitled.txt");
@@ -221,6 +227,8 @@ impl Application for RoxanneApp {
                 filename: "untitled.txt".to_string(),
                 content: EditorContent::with_text(initial_text),
                 buffer,
+                viewport_cache,
+                viewport_height: DEFAULT_VIEWPORT_HEIGHT,
                 last_saved_text: initial_text.to_string(),
                 search_query: String::new(),
                 search_matches: Vec::new(),
@@ -273,6 +281,7 @@ impl Application for RoxanneApp {
                 self.refresh_diagnostics();
                 self.plugins
                     .on_text_changed(&self.content.text(), &self.filename);
+                self.refresh_viewport_cache();
                 Command::none()
             }
             Message::SearchChanged(value) => {
@@ -358,6 +367,7 @@ impl Application for RoxanneApp {
                     self.refresh_diagnostics();
                     self.plugins
                         .on_text_changed(&self.content.text(), &self.filename);
+                    self.refresh_viewport_cache();
                 }
                 Command::none()
             }
@@ -409,6 +419,7 @@ impl Application for RoxanneApp {
                         self.refresh_search_matches(false);
                         self.refresh_diagnostics();
                         self.plugins.on_text_changed(&self.content.text(), &self.filename);
+                        self.refresh_viewport_cache();
                         self.jump_to_position(nav.line, nav.column);
                         self.status_message = Some(format!(
                             "Recherche: ouvert {} (ligne {}, colonne {}).",
@@ -523,6 +534,7 @@ impl Application for RoxanneApp {
                         self.refresh_diagnostics();
                         self.plugins.on_file_opened(&self.content.text(), &self.filename);
                         self.plugins.on_text_changed(&self.content.text(), &self.filename);
+                        self.refresh_viewport_cache();
                         self.status_message = Some("Fichier chargé.".to_string());
                     }
                     Err(message) => {
@@ -636,6 +648,7 @@ impl RoxanneApp {
                     .perform(EditorAction::Move(Motion::DocumentStart));
                 self.content
                     .perform(EditorAction::Select(Motion::DocumentEnd));
+                self.refresh_viewport_cache();
                 Command::none()
             }
             KeyAction::Copy => {
@@ -659,6 +672,7 @@ impl RoxanneApp {
                     self.refresh_diagnostics();
                     self.plugins
                         .on_text_changed(&self.content.text(), &self.filename);
+                    self.refresh_viewport_cache();
                     return clipboard::write(selection);
                 }
                 Command::none()
@@ -1245,9 +1259,11 @@ impl RoxanneApp {
         } else {
             format!("   {plugin_text}")
         };
+        let viewport_label = self.viewport_label();
 
         let right = text(format!(
-            "Mode: {}   Occurrences: {}   Cursors: {}   Diagnostics: {}   Ln {}, Col {}   UTF-8   LF   {}{}",
+            "{}   Mode: {}   Occurrences: {}   Cursors: {}   Diagnostics: {}   Ln {}, Col {}   UTF-8   LF   {}{}",
+            viewport_label,
             self.mode.label(),
             matches,
             cursor_count,
@@ -1472,6 +1488,7 @@ impl RoxanneApp {
         for _ in 0..column {
             self.content.perform(EditorAction::Move(Motion::Right));
         }
+        self.refresh_viewport_cache();
     }
 
     fn handle_goto_line(&mut self) {
@@ -1636,7 +1653,22 @@ impl RoxanneApp {
         self.refresh_diagnostics();
         self.plugins
             .on_text_changed(&self.content.text(), &self.filename);
+        self.refresh_viewport_cache();
         self.suppress_undo_snapshot = false;
+    }
+
+    fn refresh_viewport_cache(&mut self) {
+        let (line, _) = self.content.cursor_position();
+        let start_line = line.saturating_sub(self.viewport_height / 2);
+        self.viewport_cache
+            .update(&self.buffer, start_line, self.viewport_height);
+    }
+
+    fn viewport_label(&self) -> String {
+        match self.viewport_cache.range() {
+            Some((start, end)) => format!("Viewport: {}-{}", start + 1, end),
+            None => "Viewport: -".to_string(),
+        }
     }
 
     fn refresh_diagnostics(&mut self) {
@@ -1686,6 +1718,7 @@ impl RoxanneApp {
         self.refresh_diagnostics();
         self.plugins
             .on_text_changed(&self.content.text(), &self.filename);
+        self.refresh_viewport_cache();
         self.completion_panel_open = false;
         self.completion_items.clear();
     }
