@@ -50,6 +50,7 @@ impl TextBuffer {
         self.lines.iter().map(String::as_str)
     }
 
+    #[allow(dead_code)]
     pub fn insert(&mut self, position: Position, text: &str) -> Position {
         if text.is_empty() {
             return self.clamp_position(position);
@@ -62,6 +63,7 @@ impl TextBuffer {
         self.position_from_index(index + text.len())
     }
 
+    #[allow(dead_code)]
     pub fn delete_range(&mut self, start: Position, end: Position) -> Position {
         let mut full_text = self.text();
         let start_index = self.index_from_position(start);

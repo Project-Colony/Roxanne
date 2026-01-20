@@ -52,6 +52,7 @@ pub struct RoxanneApp {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum Message {
     Edit(EditorAction),
     SearchChanged(String),
@@ -487,7 +488,7 @@ impl Application for RoxanneApp {
         }
     }
 
-    fn view(&self) -> Element<Message> {
+    fn view(&self) -> Element<'_, Message> {
         let menu_bar = self.menu_bar();
         let tab_bar = self.tab_bar();
         let search_panel = self.search_panel();
@@ -590,7 +591,7 @@ impl RoxanneApp {
         }
     }
 
-    fn menu_bar(&self) -> Element<Message> {
+    fn menu_bar(&self) -> Element<'_, Message> {
         let menu_items = row![
             self.menu_button("File", Menu::File),
             self.menu_button("Edit", Menu::Edit),
@@ -618,7 +619,7 @@ impl RoxanneApp {
         Container::new(column).width(Length::Fill).into()
     }
 
-    fn menu_button(&self, label: &str, menu: Menu) -> Element<Message> {
+    fn menu_button(&self, label: &str, menu: Menu) -> Element<'_, Message> {
         let is_active = self.active_menu == Some(menu);
         Button::new(
             text(label)
@@ -635,7 +636,7 @@ impl RoxanneApp {
         .into()
     }
 
-    fn submenu(&self) -> Option<Element<Message>> {
+    fn submenu(&self) -> Option<Element<'_, Message>> {
         let (label, actions) = match self.active_menu? {
             Menu::File => (
                 "File",
@@ -705,7 +706,7 @@ impl RoxanneApp {
         )
     }
 
-    fn tab_bar(&self) -> Element<Message> {
+    fn tab_bar(&self) -> Element<'_, Message> {
         let is_modified = self.content.text() != self.last_saved_text;
         let filename = if self.filename.trim().is_empty() {
             "untitled.txt"
@@ -746,7 +747,7 @@ impl RoxanneApp {
             .into()
     }
 
-    fn editor_area(&self) -> Element<Message> {
+    fn editor_area(&self) -> Element<'_, Message> {
         let editor = text_editor(&self.content)
             .on_action(Message::Edit)
             .font(Font::MONOSPACE)
@@ -765,7 +766,7 @@ impl RoxanneApp {
             .into()
     }
 
-    fn search_panel(&self) -> Option<Element<Message>> {
+    fn search_panel(&self) -> Option<Element<'_, Message>> {
         if !self.search_panel_open {
             return None;
         }
@@ -883,7 +884,7 @@ impl RoxanneApp {
         )
     }
 
-    fn diagnostics_panel(&self) -> Option<Element<Message>> {
+    fn diagnostics_panel(&self) -> Option<Element<'_, Message>> {
         if !self.diagnostics_panel_open {
             return None;
         }
@@ -952,7 +953,7 @@ impl RoxanneApp {
         )
     }
 
-    fn completion_panel(&self) -> Option<Element<Message>> {
+    fn completion_panel(&self) -> Option<Element<'_, Message>> {
         if !self.completion_panel_open {
             return None;
         }
@@ -1023,7 +1024,7 @@ impl RoxanneApp {
         )
     }
 
-    fn status_bar(&self) -> Element<Message> {
+    fn status_bar(&self) -> Element<'_, Message> {
         let is_modified = self.content.text() != self.last_saved_text;
         let has_matches = !self.search_matches.is_empty();
         let cursor_position = self.content.cursor_position();
@@ -1117,7 +1118,12 @@ impl RoxanneApp {
             .into()
     }
 
-    fn toggle_button(&self, label: &str, active: bool, message: Message) -> Element<Message> {
+    fn toggle_button(
+        &self,
+        label: &str,
+        active: bool,
+        message: Message,
+    ) -> Element<'_, Message> {
         Button::new(text(label).size(12).font(Font::MONOSPACE))
             .padding([2, 6])
             .style(theme::Button::Custom(Box::new(ToggleButtonStyle {
@@ -1128,7 +1134,7 @@ impl RoxanneApp {
             .into()
     }
 
-    fn search_scope_button(&self, scope: SearchScope) -> Element<Message> {
+    fn search_scope_button(&self, scope: SearchScope) -> Element<'_, Message> {
         let active = self.search_scope == scope;
         Button::new(
             text(scope.label())
@@ -1366,7 +1372,7 @@ impl RoxanneApp {
             if seen_indices.insert(index) {
                 cursor_slots.push(CursorSlot {
                     id,
-                    position,
+                    _position: position,
                     index,
                 });
             }
@@ -1867,7 +1873,7 @@ fn find_matches_in_text(text: &str, matcher: &SearchMatcher) -> Vec<SearchResult
             matches.push(SearchResultLine {
                 line: line_index,
                 column,
-                length,
+                _length: length,
                 preview: line.to_string(),
             });
         }
@@ -1909,14 +1915,14 @@ fn should_skip_file(path: &Path) -> bool {
 struct SearchResultLine {
     line: usize,
     column: usize,
-    length: usize,
+    _length: usize,
     preview: String,
 }
 
 #[derive(Debug, Clone)]
 struct CursorSlot {
     id: usize,
-    position: Position,
+    _position: Position,
     index: usize,
 }
 

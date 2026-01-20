@@ -185,7 +185,7 @@ impl KeymapConfig {
     fn entries_from_config<'a>(
         &self,
         config: &'a impl KeymapEntries,
-        mode: KeymapMode,
+        _mode: KeymapMode,
     ) -> Vec<KeymapEntry<'a>> {
         let mut entries = Vec::new();
         if let Some(value) = config.save() {

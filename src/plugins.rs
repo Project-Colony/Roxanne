@@ -14,6 +14,7 @@ pub struct PluginContext {
 }
 
 pub trait Plugin {
+    #[allow(dead_code)]
     fn name(&self) -> &str;
     fn on_file_opened(&mut self, _text: &str, _context: &PluginContext) {}
     fn on_file_saved(&mut self, _text: &str, _context: &PluginContext) {}
@@ -136,6 +137,7 @@ struct PluginApiV1 {
 struct DynamicPlugin {
     _library: Library,
     api: PluginApiV1,
+    #[allow(dead_code)]
     name: String,
 }
 
