@@ -105,3 +105,7 @@ Les actions non applicables à un mode sont ignorées avec un avertissement.
 Clés possibles dans `[plugins]` :
 - `enabled` : liste des plugins internes à activer (`word_count`, `line_count`).
 - `dynamic` : chemins vers des plugins dynamiques (`.so`, `.dylib`, `.dll`).
+
+## Planification configuration
+- Phase 3 : merge multi-niveaux fiable + validation des schémas.
+- Phase 4 : migration automatique des versions de config.

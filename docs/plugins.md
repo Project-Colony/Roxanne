@@ -10,7 +10,7 @@
 - Hooks d’événements (édition, rendu, UI).
 - Extensions de syntaxe.
 
-## Plugins internes initiaux
+## Plugins internes initiaux (cibles)
 - **word_count** : compteur de mots (status bar).
 - **line_count** : compteur de lignes (status bar).
 
@@ -29,3 +29,7 @@ Les plugins dynamiques sont chargés via `plugins.dynamic` (chemins absolus ou r
 2. Initialisation.
 3. Exécution d’actions.
 4. Déchargement.
+
+## Planification plugins
+- Phase 3 : plugins internes + API minimaliste stable.
+- Phase 4 : validation des interfaces et isolation progressive.
