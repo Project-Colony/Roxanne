@@ -51,8 +51,6 @@ pub struct RoxanneApp {
     mode: KeymapMode,
     plugins: PluginManager,
     active_menu: Option<Menu>,
-    undo_stack: Vec<String>,
-    redo_stack: Vec<String>,
     suppress_undo_snapshot: bool,
 }
 
@@ -247,8 +245,6 @@ impl Application for RoxanneApp {
                 mode: KeymapMode::Insert,
                 plugins,
                 active_menu: None,
-                undo_stack: Vec::new(),
-                redo_stack: Vec::new(),
                 suppress_undo_snapshot: false,
             },
             Command::none(),
@@ -521,8 +517,7 @@ impl Application for RoxanneApp {
                         self.content = EditorContent::with_text(&text);
                         self.buffer.replace(&text);
                         self.last_saved_text = text;
-                        self.undo_stack.clear();
-                        self.redo_stack.clear();
+                        self.buffer.clear_history();
                         self.suppress_undo_snapshot = false;
                         self.refresh_search_matches(false);
                         self.refresh_diagnostics();
@@ -1616,23 +1611,20 @@ impl RoxanneApp {
         if self.suppress_undo_snapshot {
             return;
         }
-        self.undo_stack.push(self.content.text());
-        self.redo_stack.clear();
+        self.buffer.record_snapshot();
     }
 
     fn apply_undo(&mut self) {
-        let Some(previous) = self.undo_stack.pop() else {
+        let Some(previous) = self.buffer.undo() else {
             return;
         };
-        self.redo_stack.push(self.content.text());
         self.apply_snapshot(previous);
     }
 
     fn apply_redo(&mut self) {
-        let Some(next) = self.redo_stack.pop() else {
+        let Some(next) = self.buffer.redo() else {
             return;
         };
-        self.undo_stack.push(self.content.text());
         self.apply_snapshot(next);
     }
 

@@ -11,31 +11,44 @@ impl Position {
 }
 
 #[derive(Debug, Clone)]
+struct BufferSnapshot {
+    text: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct TextBuffer {
+    text: String,
     lines: Vec<String>,
+    line_offsets: Vec<usize>,
+    undo_stack: Vec<BufferSnapshot>,
+    redo_stack: Vec<BufferSnapshot>,
 }
 
 impl TextBuffer {
     pub fn new() -> Self {
-        Self {
-            lines: vec![String::new()],
-        }
+        Self::from("")
     }
 
     pub fn from(text: &str) -> Self {
-        let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
-        if lines.is_empty() {
-            lines.push(String::new());
+        let (lines, line_offsets) = build_lines(text);
+        Self {
+            text: text.to_string(),
+            lines,
+            line_offsets,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
-        Self { lines }
     }
 
     pub fn replace(&mut self, text: &str) {
-        *self = Self::from(text);
+        self.text = text.to_string();
+        let (lines, line_offsets) = build_lines(text);
+        self.lines = lines;
+        self.line_offsets = line_offsets;
     }
 
     pub fn text(&self) -> String {
-        self.lines.join("\n")
+        self.text.clone()
     }
 
     pub fn line_count(&self) -> usize {
@@ -56,16 +69,15 @@ impl TextBuffer {
             return self.clamp_position(position);
         }
 
-        let mut full_text = self.text();
         let index = self.index_from_position(position);
-        full_text.insert_str(index, text);
-        self.replace(&full_text);
-        self.position_from_index(index + text.len())
+        let mut new_text = self.text.clone();
+        new_text.insert_str(index, text);
+        self.replace(&new_text);
+        self.position_from_index(index.saturating_add(text.len()))
     }
 
     #[allow(dead_code)]
     pub fn delete_range(&mut self, start: Position, end: Position) -> Position {
-        let mut full_text = self.text();
         let start_index = self.index_from_position(start);
         let end_index = self.index_from_position(end);
         let (from, to) = if start_index <= end_index {
@@ -74,8 +86,9 @@ impl TextBuffer {
             (end_index, start_index)
         };
         if from != to {
-            full_text.replace_range(from..to, "");
-            self.replace(&full_text);
+            let mut new_text = self.text.clone();
+            new_text.replace_range(from..to, "");
+            self.replace(&new_text);
         }
         self.position_from_index(from)
     }
@@ -90,32 +103,83 @@ impl TextBuffer {
 
     pub fn index_from_position(&self, position: Position) -> usize {
         let position = self.clamp_position(position);
-        let mut index = 0;
-        for (line_index, line) in self.lines.iter().enumerate() {
-            if line_index == position.line {
-                return index + position.column;
-            }
-            index += line.len() + 1;
-        }
-        index
+        let line_offset = self.line_offsets.get(position.line).copied().unwrap_or(0);
+        line_offset.saturating_add(position.column)
     }
 
     pub fn position_from_index(&self, mut index: usize) -> Position {
-        for (line_index, line) in self.lines.iter().enumerate() {
-            if index <= line.len() {
-                return Position {
-                    line: line_index,
-                    column: index,
-                };
-            }
-            index = index.saturating_sub(line.len() + 1);
+        if self.lines.is_empty() {
+            return Position { line: 0, column: 0 };
         }
-        let last_line = self.lines.len().saturating_sub(1);
+
+        if index > self.text.len() {
+            index = self.text.len();
+        }
+
+        let line = match self
+            .line_offsets
+            .iter()
+            .rposition(|offset| *offset <= index)
+        {
+            Some(line_index) => line_index,
+            None => 0,
+        };
+        let line_offset = self.line_offsets.get(line).copied().unwrap_or(0);
+        let column = index.saturating_sub(line_offset);
+        let line_len = self.lines.get(line).map_or(0, String::len);
         Position {
-            line: last_line,
-            column: self.lines.last().map_or(0, |line| line.len().min(index)),
+            line,
+            column: column.min(line_len),
         }
     }
+
+    pub fn record_snapshot(&mut self) {
+        if self.undo_stack.len() > 200 {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(BufferSnapshot {
+            text: self.text.clone(),
+        });
+        self.redo_stack.clear();
+    }
+
+    pub fn undo(&mut self) -> Option<String> {
+        let snapshot = self.undo_stack.pop()?;
+        self.redo_stack.push(BufferSnapshot {
+            text: self.text.clone(),
+        });
+        self.replace(&snapshot.text);
+        Some(snapshot.text)
+    }
+
+    pub fn redo(&mut self) -> Option<String> {
+        let snapshot = self.redo_stack.pop()?;
+        self.undo_stack.push(BufferSnapshot {
+            text: self.text.clone(),
+        });
+        self.replace(&snapshot.text);
+        Some(snapshot.text)
+    }
+
+    pub fn clear_history(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+}
+
+fn build_lines(text: &str) -> (Vec<String>, Vec<usize>) {
+    let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    let mut offsets = Vec::with_capacity(lines.len());
+    let mut index = 0usize;
+    for line in &lines {
+        offsets.push(index);
+        index = index.saturating_add(line.len() + 1);
+    }
+    (lines, offsets)
 }
 
 impl Default for TextBuffer {
@@ -150,5 +214,25 @@ mod tests {
         let position = buffer.delete_range(Position::new(0, 1), Position::new(1, 1));
         assert_eq!(buffer.text(), "ad\nef");
         assert_eq!(position, Position::new(0, 1));
+    }
+
+    #[test]
+    fn index_and_position_roundtrip() {
+        let buffer = TextBuffer::from("one\ntwo\nthree");
+        let pos = Position::new(2, 2);
+        let index = buffer.index_from_position(pos);
+        assert_eq!(buffer.position_from_index(index), pos);
+    }
+
+    #[test]
+    fn undo_redo_roundtrip() {
+        let mut buffer = TextBuffer::from("hello");
+        buffer.record_snapshot();
+        buffer.insert(Position::new(0, 5), " world");
+        assert_eq!(buffer.text(), "hello world");
+        buffer.undo();
+        assert_eq!(buffer.text(), "hello");
+        buffer.redo();
+        assert_eq!(buffer.text(), "hello world");
     }
 }
