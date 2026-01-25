@@ -26,9 +26,6 @@
 ```toml
 profile = "work"
 
-[theme]
-name = "dark"
-
 [theme.palette]
 app_background = "#1e1e20"
 status_bar = "#2d2d30"
@@ -57,9 +54,6 @@ dynamic = ["./plugins/roxanne_sample.so"]
 - `profile` : nom du profil à charger (cherche `~/.config/roxanne/profiles/<profil>.toml`).
 
 ### Thèmes
-Clé possible dans `[theme]` :
-- `name` : thème prédéfini à charger (`default`, `dark`, `light`).
-
 Clés possibles dans `[theme.palette]` (valeurs hexadécimales `#RRGGBB`) :
 - `app_background`
 - `menu_bar`
