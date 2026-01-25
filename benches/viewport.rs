@@ -40,5 +40,33 @@ fn bench_viewport_update(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_viewport_update);
+fn bench_viewport_reuse(c: &mut Criterion) {
+    let mut group = c.benchmark_group("viewport_cache_reuse");
+    let height = 80usize;
+    let payload = build_text(100_000, 140);
+    let buffer = TextBuffer::from(&payload);
+    group.throughput(Throughput::Elements(height as u64));
+
+    group.bench_function("scroll_window", |b| {
+        b.iter_custom(|iters| {
+            let mut cache = ViewportCache::new();
+            let mut start_line = 0usize;
+            let max_start = 100_000usize.saturating_sub(height).max(1);
+            let mut elapsed = Duration::ZERO;
+            for _ in 0..iters {
+                let begin = Instant::now();
+                for _ in 0..120usize {
+                    cache.update(&buffer, start_line, height);
+                    start_line = (start_line + 1) % max_start;
+                }
+                elapsed += begin.elapsed();
+            }
+            elapsed
+        });
+    });
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_viewport_update, bench_viewport_reuse);
 criterion_main!(benches);

@@ -11,6 +11,7 @@ import tomllib
 
 DEFAULT_CRITERION_DIR = Path("target/criterion")
 DEFAULT_THRESHOLDS = Path("benchmarks/thresholds.toml")
+ESTIMATES_FILE = Path("new/estimates.json")
 
 
 def load_thresholds(path: Path) -> dict[str, float]:
@@ -43,6 +44,19 @@ def load_mean_ns(criterion_dir: Path, benchmark: str) -> float:
     return float(point)
 
 
+def discover_benchmarks(criterion_dir: Path) -> set[str]:
+    benchmarks: set[str] = set()
+    if not criterion_dir.exists():
+        return benchmarks
+    for estimates_path in criterion_dir.rglob(str(ESTIMATES_FILE)):
+        try:
+            benchmark = str(estimates_path.parent.parent.relative_to(criterion_dir))
+        except ValueError:
+            continue
+        benchmarks.add(benchmark)
+    return benchmarks
+
+
 def format_ns(ns: float) -> str:
     if ns >= 1_000_000.0:
         return f"{ns / 1_000_000.0:.2f} ms"
@@ -67,6 +81,11 @@ def main() -> int:
         default=DEFAULT_THRESHOLDS,
         help="Path to thresholds TOML",
     )
+    parser.add_argument(
+        "--allow-unknown",
+        action="store_true",
+        help="Ignore benchmark results that are missing thresholds",
+    )
     args = parser.parse_args()
 
     if not args.thresholds.exists():
@@ -78,6 +97,30 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"Failed to load thresholds: {exc}")
         return 2
+
+    if not args.criterion_dir.exists():
+        print(f"Criterion directory not found: {args.criterion_dir}")
+        return 2
+
+    discovered = discover_benchmarks(args.criterion_dir)
+    missing_results = sorted(set(thresholds) - discovered)
+    if missing_results:
+        print("Missing benchmark results:")
+        for name in missing_results:
+            print(f"- {name}")
+        return 2
+
+    unknown_results = sorted(discovered - set(thresholds))
+    if unknown_results and not args.allow_unknown:
+        print("Missing thresholds for benchmarks:")
+        for name in unknown_results:
+            print(f"- {name}")
+        print("Rerun with --allow-unknown to ignore.")
+        return 2
+    if unknown_results and args.allow_unknown:
+        print("Ignoring benchmarks without thresholds:")
+        for name in unknown_results:
+            print(f"- {name}")
 
     failures: list[str] = []
     for benchmark, limit_ns in thresholds.items():
