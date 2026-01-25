@@ -24,7 +24,7 @@ use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use walkdir::{DirEntry, WalkDir};
 
 const DEFAULT_VIEWPORT_HEIGHT: usize = 24;
@@ -61,6 +61,54 @@ pub struct RoxanneApp {
     plugins: PluginManager,
     active_menu: Option<Menu>,
     suppress_undo_snapshot: bool,
+    performance: PerformanceMetrics,
+    perf_file_open_started: Option<Instant>,
+    perf_file_save_started: Option<Instant>,
+    perf_search_files_started: Option<Instant>,
+}
+
+#[derive(Debug, Default)]
+struct PerformanceMetrics {
+    startup: Option<Duration>,
+    last_viewport_refresh: Option<Duration>,
+    last_search: Option<Duration>,
+    last_search_files: Option<Duration>,
+    last_file_open: Option<Duration>,
+    last_file_save: Option<Duration>,
+}
+
+impl PerformanceMetrics {
+    fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(duration) = self.startup {
+            parts.push(format!("Démarrage {}", format_duration(duration)));
+        }
+        if let Some(duration) = self.last_viewport_refresh {
+            parts.push(format!("Rendu {}", format_duration(duration)));
+        }
+        if let Some(duration) = self.last_search {
+            parts.push(format!("Recherche {}", format_duration(duration)));
+        }
+        if let Some(duration) = self.last_search_files {
+            parts.push(format!("Recherche fichiers {}", format_duration(duration)));
+        }
+        if let Some(duration) = self.last_file_open {
+            parts.push(format!("Ouverture {}", format_duration(duration)));
+        }
+        if let Some(duration) = self.last_file_save {
+            parts.push(format!("Sauvegarde {}", format_duration(duration)));
+        }
+        if parts.is_empty() {
+            "Performance: aucune mesure.".to_string()
+        } else {
+            format!("Performance: {}.", parts.join(" | "))
+        }
+    }
+}
+
+fn format_duration(duration: Duration) -> String {
+    let millis = duration.as_secs_f64() * 1000.0;
+    format!("{millis:.1} ms")
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +178,7 @@ pub enum MenuAction {
     ToggleSearchPanel,
     GoToLine,
     ReloadConfig,
+    PerformanceReport,
     About,
 }
 
@@ -486,6 +535,7 @@ impl Application for RoxanneApp {
     type Flags = config::AppConfig;
 
     fn new(flags: config::AppConfig) -> (Self, Command<Message>) {
+        let startup_start = Instant::now();
         let initial_text = "Roxanne – éditeur en mode Iced\n\n\
             Objectif: MVP inspiré de Sublime Text\n\
             - Menu bar, tabs, status bar\n\
@@ -498,7 +548,7 @@ impl Application for RoxanneApp {
         plugins.on_text_changed(initial_text, "untitled.txt");
         let mut warnings = flags.load_warnings.clone();
         warnings.extend(plugin_warnings);
-        let status_message = if warnings.is_empty() {
+        let mut status_message = if warnings.is_empty() {
             None
         } else {
             Some(format!(
@@ -506,6 +556,15 @@ impl Application for RoxanneApp {
                 warnings.len()
             ))
         };
+        let startup_duration = startup_start.elapsed();
+        let mut performance = PerformanceMetrics::default();
+        performance.startup = Some(startup_duration);
+        if status_message.is_none() {
+            status_message = Some(format!(
+                "Démarrage: {}.",
+                format_duration(startup_duration)
+            ));
+        }
         highlight::set_syntax_palette(flags.theme.syntax);
         (
             Self {
@@ -539,6 +598,10 @@ impl Application for RoxanneApp {
                 plugins,
                 active_menu: None,
                 suppress_undo_snapshot: false,
+                performance,
+                perf_file_open_started: None,
+                perf_file_save_started: None,
+                perf_search_files_started: None,
             },
             Command::none(),
         )
@@ -680,11 +743,19 @@ impl Application for RoxanneApp {
             Message::KeyAction(action) => self.handle_key_action(action),
             Message::SearchInFiles => self.search_in_files(),
             Message::SearchResultsLoaded(result) => {
+                if let Some(started) = self.perf_search_files_started.take() {
+                    self.performance.last_search_files = Some(started.elapsed());
+                }
                 match result {
                     Ok(results) => {
                         self.search_results = results;
+                        let duration = self
+                            .performance
+                            .last_search_files
+                            .map(format_duration)
+                            .unwrap_or_else(|| "-".to_string());
                         self.status_message = Some(format!(
-                            "Recherche fichiers: {} résultat(s).",
+                            "Recherche fichiers: {} résultat(s) ({duration}).",
                             self.search_results.len()
                         ));
                     }
@@ -798,6 +869,10 @@ impl Application for RoxanneApp {
                         Command::none()
                     }
                     MenuAction::ReloadConfig => self.reload_config(),
+                    MenuAction::PerformanceReport => {
+                        self.status_message = Some(self.performance.summary());
+                        Command::none()
+                    }
                     MenuAction::About => {
                         self.status_message =
                             Some("Roxanne MVP: éditeur inspiré de Sublime Text.".to_string());
@@ -806,6 +881,9 @@ impl Application for RoxanneApp {
                 }
             }
             Message::FileLoaded(result) => {
+                if let Some(started) = self.perf_file_open_started.take() {
+                    self.performance.last_file_open = Some(started.elapsed());
+                }
                 match result {
                     Ok(text) => {
                         self.content = EditorContent::with_text(&text);
@@ -818,7 +896,12 @@ impl Application for RoxanneApp {
                         self.plugins.on_file_opened(&self.content.text(), &self.filename);
                         self.plugins.on_text_changed(&self.content.text(), &self.filename);
                         self.refresh_viewport_cache();
-                        self.status_message = Some("Fichier chargé.".to_string());
+                        let duration = self
+                            .performance
+                            .last_file_open
+                            .map(format_duration)
+                            .unwrap_or_else(|| "-".to_string());
+                        self.status_message = Some(format!("Fichier chargé ({duration})."));
                     }
                     Err(message) => {
                         self.status_message = Some(format!("Erreur d'ouverture: {message}"));
@@ -827,11 +910,19 @@ impl Application for RoxanneApp {
                 Command::none()
             }
             Message::FileSaved(result) => {
+                if let Some(started) = self.perf_file_save_started.take() {
+                    self.performance.last_file_save = Some(started.elapsed());
+                }
                 match result {
                     Ok(()) => {
                         self.last_saved_text = self.content.text().to_string();
                         self.plugins.on_file_saved(&self.last_saved_text, &self.filename);
-                        self.status_message = Some("Fichier sauvegardé.".to_string());
+                        let duration = self
+                            .performance
+                            .last_file_save
+                            .map(format_duration)
+                            .unwrap_or_else(|| "-".to_string());
+                        self.status_message = Some(format!("Fichier sauvegardé ({duration})."));
                     }
                     Err(message) => {
                         self.status_message = Some(format!("Erreur de sauvegarde: {message}"));
@@ -924,6 +1015,7 @@ impl RoxanneApp {
             return Command::none();
         }
         let filename = self.filename.clone();
+        self.perf_file_open_started = Some(Instant::now());
         Command::perform(
             async move { std::fs::read_to_string(&filename).map_err(|err| err.to_string()) },
             Message::FileLoaded,
@@ -938,6 +1030,7 @@ impl RoxanneApp {
         let filename = self.filename.clone();
         self.buffer.replace(&self.content.text());
         let text = self.buffer.text();
+        self.perf_file_save_started = Some(Instant::now());
         Command::perform(
             async move { atomic_write(&filename, &text).map_err(|err| err.to_string()) },
             Message::FileSaved,
@@ -1144,7 +1237,13 @@ impl RoxanneApp {
                 vec![("Status Bar", MenuAction::ToggleStatusBar)],
             ),
             Menu::Goto => ("Goto", vec![("Go to Line", MenuAction::GoToLine)]),
-            Menu::Tools => ("Tools", vec![("Reload Config", MenuAction::ReloadConfig)]),
+            Menu::Tools => (
+                "Tools",
+                vec![
+                    ("Reload Config", MenuAction::ReloadConfig),
+                    ("Performance Report", MenuAction::PerformanceReport),
+                ],
+            ),
             Menu::Help => ("Help", vec![("About", MenuAction::About)]),
         };
 
@@ -1719,10 +1818,17 @@ impl RoxanneApp {
         }
 
         if self.search_scope == SearchScope::CurrentFile {
+            let started = Instant::now();
             self.refresh_search_matches(false);
+            self.performance.last_search = Some(started.elapsed());
+            let duration = self
+                .performance
+                .last_search
+                .map(format_duration)
+                .unwrap_or_else(|| "-".to_string());
             self.status_message = Some(format!(
-                "Recherche fichier: {} occurrence(s).",
-                self.search_matches.len()
+                "Recherche fichier: {} occurrence(s) ({duration}).",
+                self.search_matches.len(),
             ));
             return Command::none();
         }
@@ -1737,6 +1843,7 @@ impl RoxanneApp {
             }
         };
 
+        self.perf_search_files_started = Some(Instant::now());
         Command::perform(
             search_in_workspace(root, query, options),
             Message::SearchResultsLoaded,
@@ -2039,8 +2146,10 @@ impl RoxanneApp {
     fn refresh_viewport_cache(&mut self) {
         let (line, _) = self.content.cursor_position();
         let start_line = line.saturating_sub(self.viewport_height / 2);
+        let started = Instant::now();
         self.viewport_cache
             .update(&self.buffer, start_line, self.viewport_height);
+        self.performance.last_viewport_refresh = Some(started.elapsed());
     }
 
     fn viewport_label(&self) -> String {
