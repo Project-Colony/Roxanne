@@ -2565,6 +2565,22 @@ fn build_matcher(needle: &str, options: SearchOptions) -> Result<SearchMatcher, 
     }
 }
 
+fn normalize_casefolded(text: &str) -> String {
+    text.chars().flat_map(|ch| ch.to_lowercase()).collect()
+}
+
+fn normalize_casefolded_with_mapping(text: &str) -> (String, Vec<usize>) {
+    let mut normalized = String::new();
+    let mut mapping = Vec::new();
+    for (index, ch) in text.chars().enumerate() {
+        for folded in ch.to_lowercase() {
+            normalized.push(folded);
+            mapping.push(index);
+        }
+    }
+    (normalized, mapping)
+}
+
 fn find_matches_in_line(line: &str, matcher: &SearchMatcher) -> Vec<(usize, usize)> {
     match matcher {
         SearchMatcher::Regex(regex) => regex
@@ -2584,19 +2600,35 @@ fn find_matches_in_line(line: &str, matcher: &SearchMatcher) -> Vec<(usize, usiz
             }
 
             if !case_sensitive {
-                let escaped = regex::escape(needle);
-                let regex = RegexBuilder::new(&escaped)
-                    .case_insensitive(true)
-                    .build()
-                    .unwrap_or_else(|_| Regex::new("$^").expect("regex fallback"));
-                return regex
-                    .find_iter(line)
-                    .map(|found| {
-                        let start = byte_index_to_char_index(line, found.start());
-                        let length = line[found.start()..found.end()].chars().count();
-                        (start, length)
-                    })
-                    .collect();
+                let normalized_needle = normalize_casefolded(needle);
+                if normalized_needle.is_empty() {
+                    return Vec::new();
+                }
+                let (normalized_line, mapping) = normalize_casefolded_with_mapping(line);
+                let mut matches = Vec::new();
+                let mut search_start = 0;
+                while let Some(found) = normalized_line[search_start..].find(&normalized_needle) {
+                    let start_byte = search_start + found;
+                    let end_byte = start_byte + normalized_needle.len();
+                    let start_index = byte_index_to_char_index(&normalized_line, start_byte);
+                    let end_index = byte_index_to_char_index(&normalized_line, end_byte);
+                    if end_index == 0 {
+                        break;
+                    }
+                    let start_original = mapping
+                        .get(start_index)
+                        .copied()
+                        .unwrap_or_default();
+                    let end_original = mapping
+                        .get(end_index.saturating_sub(1))
+                        .copied()
+                        .map(|index| index + 1)
+                        .unwrap_or(start_original);
+                    let length = end_original.saturating_sub(start_original);
+                    matches.push((start_original, length));
+                    search_start = end_byte;
+                }
+                return matches;
             }
 
             let mut matches = Vec::new();
@@ -2783,6 +2815,21 @@ mod tests {
             .expect("diagnostic");
         assert_eq!(diagnostic.line, 1);
         assert_eq!(diagnostic.column, 1);
+    }
+
+    #[test]
+    fn search_case_insensitive_preserves_original_columns_with_expanding_lowercase() {
+        let text = "İa";
+        let buffer = TextBuffer::from(text);
+        let options = SearchOptions {
+            regex: false,
+            case_sensitive: false,
+        };
+
+        let matches = find_matches(&buffer, "a", options).expect("matches");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].column, 1);
+        assert_eq!(matches[0].length, 1);
     }
 }
 
