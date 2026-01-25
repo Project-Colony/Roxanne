@@ -67,7 +67,7 @@ enter_insert_mode = "i"
 
 [plugins]
 enabled = ["word_count", "line_count"]
-dynamic = ["./plugins/roxanne_sample.so"]
+dynamic = ["./target/release/libroxanne_sample.so"]
 ```
 
 ## Clés disponibles
@@ -136,6 +136,7 @@ Migration :
 Clés possibles dans `[plugins]` :
 - `enabled` : liste des plugins internes à activer (`word_count`, `line_count`).
 - `dynamic` : chemins vers des plugins dynamiques (`.so`, `.dylib`, `.dll`).
+  Exemple : `target/release/libroxanne_sample.so` après compilation d'un plugin externe.
 
 ## Planification configuration
 - Phase 3 : merge multi-niveaux fiable + validation des schémas.
