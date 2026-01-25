@@ -28,6 +28,12 @@
   d’exécution.
 - Les thèmes, keymaps et plugins sont réappliqués immédiatement.
 
+## Version du schéma
+- `config_version` : entier optionnel qui indique la version du schéma de configuration.
+- Si la version est absente ou inférieure à la version courante, Roxanne applique une migration
+  automatique au chargement et écrit en mémoire la version courante.
+- Version courante : `1`.
+
 ## Export / import des thèmes
 - **Export** : utiliser **File → Export Theme** pour générer `.roxanne-theme.toml` dans le
   dossier courant.
@@ -37,6 +43,7 @@
 
 ## Exemple minimal (TOML)
 ```toml
+config_version = 1
 profile = "work"
 keymap_profile = "vim"
 
@@ -130,7 +137,8 @@ Clés supplémentaires :
 - `[keymap_profiles.<nom>]` : définit un profil de raccourcis réutilisable (mêmes clés que `[keymap]`).
 
 Migration :
-- La section `[keybindings]` est toujours acceptée mais obsolète (utiliser `[keymap]`).
+- La section `[keybindings]` est convertie en `[keymap]` lors du chargement.
+- Les clés déjà définies dans `[keymap]` ont priorité sur `[keybindings]`.
 
 ### Plugins
 Clés possibles dans `[plugins]` :

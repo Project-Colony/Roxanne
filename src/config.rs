@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use toml::Value;
+
+const CURRENT_CONFIG_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -106,6 +109,7 @@ impl Default for AppConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct ConfigFile {
+    pub config_version: Option<u32>,
     pub profile: Option<String>,
     pub theme: Option<ThemeConfig>,
     pub keymap: Option<KeymapConfig>,
@@ -126,11 +130,76 @@ fn load_file(path: &Path, warnings: &mut Vec<String>) -> Option<ConfigFile> {
         }
     };
 
-    match toml::from_str::<ConfigFile>(&contents) {
+    let raw = match toml::from_str::<Value>(&contents) {
+        Ok(raw) => raw,
+        Err(err) => {
+            warnings.push(format!("Config: {path:?}: {err}"));
+            return None;
+        }
+    };
+
+    let migrated = if needs_migration(&raw) {
+        migrate_config(raw)
+    } else {
+        raw
+    };
+
+    match migrated.try_into::<ConfigFile>() {
         Ok(file) => Some(file),
         Err(err) => {
             warnings.push(format!("Config: {path:?}: {err}"));
             None
+        }
+    }
+}
+
+fn needs_migration(raw: &Value) -> bool {
+    let version = raw
+        .get("config_version")
+        .and_then(Value::as_integer)
+        .and_then(|value| u32::try_from(value).ok());
+    version.map_or(true, |value| value < CURRENT_CONFIG_VERSION)
+}
+
+pub fn migrate_config(mut raw: Value) -> Value {
+    let Some(table) = raw.as_table_mut() else {
+        return raw;
+    };
+
+    if let Some(keybindings) = table.remove("keybindings") {
+        match table.get_mut("keymap") {
+            Some(existing) => merge_tables(existing, keybindings),
+            None => {
+                table.insert("keymap".to_string(), keybindings);
+            }
+        }
+    }
+
+    table.insert(
+        "config_version".to_string(),
+        Value::Integer(CURRENT_CONFIG_VERSION.into()),
+    );
+
+    raw
+}
+
+fn merge_tables(target: &mut Value, source: Value) {
+    let (Some(target_table), Some(source_table)) =
+        (target.as_table_mut(), source.as_table())
+    else {
+        return;
+    };
+
+    for (key, value) in source_table {
+        match target_table.get_mut(key) {
+            Some(existing) => {
+                if existing.is_table() && value.is_table() {
+                    merge_tables(existing, value.clone());
+                }
+            }
+            None => {
+                target_table.insert(key.clone(), value.clone());
+            }
         }
     }
 }
