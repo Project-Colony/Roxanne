@@ -22,6 +22,7 @@
 ## Versioning
 - SemVer recommandé.
 - Changelog à maintenir.
+- Processus détaillé : voir `docs/release-process.md`.
 
 ## CI/CD (future)
 ### CI
