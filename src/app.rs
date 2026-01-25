@@ -125,7 +125,7 @@ pub enum MenuAction {
     ToggleStatusBar,
     ToggleSearchPanel,
     GoToLine,
-    ToolsSettings,
+    ReloadConfig,
     About,
 }
 
@@ -791,11 +791,7 @@ impl Application for RoxanneApp {
                         self.goto_panel_open = true;
                         Command::none()
                     }
-                    MenuAction::ToolsSettings => {
-                        self.status_message =
-                            Some("Outils: paramètres disponibles prochainement.".to_string());
-                        Command::none()
-                    }
+                    MenuAction::ReloadConfig => self.reload_config(),
                     MenuAction::About => {
                         self.status_message =
                             Some("Roxanne MVP: éditeur inspiré de Sublime Text.".to_string());
@@ -1062,7 +1058,7 @@ impl RoxanneApp {
                 vec![("Status Bar", MenuAction::ToggleStatusBar)],
             ),
             Menu::Goto => ("Goto", vec![("Go to Line", MenuAction::GoToLine)]),
-            Menu::Tools => ("Tools", vec![("Settings", MenuAction::ToolsSettings)]),
+            Menu::Tools => ("Tools", vec![("Reload Config", MenuAction::ReloadConfig)]),
             Menu::Help => ("Help", vec![("About", MenuAction::About)]),
         };
 
@@ -1600,6 +1596,27 @@ impl RoxanneApp {
         })))
         .on_press(Message::SearchScopeSelected(scope))
         .into()
+    }
+
+    fn reload_config(&mut self) -> Command<Message> {
+        let config = config::AppConfig::load();
+        let (mut plugins, plugin_warnings) = PluginManager::new(&config.plugins);
+        let mut warnings = config.load_warnings.clone();
+        warnings.extend(plugin_warnings);
+
+        highlight::set_syntax_palette(config.theme.syntax);
+        self.theme = config.theme;
+        self.keymap = config.keymap;
+        plugins.on_text_changed(&self.content.text(), &self.filename);
+        self.plugins = plugins;
+
+        self.status_message = Some(if warnings.is_empty() {
+            "Config: rechargée.".to_string()
+        } else {
+            format!("Config: rechargée avec {} alerte(s).", warnings.len())
+        });
+
+        Command::none()
     }
 
     fn search_options(&self) -> SearchOptions {

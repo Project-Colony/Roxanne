@@ -4,6 +4,7 @@
 - Configuration explicite et lisible.
 - Valeurs par défaut raisonnables.
 - Possibilité de surcharge par profil.
+- Rechargement à chaud possible sans redémarrer l’application.
 
 ## Types de configuration
 - Thèmes (couleurs, styles).
@@ -21,6 +22,11 @@
 - Utilisateur : `~/.config/roxanne/config.toml`
 - Profil : `~/.config/roxanne/profiles/<profil>.toml`
 - Workspace : `.roxanne.toml` dans le workspace (recherche ascendante)
+
+## Rechargement à chaud
+- Utiliser **Tools → Reload Config** pour recharger les fichiers de configuration en cours
+  d’exécution.
+- Les thèmes, keymaps et plugins sont réappliqués immédiatement.
 
 ## Exemple minimal (TOML)
 ```toml
