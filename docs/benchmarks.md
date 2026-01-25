@@ -24,6 +24,8 @@ Validation après exécution des benchmarks :
 python scripts/check_benchmarks.py
 ```
 
+Validation en CI (GitHub Actions) :
+- Workflow `Benchmarks` exécutant `cargo bench` puis `scripts/check_benchmarks.py`.
+
 ## TODO (Phase 4)
-- Intégrer les seuils d'acceptation en CI.
 - Ajouter des scénarios de défilement/rendu quand le pipeline UI est benchable.

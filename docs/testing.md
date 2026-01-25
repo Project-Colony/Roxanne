@@ -16,4 +16,4 @@
 ## Planification des tests
 - Phase 1 : tests unitaires sur buffer, sélection, I/O.
 - Phase 2 : tests d'intégration sur recherche/undo/redo.
-- Phase 4 : benchmarks automatisés (TextBuffer en place, seuils initiaux définis).
+- Phase 4 : benchmarks automatisés (TextBuffer en place, seuils initiaux définis, CI activée).
