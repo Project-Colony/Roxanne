@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
     pub line: usize,
@@ -53,13 +55,15 @@ struct BufferSnapshot {
     text: String,
 }
 
+const MAX_HISTORY: usize = 200;
+
 #[derive(Debug, Clone)]
 pub struct TextBuffer {
     text: String,
     lines: Vec<String>,
     line_offsets: Vec<usize>,
-    undo_stack: Vec<BufferSnapshot>,
-    redo_stack: Vec<BufferSnapshot>,
+    undo_stack: VecDeque<BufferSnapshot>,
+    redo_stack: VecDeque<BufferSnapshot>,
     revision: usize,
 }
 
@@ -74,8 +78,8 @@ impl TextBuffer {
             text: text.to_string(),
             lines,
             line_offsets,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
             revision: 0,
         }
     }
@@ -178,18 +182,18 @@ impl TextBuffer {
     }
 
     pub fn record_snapshot(&mut self) {
-        if self.undo_stack.len() > 200 {
-            self.undo_stack.remove(0);
+        if self.undo_stack.len() >= MAX_HISTORY {
+            self.undo_stack.pop_front();
         }
-        self.undo_stack.push(BufferSnapshot {
+        self.undo_stack.push_back(BufferSnapshot {
             text: self.text.clone(),
         });
         self.redo_stack.clear();
     }
 
     pub fn undo(&mut self) -> Option<String> {
-        let snapshot = self.undo_stack.pop()?;
-        self.redo_stack.push(BufferSnapshot {
+        let snapshot = self.undo_stack.pop_back()?;
+        self.redo_stack.push_back(BufferSnapshot {
             text: self.text.clone(),
         });
         self.replace(&snapshot.text);
@@ -197,8 +201,8 @@ impl TextBuffer {
     }
 
     pub fn redo(&mut self) -> Option<String> {
-        let snapshot = self.redo_stack.pop()?;
-        self.undo_stack.push(BufferSnapshot {
+        let snapshot = self.redo_stack.pop_back()?;
+        self.undo_stack.push_back(BufferSnapshot {
             text: self.text.clone(),
         });
         self.replace(&snapshot.text);
