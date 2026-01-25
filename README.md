@@ -14,24 +14,3 @@ Roxanne est un projet d’éditeur de texte moderne, personnalisable et extrême
 1. Installer Rust (via `rustup`).
 2. Cloner le dépôt.
 3. Lancer les commandes Cargo (à définir).
-
-## Documentation
-- Le dossier [`docs/`](./docs/) contiendra la documentation technique et fonctionnelle.
-- Le fichier [`docs.md`](./docs.md) résume la structure documentaire.
-- Le fichier [`tasks.md`](./tasks.md) décrit le plan d’exécution et les phases.
-- Le fichier [`docs/roadmap.md`](./docs/roadmap.md) détaille la planification et les jalons.
-- Le fichier [`docs/next-additions.md`](./docs/next-additions.md) liste les compléments
-  recommandés (gouvernance, CI, release).
-- Le fichier [`docs/installation.md`](./docs/installation.md) décrit l'installation et le packaging.
-- Le fichier [`docs/troubleshooting.md`](./docs/troubleshooting.md) couvre les problèmes fréquents.
-
-## Roadmap (résumé)
-- **Phase 0** : cadrage, architecture, documentation.
-- **Phase 1** : MVP (édition de base, rendu, navigation, recherche).
-- **Phase 2** : fonctionnalités avancées (highlight, LSP, multi-curseurs).
-- **Phase 3** : plugins, personnalisation avancée.
-- **Phase 4** : optimisation, stabilité, packaging.
-
-## Planification détaillée
-Consulter [`docs/roadmap.md`](./docs/roadmap.md) pour les jalons, dépendances et
-livrables par phase.
