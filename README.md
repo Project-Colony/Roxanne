@@ -22,6 +22,8 @@ Roxanne est un projet d’éditeur de texte moderne, personnalisable et extrême
 - Le fichier [`docs/roadmap.md`](./docs/roadmap.md) détaille la planification et les jalons.
 - Le fichier [`docs/next-additions.md`](./docs/next-additions.md) liste les compléments
   recommandés (gouvernance, CI, release).
+- Le fichier [`docs/installation.md`](./docs/installation.md) décrit l'installation et le packaging.
+- Le fichier [`docs/troubleshooting.md`](./docs/troubleshooting.md) couvre les problèmes fréquents.
 
 ## Roadmap (résumé)
 - **Phase 0** : cadrage, architecture, documentation.
