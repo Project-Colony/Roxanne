@@ -19,7 +19,10 @@ use iced::{
 };
 use regex::{Regex, RegexBuilder};
 use std::collections::HashSet;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::{DirEntry, WalkDir};
 
 const DEFAULT_VIEWPORT_HEIGHT: usize = 24;
@@ -625,7 +628,7 @@ impl RoxanneApp {
         self.buffer.replace(&self.content.text());
         let text = self.buffer.text();
         Command::perform(
-            async move { std::fs::write(&filename, text).map_err(|err| err.to_string()) },
+            async move { atomic_write(&filename, &text).map_err(|err| err.to_string()) },
             Message::FileSaved,
         )
     }
@@ -2159,6 +2162,52 @@ fn should_skip_file(path: &Path) -> bool {
         .and_then(|ext| ext.to_str())
         .map(|ext| skip_extensions.contains(&ext))
         .unwrap_or(false)
+}
+
+fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
+    let path = Path::new(path);
+    let parent = path.parent().unwrap_or(Path::new(""));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("roxanne");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| err.to_string())?
+        .as_millis();
+    let temp_name = format!(".{file_name}.{stamp}.tmp");
+    let temp_path = if parent.as_os_str().is_empty() {
+        PathBuf::from(&temp_name)
+    } else {
+        parent.join(&temp_name)
+    };
+
+    let mut temp_file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&temp_path)
+        .map_err(|err| err.to_string())?;
+    temp_file
+        .write_all(contents.as_bytes())
+        .and_then(|_| temp_file.sync_all())
+        .map_err(|err| err.to_string())?;
+
+    match std::fs::rename(&temp_path, path) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if path.exists() {
+                if let Err(remove_err) = std::fs::remove_file(path) {
+                    let _ = std::fs::remove_file(&temp_path);
+                    return Err(format!("{err} (suppression échouée: {remove_err})"));
+                }
+                std::fs::rename(&temp_path, path).map_err(|err| err.to_string())
+            } else {
+                let _ = std::fs::remove_file(&temp_path);
+                Err(err.to_string())
+            }
+        }
+    }
 }
 
 struct SearchResultLine {

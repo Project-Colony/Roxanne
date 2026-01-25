@@ -10,6 +10,44 @@ impl Position {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cursor {
+    pub position: Position,
+}
+
+impl Cursor {
+    pub fn new(position: Position) -> Self {
+        Self { position }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selection {
+    pub start: Position,
+    pub end: Position,
+}
+
+impl Selection {
+    pub fn new(start: Position, end: Position) -> Self {
+        Self { start, end }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.start == self.end
+    }
+
+    pub fn normalized(&self) -> Self {
+        if (self.start.line, self.start.column) <= (self.end.line, self.end.column) {
+            *self
+        } else {
+            Self {
+                start: self.end,
+                end: self.start,
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct BufferSnapshot {
     text: String,
@@ -204,7 +242,7 @@ impl Default for TextBuffer {
 
 #[cfg(test)]
 mod tests {
-    use super::{Position, TextBuffer};
+    use super::{Cursor, Position, Selection, TextBuffer};
 
     #[test]
     fn insert_single_line_text() {
@@ -248,5 +286,17 @@ mod tests {
         assert_eq!(buffer.text(), "hello");
         buffer.redo();
         assert_eq!(buffer.text(), "hello world");
+    }
+
+    #[test]
+    fn cursor_and_selection_helpers() {
+        let cursor = Cursor::new(Position::new(2, 3));
+        assert_eq!(cursor.position, Position::new(2, 3));
+
+        let selection = Selection::new(Position::new(4, 2), Position::new(1, 9));
+        assert!(!selection.is_empty());
+        let normalized = selection.normalized();
+        assert_eq!(normalized.start, Position::new(1, 9));
+        assert_eq!(normalized.end, Position::new(4, 2));
     }
 }
