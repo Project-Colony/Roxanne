@@ -24,25 +24,7 @@ pub struct ThemePalette {
 
 impl Default for ThemePalette {
     fn default() -> Self {
-        Self {
-            app_background: Color::from_rgb8(30, 30, 32),
-            menu_bar: Color::from_rgb8(45, 45, 48),
-            menu_button_active: Color::from_rgb8(65, 65, 70),
-            menu_button_hover: Color::from_rgb8(70, 70, 74),
-            submenu_bar: Color::from_rgb8(40, 40, 44),
-            button_base: Color::from_rgb8(55, 55, 60),
-            button_hover: Color::from_rgb8(65, 65, 70),
-            toggle_active: Color::from_rgb8(90, 90, 96),
-            toggle_inactive: Color::from_rgb8(55, 55, 60),
-            tab_bar: Color::from_rgb8(37, 37, 40),
-            tab_active: Color::from_rgb8(50, 50, 54),
-            editor_background: Color::from_rgb8(28, 28, 30),
-            status_bar: Color::from_rgb8(45, 45, 48),
-            panel_background: Color::from_rgb8(36, 36, 40),
-            panel_item_background: Color::from_rgb8(42, 42, 46),
-            panel_item_hover: Color::from_rgb8(60, 60, 66),
-            syntax: SyntaxPalette::default(),
-        }
+        Self::dark()
     }
 }
 
@@ -111,115 +93,227 @@ pub struct SyntaxConfig {
 impl ThemeConfig {
     pub fn apply_to(&self, palette: &mut ThemePalette) -> Vec<String> {
         let mut warnings = Vec::new();
-        let mut apply = |value: &Option<String>, target: &mut Color, label: &str| {
-            if let Some(value) = value {
-                match parse_color(value) {
-                    Ok(color) => *target = color,
-                    Err(err) => warnings.push(format!("Thème: {label}: {err}")),
-                }
+        if let Some(name) = &self.name {
+            match ThemePalette::from_name(name) {
+                Some(theme) => *palette = theme,
+                None => warnings.push(format!("Thème: nom inconnu '{name}'")),
             }
-        };
+        }
 
-        apply(
+        apply_color(
+            &mut warnings,
             &self.palette.app_background,
             &mut palette.app_background,
             "app_background",
         );
-        apply(&self.palette.menu_bar, &mut palette.menu_bar, "menu_bar");
-        apply(
+        apply_color(
+            &mut warnings,
+            &self.palette.menu_bar,
+            &mut palette.menu_bar,
+            "menu_bar",
+        );
+        apply_color(
+            &mut warnings,
             &self.palette.menu_button_active,
             &mut palette.menu_button_active,
             "menu_button_active",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.palette.menu_button_hover,
             &mut palette.menu_button_hover,
             "menu_button_hover",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.palette.submenu_bar,
             &mut palette.submenu_bar,
             "submenu_bar",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.palette.button_base,
             &mut palette.button_base,
             "button_base",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.palette.button_hover,
             &mut palette.button_hover,
             "button_hover",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.palette.toggle_active,
             &mut palette.toggle_active,
             "toggle_active",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.palette.toggle_inactive,
             &mut palette.toggle_inactive,
             "toggle_inactive",
         );
-        apply(&self.palette.tab_bar, &mut palette.tab_bar, "tab_bar");
-        apply(&self.palette.tab_active, &mut palette.tab_active, "tab_active");
-        apply(
+        apply_color(
+            &mut warnings,
+            &self.palette.tab_bar,
+            &mut palette.tab_bar,
+            "tab_bar",
+        );
+        apply_color(
+            &mut warnings,
+            &self.palette.tab_active,
+            &mut palette.tab_active,
+            "tab_active",
+        );
+        apply_color(
+            &mut warnings,
             &self.palette.editor_background,
             &mut palette.editor_background,
             "editor_background",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.palette.status_bar,
             &mut palette.status_bar,
             "status_bar",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.palette.panel_background,
             &mut palette.panel_background,
             "panel_background",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.palette.panel_item_background,
             &mut palette.panel_item_background,
             "panel_item_background",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.palette.panel_item_hover,
             &mut palette.panel_item_hover,
             "panel_item_hover",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.syntax.keyword,
             &mut palette.syntax.keyword,
             "syntax.keyword",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.syntax.r#type,
             &mut palette.syntax.r#type,
             "syntax.type",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.syntax.string,
             &mut palette.syntax.string,
             "syntax.string",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.syntax.comment,
             &mut palette.syntax.comment,
             "syntax.comment",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.syntax.number,
             &mut palette.syntax.number,
             "syntax.number",
         );
-        apply(
+        apply_color(
+            &mut warnings,
             &self.syntax.search_match,
             &mut palette.syntax.search_match,
             "syntax.search_match",
         );
 
         warnings
+    }
+}
+
+fn apply_color(
+    warnings: &mut Vec<String>,
+    value: &Option<String>,
+    target: &mut Color,
+    label: &str,
+) {
+    if let Some(value) = value {
+        match parse_color(value) {
+            Ok(color) => *target = color,
+            Err(err) => warnings.push(format!("Thème: {label}: {err}")),
+        }
+    }
+}
+
+impl ThemePalette {
+    pub fn from_name(name: &str) -> Option<Self> {
+        if name.eq_ignore_ascii_case("default") {
+            return Some(Self::dark());
+        }
+        if name.eq_ignore_ascii_case("dark") {
+            return Some(Self::dark());
+        }
+        if name.eq_ignore_ascii_case("light") {
+            return Some(Self::light());
+        }
+        None
+    }
+
+    fn dark() -> Self {
+        Self {
+            app_background: Color::from_rgb8(30, 30, 32),
+            menu_bar: Color::from_rgb8(45, 45, 48),
+            menu_button_active: Color::from_rgb8(65, 65, 70),
+            menu_button_hover: Color::from_rgb8(70, 70, 74),
+            submenu_bar: Color::from_rgb8(40, 40, 44),
+            button_base: Color::from_rgb8(55, 55, 60),
+            button_hover: Color::from_rgb8(65, 65, 70),
+            toggle_active: Color::from_rgb8(90, 90, 96),
+            toggle_inactive: Color::from_rgb8(55, 55, 60),
+            tab_bar: Color::from_rgb8(37, 37, 40),
+            tab_active: Color::from_rgb8(50, 50, 54),
+            editor_background: Color::from_rgb8(28, 28, 30),
+            status_bar: Color::from_rgb8(45, 45, 48),
+            panel_background: Color::from_rgb8(36, 36, 40),
+            panel_item_background: Color::from_rgb8(42, 42, 46),
+            panel_item_hover: Color::from_rgb8(60, 60, 66),
+            syntax: SyntaxPalette::default(),
+        }
+    }
+
+    fn light() -> Self {
+        Self {
+            app_background: Color::from_rgb8(245, 245, 246),
+            menu_bar: Color::from_rgb8(225, 225, 228),
+            menu_button_active: Color::from_rgb8(205, 205, 210),
+            menu_button_hover: Color::from_rgb8(215, 215, 218),
+            submenu_bar: Color::from_rgb8(232, 232, 234),
+            button_base: Color::from_rgb8(210, 210, 214),
+            button_hover: Color::from_rgb8(198, 198, 204),
+            toggle_active: Color::from_rgb8(180, 180, 188),
+            toggle_inactive: Color::from_rgb8(210, 210, 214),
+            tab_bar: Color::from_rgb8(230, 230, 234),
+            tab_active: Color::from_rgb8(205, 205, 210),
+            editor_background: Color::from_rgb8(255, 255, 255),
+            status_bar: Color::from_rgb8(225, 225, 228),
+            panel_background: Color::from_rgb8(235, 235, 238),
+            panel_item_background: Color::from_rgb8(220, 220, 224),
+            panel_item_hover: Color::from_rgb8(200, 200, 206),
+            syntax: SyntaxPalette {
+                keyword: Color::from_rgb8(0, 92, 179),
+                r#type: Color::from_rgb8(0, 128, 113),
+                string: Color::from_rgb8(163, 74, 48),
+                comment: Color::from_rgb8(87, 126, 69),
+                number: Color::from_rgb8(110, 124, 65),
+                search_match: Color::from_rgb8(196, 128, 0),
+            },
+        }
     }
 }
 
