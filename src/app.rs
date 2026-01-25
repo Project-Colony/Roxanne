@@ -1327,8 +1327,6 @@ impl RoxanneApp {
             .on_action(Message::Edit)
             .font(Font::MONOSPACE)
             .padding([12, 16])
-            .width(Length::Fill)
-            .height(Length::Fill)
             .highlight::<highlight::RoxanneHighlighter>(
                 self.highlight_settings.clone(),
                 highlight::highlight_format,
