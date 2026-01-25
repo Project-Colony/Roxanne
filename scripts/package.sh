@@ -104,21 +104,34 @@ else
   tar -C "$STAGING_DIR" -czf "$ARCHIVE_PATH" "$PACKAGE_NAME"
 fi
 
-ARCHIVE_PATH="$ARCHIVE_PATH" python3 - <<'PY'
+CHECKSUMS_FILE="${OUT_DIR}/SHA256SUMS"
+touch "$CHECKSUMS_FILE"
+
+write_sha256() {
+  local file_path="$1"
+  FILE_PATH="$file_path" CHECKSUMS_FILE="$CHECKSUMS_FILE" python3 - <<'PY'
 import hashlib
 import os
 import pathlib
 
-archive = pathlib.Path(os.environ["ARCHIVE_PATH"])
-sha_path = archive.with_suffix(archive.suffix + ".sha256")
+file_path = pathlib.Path(os.environ["FILE_PATH"])
+checksum_file = pathlib.Path(os.environ["CHECKSUMS_FILE"])
+sha_path = file_path.with_name(file_path.name + ".sha256")
 
-hash_value = hashlib.sha256(archive.read_bytes()).hexdigest()
-sha_path.write_text(f"{hash_value}  {archive.name}\n")
+hash_value = hashlib.sha256(file_path.read_bytes()).hexdigest()
+line = f"{hash_value}  {file_path.name}\n"
+sha_path.write_text(line)
+with checksum_file.open("a", encoding="utf-8") as handle:
+    handle.write(line)
 PY
+}
+
+write_sha256 "$ARCHIVE_PATH"
 
 if [[ "${SIGN:-0}" == "1" ]]; then
   if command -v gpg >/dev/null 2>&1; then
     gpg --armor --detach-sign "$ARCHIVE_PATH"
+    write_sha256 "${ARCHIVE_PATH}.asc"
   else
     echo "SIGN=1 set but gpg not found; skipping signature." >&2
   fi
