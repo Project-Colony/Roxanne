@@ -10,14 +10,29 @@ max_mean_ms = 40.0
 [benchmarks."text_buffer_build/50000"]
 max_mean_ms = 200.0
 
+[benchmarks."text_buffer_build/100000"]
+max_mean_ms = 380.0
+
+[benchmarks."text_buffer_build/200000"]
+max_mean_ms = 750.0
+
 [benchmarks."text_buffer_edit/insert_middle"]
 max_mean_ms = 25.0
 
 [benchmarks."text_buffer_edit/delete_span"]
 max_mean_ms = 25.0
 
+[benchmarks."text_buffer_repeated_edits/insert_delete_burst"]
+max_mean_ms = 140.0
+
+[benchmarks."text_buffer_repeated_edits/cursor_walk"]
+max_mean_ms = 95.0
+
 [benchmarks."viewport_cache_update/10000"]
 max_mean_ms = 15.0
 
 [benchmarks."viewport_cache_update/50000"]
 max_mean_ms = 30.0
+
+[benchmarks."viewport_cache_reuse/scroll_window"]
+max_mean_ms = 45.0
