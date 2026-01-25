@@ -15,3 +15,9 @@ max_mean_ms = 25.0
 
 [benchmarks."text_buffer_edit/delete_span"]
 max_mean_ms = 25.0
+
+[benchmarks."viewport_cache_update/10000"]
+max_mean_ms = 15.0
+
+[benchmarks."viewport_cache_update/50000"]
+max_mean_ms = 30.0
