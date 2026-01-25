@@ -86,10 +86,42 @@ fn bench_repeated_edits(c: &mut Criterion) {
                     cursor = buffer.position_from_index(offset);
                 }
                 elapsed += begin.elapsed();
-                drop(cursor);
+                let _ = cursor;
             }
             elapsed
         });
+    });
+
+    group.finish();
+}
+
+fn bench_undo_redo(c: &mut Criterion) {
+    let mut group = c.benchmark_group("text_buffer_history");
+    let payload = build_text(10_000, 120);
+    group.throughput(Throughput::Bytes(payload.len() as u64));
+
+    group.bench_function("undo_redo_burst", |b| {
+        b.iter_batched(
+            || {
+                let mut buffer = TextBuffer::from(&payload);
+                buffer.record_snapshot();
+                for step in 0..80usize {
+                    let insert_at = buffer.position_from_index((step * 128) % payload.len());
+                    buffer.insert(insert_at, "UNDO");
+                    buffer.record_snapshot();
+                }
+                buffer
+            },
+            |mut buffer| {
+                for _ in 0..80usize {
+                    buffer.undo();
+                }
+                for _ in 0..80usize {
+                    buffer.redo();
+                }
+            },
+            BatchSize::SmallInput,
+        );
     });
 
     group.finish();
@@ -99,6 +131,7 @@ criterion_group!(
     benches,
     bench_buffer_construction,
     bench_insert_delete,
-    bench_repeated_edits
+    bench_repeated_edits,
+    bench_undo_redo
 );
 criterion_main!(benches);

@@ -18,6 +18,7 @@
 Les benchmarks Criterion se trouvent dans `benches/` et couvrent :
 - Construction de buffers sur fichiers moyens à très volumineux (`text_buffer_build`).
 - Éditions répétées (insertion/suppression) et parcours de positions (`text_buffer_repeated_edits`).
+- Rafales undo/redo pour valider l'historique (`text_buffer_history`).
 - Mise à jour et réutilisation du cache de viewport (`viewport_cache_update`, `viewport_cache_reuse`).
 
 ### Lancer les benchmarks
