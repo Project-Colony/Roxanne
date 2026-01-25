@@ -11,7 +11,8 @@ use iced::widget::text_editor::{
     Action as EditorAction, Content as EditorContent, Edit as EditorEdit, Motion,
 };
 use iced::widget::{
-    Button, Column, Container, Scrollable, TextInput, column, container, row, text, text_editor,
+    Button, Column, Container, Scrollable, Space, TextInput, column, container, row, text,
+    text_editor,
 };
 use iced::advanced::{layout, overlay, renderer, widget, Clipboard, Layout, Shell, Widget};
 use iced::{
@@ -1327,22 +1328,25 @@ impl RoxanneApp {
         let line_count = self.buffer.line_count().max(1);
         let gutter_digits = line_count.to_string().len();
         let gutter_width = (gutter_digits as f32 * (line_number_size as f32 * 0.6)) + 24.0;
-        let gutter_lines = Column::with_children(
-            self.viewport_cache
-                .lines()
-                .iter()
-                .map(|line| {
-                    text(format!("{:>width$}", line.line + 1, width = gutter_digits))
-                        .size(line_number_size)
-                        .font(Font::MONOSPACE)
-                        .style(Color::from_rgb8(140, 140, 140))
-                        .horizontal_alignment(Horizontal::Right)
-                        .into()
-                })
-                .collect::<Vec<Element<Message>>>(),
-        )
-        .spacing(0)
-        .align_items(Alignment::End);
+        let mut gutter_children = self
+            .viewport_cache
+            .lines()
+            .iter()
+            .map(|line| {
+                text(format!("{:>width$}", line.line + 1, width = gutter_digits))
+                    .size(line_number_size)
+                    .font(Font::MONOSPACE)
+                    .style(Color::from_rgb8(140, 140, 140))
+                    .horizontal_alignment(Horizontal::Right)
+                    .into()
+            })
+            .collect::<Vec<Element<Message>>>();
+        gutter_children.push(Space::with_height(Length::Fill).into());
+
+        let gutter_lines = Column::with_children(gutter_children)
+            .spacing(0)
+            .align_items(Alignment::End)
+            .height(Length::Fill);
 
         let gutter = Container::new(gutter_lines)
             .width(Length::Fixed(gutter_width))
