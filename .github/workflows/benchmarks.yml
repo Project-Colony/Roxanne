@@ -30,7 +30,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run Criterion benchmarks
-        run: cargo bench --bench text_buffer -- --noplot
+        run: cargo bench --bench text_buffer --bench viewport -- --noplot
 
       - name: Validate thresholds
         run: python scripts/check_benchmarks.py
