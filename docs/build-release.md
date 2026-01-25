@@ -24,8 +24,10 @@
 - Changelog à maintenir.
 
 ## CI/CD (future)
-- Tests automatiques.
-- Lint et format.
+### CI
+- Pipeline GitHub Actions : `cargo fmt`, `cargo clippy`, `cargo test`.
+
+### CD (future)
 - Publication des artefacts.
 
 ## Planification release
