@@ -131,6 +131,8 @@ struct PluginStatusV1 {
 struct PluginApiV1 {
     name: unsafe extern "C" fn() -> *const std::ffi::c_char,
     on_text_changed: Option<unsafe extern "C" fn(*const std::ffi::c_char, *const std::ffi::c_char)>,
+    on_file_opened: Option<unsafe extern "C" fn(*const std::ffi::c_char, *const std::ffi::c_char)>,
+    on_file_saved: Option<unsafe extern "C" fn(*const std::ffi::c_char, *const std::ffi::c_char)>,
     status: Option<unsafe extern "C" fn() -> PluginStatusV1>,
 }
 
@@ -163,6 +165,26 @@ impl DynamicPlugin {
 impl Plugin for DynamicPlugin {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn on_file_opened(&mut self, text: &str, context: &PluginContext) {
+        if let Some(callback) = self.api.on_file_opened {
+            let text = CString::new(text).unwrap_or_default();
+            let filename = CString::new(context.filename.as_str()).unwrap_or_default();
+            unsafe {
+                callback(text.as_ptr(), filename.as_ptr());
+            }
+        }
+    }
+
+    fn on_file_saved(&mut self, text: &str, context: &PluginContext) {
+        if let Some(callback) = self.api.on_file_saved {
+            let text = CString::new(text).unwrap_or_default();
+            let filename = CString::new(context.filename.as_str()).unwrap_or_default();
+            unsafe {
+                callback(text.as_ptr(), filename.as_ptr());
+            }
+        }
     }
 
     fn on_text_changed(&mut self, text: &str, context: &PluginContext) {
