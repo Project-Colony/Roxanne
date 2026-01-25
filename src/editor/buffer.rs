@@ -244,6 +244,31 @@ impl Default for TextBuffer {
 mod tests {
     use super::{Cursor, Position, Selection, TextBuffer};
 
+    fn build_text(lines: usize, line_len: usize) -> String {
+        let line = "x".repeat(line_len);
+        std::iter::repeat(line)
+            .take(lines)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn text_buffer_handles_large_payload_positions() {
+        let text = build_text(10_000, 80);
+        let buffer = TextBuffer::from(&text);
+
+        assert_eq!(buffer.line_count(), 10_000);
+        assert_eq!(buffer.line(9_999).unwrap_or(""), "x".repeat(80));
+
+        let end_position = buffer.position_from_index(text.len());
+        assert_eq!(end_position.line, 9_999);
+        assert_eq!(end_position.column, 80);
+
+        let mid_position = buffer.position_from_index(text.len() / 2);
+        let back_index = buffer.index_from_position(mid_position);
+        assert_eq!(back_index, text.len() / 2);
+    }
+
     #[test]
     fn insert_single_line_text() {
         let mut buffer = TextBuffer::from("abc");

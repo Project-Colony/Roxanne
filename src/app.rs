@@ -2701,6 +2701,14 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    fn build_text(lines: usize, line_len: usize) -> String {
+        let line = "a".repeat(line_len);
+        std::iter::repeat(line)
+            .take(lines)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn atomic_write_writes_contents_without_temp_leftover() {
         let dir = tempdir().expect("tempdir");
@@ -2725,6 +2733,19 @@ mod tests {
             leftovers.is_empty(),
             "temporary files were not cleaned up: {leftovers:?}"
         );
+    }
+
+    #[test]
+    fn atomic_write_handles_large_payloads() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("large.txt");
+        let payload = build_text(50_000, 80);
+
+        atomic_write(path.to_str().expect("path"), &payload).expect("atomic write");
+        let contents = fs::read_to_string(&path).expect("read file");
+
+        assert_eq!(contents.len(), payload.len());
+        assert_eq!(contents, payload);
     }
 }
 
