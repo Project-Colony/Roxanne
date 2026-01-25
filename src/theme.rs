@@ -24,7 +24,25 @@ pub struct ThemePalette {
 
 impl Default for ThemePalette {
     fn default() -> Self {
-        Self::dark()
+        Self {
+            app_background: Color::from_rgb8(30, 30, 32),
+            menu_bar: Color::from_rgb8(45, 45, 48),
+            menu_button_active: Color::from_rgb8(65, 65, 70),
+            menu_button_hover: Color::from_rgb8(70, 70, 74),
+            submenu_bar: Color::from_rgb8(40, 40, 44),
+            button_base: Color::from_rgb8(55, 55, 60),
+            button_hover: Color::from_rgb8(65, 65, 70),
+            toggle_active: Color::from_rgb8(90, 90, 96),
+            toggle_inactive: Color::from_rgb8(55, 55, 60),
+            tab_bar: Color::from_rgb8(37, 37, 40),
+            tab_active: Color::from_rgb8(50, 50, 54),
+            editor_background: Color::from_rgb8(28, 28, 30),
+            status_bar: Color::from_rgb8(45, 45, 48),
+            panel_background: Color::from_rgb8(36, 36, 40),
+            panel_item_background: Color::from_rgb8(42, 42, 46),
+            panel_item_hover: Color::from_rgb8(60, 60, 66),
+            syntax: SyntaxPalette::default(),
+        }
     }
 }
 
@@ -101,13 +119,6 @@ impl ThemeConfig {
                 }
             }
         };
-
-        if let Some(name) = &self.name {
-            match ThemePalette::from_name(name) {
-                Some(theme) => *palette = theme,
-                None => warnings.push(format!("Thème: nom inconnu '{name}'")),
-            }
-        }
 
         apply(
             &self.palette.app_background,
@@ -209,72 +220,6 @@ impl ThemeConfig {
         );
 
         warnings
-    }
-}
-
-impl ThemePalette {
-    pub fn from_name(name: &str) -> Option<Self> {
-        if name.eq_ignore_ascii_case("default") {
-            return Some(Self::dark());
-        }
-        if name.eq_ignore_ascii_case("dark") {
-            return Some(Self::dark());
-        }
-        if name.eq_ignore_ascii_case("light") {
-            return Some(Self::light());
-        }
-        None
-    }
-
-    fn dark() -> Self {
-        Self {
-            app_background: Color::from_rgb8(30, 30, 32),
-            menu_bar: Color::from_rgb8(45, 45, 48),
-            menu_button_active: Color::from_rgb8(65, 65, 70),
-            menu_button_hover: Color::from_rgb8(70, 70, 74),
-            submenu_bar: Color::from_rgb8(40, 40, 44),
-            button_base: Color::from_rgb8(55, 55, 60),
-            button_hover: Color::from_rgb8(65, 65, 70),
-            toggle_active: Color::from_rgb8(90, 90, 96),
-            toggle_inactive: Color::from_rgb8(55, 55, 60),
-            tab_bar: Color::from_rgb8(37, 37, 40),
-            tab_active: Color::from_rgb8(50, 50, 54),
-            editor_background: Color::from_rgb8(28, 28, 30),
-            status_bar: Color::from_rgb8(45, 45, 48),
-            panel_background: Color::from_rgb8(36, 36, 40),
-            panel_item_background: Color::from_rgb8(42, 42, 46),
-            panel_item_hover: Color::from_rgb8(60, 60, 66),
-            syntax: SyntaxPalette::default(),
-        }
-    }
-
-    fn light() -> Self {
-        Self {
-            app_background: Color::from_rgb8(245, 245, 246),
-            menu_bar: Color::from_rgb8(225, 225, 228),
-            menu_button_active: Color::from_rgb8(205, 205, 210),
-            menu_button_hover: Color::from_rgb8(215, 215, 218),
-            submenu_bar: Color::from_rgb8(232, 232, 234),
-            button_base: Color::from_rgb8(210, 210, 214),
-            button_hover: Color::from_rgb8(198, 198, 204),
-            toggle_active: Color::from_rgb8(180, 180, 188),
-            toggle_inactive: Color::from_rgb8(210, 210, 214),
-            tab_bar: Color::from_rgb8(230, 230, 234),
-            tab_active: Color::from_rgb8(205, 205, 210),
-            editor_background: Color::from_rgb8(255, 255, 255),
-            status_bar: Color::from_rgb8(225, 225, 228),
-            panel_background: Color::from_rgb8(235, 235, 238),
-            panel_item_background: Color::from_rgb8(220, 220, 224),
-            panel_item_hover: Color::from_rgb8(200, 200, 206),
-            syntax: SyntaxPalette {
-                keyword: Color::from_rgb8(0, 92, 179),
-                r#type: Color::from_rgb8(0, 128, 113),
-                string: Color::from_rgb8(163, 74, 48),
-                comment: Color::from_rgb8(87, 126, 69),
-                number: Color::from_rgb8(110, 124, 65),
-                search_match: Color::from_rgb8(196, 128, 0),
-            },
-        }
     }
 }
 
