@@ -2,7 +2,7 @@
 
 ## Concepts clés
 - Buffer de texte central.
-- Curseur et sélection.
+- Curseur et sélection (structures dédiées).
 - Historique d’édition (undo/redo).
 
 ## Opérations essentielles
@@ -12,6 +12,7 @@
 
 ## MVP (cible initiale)
 - Buffer de texte linéaire simple (`TextBuffer`) pour démarrer.
+- Structures `Cursor` et `Selection` prêtes pour l’UI.
 - Opérations de base : insertion, suppression par plage, undo/redo minimal.
 - Synchronisation du buffer avec la recherche et les sauvegardes.
 
@@ -25,6 +26,6 @@
 - Limites de taille et performance.
 
 ## Planification core
-- Phase 1 : stabiliser `TextBuffer` et les opérations fondamentales.
+- Phase 1 : stabiliser `TextBuffer`, `Cursor`, `Selection` et les opérations fondamentales.
 - Phase 2 : introduire multi-curseurs et sélections avancées.
 - Phase 3 : exposer les hooks pour les plugins internes.
