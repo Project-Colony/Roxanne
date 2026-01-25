@@ -1,0 +1,17 @@
+# Valeurs initiales (à ajuster après quelques mesures sur la machine de référence).
+# max_mean_ms = seuil de temps moyen par itération (en millisecondes).
+
+[benchmarks."text_buffer_build/1000"]
+max_mean_ms = 8.0
+
+[benchmarks."text_buffer_build/10000"]
+max_mean_ms = 40.0
+
+[benchmarks."text_buffer_build/50000"]
+max_mean_ms = 200.0
+
+[benchmarks."text_buffer_edit/insert_middle"]
+max_mean_ms = 25.0
+
+[benchmarks."text_buffer_edit/delete_span"]
+max_mean_ms = 25.0

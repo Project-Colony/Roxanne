@@ -14,6 +14,16 @@ avec des scénarios simples et comparables.
 cargo bench
 ```
 
+## Seuils d'acceptation (Phase 4)
+Les seuils initiaux sont définis dans `benchmarks/thresholds.toml` et sont
+volontairement conservateurs. Ils sont à ajuster une fois la machine de
+référence stabilisée.
+
+Validation après exécution des benchmarks :
+```bash
+python scripts/check_benchmarks.py
+```
+
 ## TODO (Phase 4)
-- Définir des seuils d'acceptation et les intégrer en CI.
+- Intégrer les seuils d'acceptation en CI.
 - Ajouter des scénarios de défilement/rendu quand le pipeline UI est benchable.
