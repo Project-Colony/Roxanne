@@ -10,6 +10,10 @@
 - FPS en défilement.
 - Latence des commandes critiques.
 
+## Mesures implémentées
+- Démarrage, rendu (viewport), recherche et opérations I/O (ouverture/sauvegarde).
+- Rapport rapide accessible via **Tools → Performance Report** (barre d'état).
+
 ## Stratégies
 - Cache de rendu.
 - Allocation mémoire maîtrisée.
