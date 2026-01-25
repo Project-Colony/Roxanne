@@ -8,6 +8,7 @@ avec des scénarios simples et comparables.
 - Construction d'un TextBuffer à partir d'un texte de 1k, 10k et 50k lignes.
 - Insertion d'un fragment au milieu d'un buffer de 10k lignes.
 - Suppression d'un fragment fixe dans un buffer de 10k lignes.
+- Mise à jour du ViewportCache sur des buffers de 10k et 50k lignes, en simulant un défilement ligne par ligne.
 
 ## Exécution locale
 ```bash
@@ -26,6 +27,3 @@ python scripts/check_benchmarks.py
 
 Validation en CI (GitHub Actions) :
 - Workflow `Benchmarks` exécutant `cargo bench` puis `scripts/check_benchmarks.py`.
-
-## TODO (Phase 4)
-- Ajouter des scénarios de défilement/rendu quand le pipeline UI est benchable.
