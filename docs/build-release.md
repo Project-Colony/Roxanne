@@ -5,7 +5,19 @@
 - `cargo build --release` pour build optimisé.
 
 ## Distribution
-- Packaging à définir (installateur, archive, package manager).
+- Packaging via `scripts/package.sh` (archives + checksum).
+- Exemple (Linux) :
+  ```bash
+  scripts/package.sh --target x86_64-unknown-linux-gnu
+  ```
+- Signature optionnelle :
+  ```bash
+  SIGN=1 scripts/package.sh --target x86_64-unknown-linux-gnu
+  ```
+- Vérification d'archive :
+  ```bash
+  sha256sum -c dist/roxanne-<version>-<target>.tar.gz.sha256
+  ```
 
 ## Versioning
 - SemVer recommandé.
