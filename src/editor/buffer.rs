@@ -145,14 +145,16 @@ impl TextBuffer {
         let line = position.line.min(self.lines.len().saturating_sub(1));
         let column = position
             .column
-            .min(self.lines.get(line).map_or(0, String::len));
+            .min(self.lines.get(line).map_or(0, |line| line.chars().count()));
         Position { line, column }
     }
 
     pub fn index_from_position(&self, position: Position) -> usize {
         let position = self.clamp_position(position);
         let line_offset = self.line_offsets.get(position.line).copied().unwrap_or(0);
-        line_offset.saturating_add(position.column)
+        let line = self.lines.get(position.line).map(String::as_str).unwrap_or("");
+        let column = char_to_byte_index(line, position.column);
+        line_offset.saturating_add(column)
     }
 
     pub fn position_from_index(&self, mut index: usize) -> Position {
@@ -173,11 +175,13 @@ impl TextBuffer {
             None => 0,
         };
         let line_offset = self.line_offsets.get(line).copied().unwrap_or(0);
-        let column = index.saturating_sub(line_offset);
-        let line_len = self.lines.get(line).map_or(0, String::len);
+        let byte_column = index.saturating_sub(line_offset);
+        let line_text = self.lines.get(line).map(String::as_str).unwrap_or("");
+        let line_len = line_text.len();
+        let column = byte_to_char_index(line_text, byte_column.min(line_len));
         Position {
             line,
-            column: column.min(line_len),
+            column: column.min(line_text.chars().count()),
         }
     }
 
@@ -236,6 +240,24 @@ fn build_lines(text: &str) -> (Vec<String>, Vec<usize>) {
         index = index.saturating_add(line.len() + 1);
     }
     (lines, offsets)
+}
+
+fn char_to_byte_index(line: &str, char_index: usize) -> usize {
+    if char_index == 0 {
+        return 0;
+    }
+    line.char_indices()
+        .nth(char_index)
+        .map(|(index, _)| index)
+        .unwrap_or(line.len())
+}
+
+fn byte_to_char_index(line: &str, byte_index: usize) -> usize {
+    let mut index = byte_index.min(line.len());
+    while index > 0 && !line.is_char_boundary(index) {
+        index -= 1;
+    }
+    line[..index].chars().count()
 }
 
 impl Default for TextBuffer {

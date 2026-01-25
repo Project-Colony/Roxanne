@@ -82,14 +82,27 @@ impl Highlighter for RoxanneHighlighter {
         };
 
         if !self.settings.search_matches.is_empty() {
+            let mut char_to_byte = Vec::new();
+            char_to_byte.reserve(line.chars().count() + 1);
+            for (byte_index, _) in line.char_indices() {
+                char_to_byte.push(byte_index);
+            }
+            char_to_byte.push(line.len());
             let mut match_ranges = self
                 .settings
                 .search_matches
                 .iter()
                 .filter(|match_position| match_position.line == line_index)
                 .map(|match_position| {
+                    let start_char = match_position.column;
+                    let end_char = match_position.column + match_position.length;
+                    let start = char_to_byte
+                        .get(start_char)
+                        .copied()
+                        .unwrap_or(line.len());
+                    let end = char_to_byte.get(end_char).copied().unwrap_or(line.len());
                     (
-                        match_position.column..match_position.column + match_position.length,
+                        start..end,
                         HighlightToken::SearchMatch,
                     )
                 })

@@ -1959,7 +1959,7 @@ impl RoxanneApp {
         let clamped_column = self
             .buffer
             .line(clamped_line)
-            .map(|line| line.len())
+            .map(|line| line.chars().count())
             .unwrap_or(0)
             .min(column);
         self.move_cursor_to(clamped_line, clamped_column);
@@ -2166,7 +2166,7 @@ impl RoxanneApp {
     fn refresh_completions(&mut self) {
         let (line, column) = self.content.cursor_position();
         let line_text = self.buffer.line(line).unwrap_or("");
-        let column = column.min(line_text.len());
+        let column = column.min(line_text.chars().count());
         let prefix = extract_prefix(line_text, column);
         self.completion_prefix = prefix.clone();
         self.completion_items = build_completion_items(&prefix);
@@ -2569,33 +2569,45 @@ fn find_matches_in_line(line: &str, matcher: &SearchMatcher) -> Vec<(usize, usiz
     match matcher {
         SearchMatcher::Regex(regex) => regex
             .find_iter(line)
-            .map(|found| (found.start(), found.end() - found.start()))
+            .map(|found| {
+                let start = byte_index_to_char_index(line, found.start());
+                let length = line[found.start()..found.end()].chars().count();
+                (start, length)
+            })
             .collect(),
         SearchMatcher::Plain {
             needle,
             case_sensitive,
         } => {
-            let mut matches = Vec::new();
             if needle.is_empty() {
-                return matches;
+                return Vec::new();
             }
 
-            let search_line = if *case_sensitive {
-                line.to_string()
-            } else {
-                line.to_lowercase()
-            };
-            let search_needle = if *case_sensitive {
-                needle.clone()
-            } else {
-                needle.to_lowercase()
-            };
+            if !case_sensitive {
+                let escaped = regex::escape(needle);
+                let regex = RegexBuilder::new(&escaped)
+                    .case_insensitive(true)
+                    .build()
+                    .unwrap_or_else(|_| Regex::new("$^").expect("regex fallback"));
+                return regex
+                    .find_iter(line)
+                    .map(|found| {
+                        let start = byte_index_to_char_index(line, found.start());
+                        let length = line[found.start()..found.end()].chars().count();
+                        (start, length)
+                    })
+                    .collect();
+            }
 
+            let mut matches = Vec::new();
+            let needle_len = needle.len();
+            let needle_chars = needle.chars().count();
             let mut search_start = 0;
-            while let Some(found) = search_line[search_start..].find(&search_needle) {
-                let column = search_start + found;
-                matches.push((column, needle.len()));
-                search_start = column + needle.len();
+            while let Some(found) = line[search_start..].find(needle) {
+                let byte_index = search_start + found;
+                let column = byte_index_to_char_index(line, byte_index);
+                matches.push((column, needle_chars));
+                search_start = byte_index + needle_len;
             }
 
             matches
@@ -2697,7 +2709,8 @@ fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::atomic_write;
+    use super::{SearchOptions, analyze_diagnostics, atomic_write, find_matches};
+    use crate::editor::TextBuffer;
     use std::fs;
     use tempfile::tempdir;
 
@@ -2746,6 +2759,30 @@ mod tests {
 
         assert_eq!(contents.len(), payload.len());
         assert_eq!(contents, payload);
+    }
+
+    #[test]
+    fn search_and_diagnostics_use_character_columns() {
+        let text = "aé👍b\n🙂}";
+        let buffer = TextBuffer::from(text);
+        let options = SearchOptions {
+            regex: false,
+            case_sensitive: true,
+        };
+
+        let matches = find_matches(&buffer, "👍", options).expect("matches");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line, 0);
+        assert_eq!(matches[0].column, 2);
+        assert_eq!(matches[0].length, 1);
+
+        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostic = diagnostics
+            .iter()
+            .find(|item| item.message.contains("Fermeture inattendue"))
+            .expect("diagnostic");
+        assert_eq!(diagnostic.line, 1);
+        assert_eq!(diagnostic.column, 1);
     }
 }
 
@@ -2916,16 +2953,17 @@ fn parse_goto_input(input: &str) -> Result<(usize, usize), String> {
 }
 
 fn extract_prefix(line: &str, column: usize) -> String {
-    let mut start = column;
+    let byte_column = char_index_to_byte_index(line, column);
+    let mut start = byte_column;
     for (index, ch) in line.char_indices() {
-        if index >= column {
+        if index >= byte_column {
             break;
         }
         if !is_word_char(ch) {
             start = index + ch.len_utf8();
         }
     }
-    line[start..column].to_string()
+    line[start..byte_column].to_string()
 }
 
 fn is_word_char(ch: char) -> bool {
@@ -2971,7 +3009,7 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
 
     for (line_index, line) in buffer.lines().enumerate() {
         let mut quotes = 0usize;
-        for (column, ch) in line.char_indices() {
+        for (column, ch) in line.chars().enumerate() {
             match ch {
                 '{' | '(' | '[' => stack.push((ch, Position::new(line_index, column))),
                 '}' | ')' | ']' => {
@@ -3004,7 +3042,7 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
         if quotes % 2 == 1 {
             diagnostics.push(Diagnostic {
                 line: line_index,
-                column: line.len().saturating_sub(1),
+                column: line.chars().count().saturating_sub(1),
                 message: "Chaîne non terminée.".to_string(),
                 severity: DiagnosticSeverity::Warning,
             });
@@ -3021,4 +3059,22 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
     }
 
     diagnostics
+}
+
+fn char_index_to_byte_index(line: &str, char_index: usize) -> usize {
+    if char_index == 0 {
+        return 0;
+    }
+    line.char_indices()
+        .nth(char_index)
+        .map(|(index, _)| index)
+        .unwrap_or(line.len())
+}
+
+fn byte_index_to_char_index(line: &str, byte_index: usize) -> usize {
+    let mut index = byte_index.min(line.len());
+    while index > 0 && !line.is_char_boundary(index) {
+        index -= 1;
+    }
+    line[..index].chars().count()
 }
