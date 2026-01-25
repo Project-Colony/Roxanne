@@ -265,6 +265,38 @@ impl ThemePalette {
         None
     }
 
+    pub fn to_config(&self) -> ThemeConfig {
+        ThemeConfig {
+            name: None,
+            palette: PaletteConfig {
+                app_background: Some(color_to_hex(self.app_background)),
+                menu_bar: Some(color_to_hex(self.menu_bar)),
+                menu_button_active: Some(color_to_hex(self.menu_button_active)),
+                menu_button_hover: Some(color_to_hex(self.menu_button_hover)),
+                submenu_bar: Some(color_to_hex(self.submenu_bar)),
+                button_base: Some(color_to_hex(self.button_base)),
+                button_hover: Some(color_to_hex(self.button_hover)),
+                toggle_active: Some(color_to_hex(self.toggle_active)),
+                toggle_inactive: Some(color_to_hex(self.toggle_inactive)),
+                tab_bar: Some(color_to_hex(self.tab_bar)),
+                tab_active: Some(color_to_hex(self.tab_active)),
+                editor_background: Some(color_to_hex(self.editor_background)),
+                status_bar: Some(color_to_hex(self.status_bar)),
+                panel_background: Some(color_to_hex(self.panel_background)),
+                panel_item_background: Some(color_to_hex(self.panel_item_background)),
+                panel_item_hover: Some(color_to_hex(self.panel_item_hover)),
+            },
+            syntax: SyntaxConfig {
+                keyword: Some(color_to_hex(self.syntax.keyword)),
+                r#type: Some(color_to_hex(self.syntax.r#type)),
+                string: Some(color_to_hex(self.syntax.string)),
+                comment: Some(color_to_hex(self.syntax.comment)),
+                number: Some(color_to_hex(self.syntax.number)),
+                search_match: Some(color_to_hex(self.syntax.search_match)),
+            },
+        }
+    }
+
     fn dark() -> Self {
         Self {
             app_background: Color::from_rgb8(30, 30, 32),
@@ -331,4 +363,11 @@ fn parse_color(value: &str) -> Result<Color, String> {
         .map_err(|_| format!("couleur invalide '{value}'"))?;
 
     Ok(Color::from_rgb8(red, green, blue))
+}
+
+fn color_to_hex(color: Color) -> String {
+    let red = (color.r.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let green = (color.g.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let blue = (color.b.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", red, green, blue)
 }

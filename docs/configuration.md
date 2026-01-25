@@ -28,6 +28,13 @@
   d’exécution.
 - Les thèmes, keymaps et plugins sont réappliqués immédiatement.
 
+## Export / import des thèmes
+- **Export** : utiliser **File → Export Theme** pour générer `.roxanne-theme.toml` dans le
+  dossier courant.
+- **Import** : utiliser **File → Import Theme** pour recharger `.roxanne-theme.toml` depuis
+  le dossier courant.
+- Le fichier exporté contient toutes les couleurs UI et syntaxe au format `#RRGGBB`.
+
 ## Exemple minimal (TOML)
 ```toml
 profile = "work"
