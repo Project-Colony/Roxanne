@@ -1323,6 +1323,35 @@ impl RoxanneApp {
     }
 
     fn editor_area(&self) -> Element<'_, Message> {
+        let line_number_size = 14;
+        let line_count = self.buffer.line_count().max(1);
+        let gutter_digits = line_count.to_string().len();
+        let gutter_width = (gutter_digits as f32 * (line_number_size as f32 * 0.6)) + 24.0;
+        let gutter_lines = Column::with_children(
+            self.viewport_cache
+                .lines()
+                .iter()
+                .map(|line| {
+                    text(format!("{:>width$}", line.line + 1, width = gutter_digits))
+                        .size(line_number_size)
+                        .font(Font::MONOSPACE)
+                        .style(Color::from_rgb8(140, 140, 140))
+                        .horizontal_alignment(Horizontal::Right)
+                        .into()
+                })
+                .collect::<Vec<Element<Message>>>(),
+        )
+        .spacing(0)
+        .align_items(Alignment::End);
+
+        let gutter = Container::new(gutter_lines)
+            .width(Length::Fixed(gutter_width))
+            .height(Length::Fill)
+            .padding([12, 8])
+            .style(theme::Container::Custom(Box::new(GutterStyle {
+                palette: self.theme,
+            })));
+
         let editor = text_editor(&self.content)
             .on_action(Message::Edit)
             .font(Font::MONOSPACE)
@@ -1333,13 +1362,14 @@ impl RoxanneApp {
                 highlight::highlight_format,
             );
 
-        Container::new(editor)
+        let editor = Container::new(editor)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(theme::Container::Custom(Box::new(EditorStyle {
                 palette: self.theme,
-            })))
-            .into()
+            })));
+
+        row![gutter, editor].height(Length::Fill).into()
     }
 
     fn search_panel(&self) -> Option<Element<'_, Message>> {
@@ -2390,6 +2420,23 @@ impl container::StyleSheet for EditorStyle {
     fn appearance(&self, _style: &Self::Style) -> container::Appearance {
         container::Appearance {
             background: Some(Background::Color(self.palette.editor_background)),
+            text_color: None,
+            border: Default::default(),
+            shadow: Default::default(),
+        }
+    }
+}
+
+struct GutterStyle {
+    palette: ThemePalette,
+}
+
+impl container::StyleSheet for GutterStyle {
+    type Style = Theme;
+
+    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
+        container::Appearance {
+            background: Some(Background::Color(self.palette.panel_background)),
             text_color: None,
             border: Default::default(),
             shadow: Default::default(),
