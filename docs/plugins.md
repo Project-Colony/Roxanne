@@ -13,10 +13,13 @@
 ## Plugins internes initiaux (cibles)
 - **word_count** : compteur de mots (status bar).
 - **line_count** : compteur de lignes (status bar).
+- **character_count** : compteur de caractères (status bar).
+- **byte_count** : compteur d'octets (status bar).
+- **longest_line** : longueur de la ligne la plus longue (status bar).
 
 ## Activation
 Les plugins sont activés via la clé `plugins.enabled` dans la configuration TOML.
-Plugins disponibles : `word_count`, `line_count`.
+Plugins disponibles : `word_count`, `line_count`, `character_count`, `byte_count`, `longest_line`.
 Les plugins dynamiques sont chargés via `plugins.dynamic` (chemins absolus ou relatifs).
 
 ## API dynamique (v1)

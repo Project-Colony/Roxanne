@@ -142,7 +142,7 @@ Migration :
 
 ### Plugins
 Clés possibles dans `[plugins]` :
-- `enabled` : liste des plugins internes à activer (`word_count`, `line_count`).
+- `enabled` : liste des plugins internes à activer (`word_count`, `line_count`, `character_count`, `byte_count`, `longest_line`).
 - `dynamic` : chemins vers des plugins dynamiques (`.so`, `.dylib`, `.dll`).
   Exemple : `target/release/libroxanne_sample.so` après compilation d'un plugin externe.
 

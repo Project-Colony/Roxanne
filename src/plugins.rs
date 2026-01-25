@@ -28,7 +28,13 @@ pub struct PluginManager {
     plugins: Vec<Box<dyn Plugin>>,
 }
 
-const KNOWN_PLUGINS: &[&str] = &["word_count", "line_count"];
+const KNOWN_PLUGINS: &[&str] = &[
+    "word_count",
+    "line_count",
+    "character_count",
+    "byte_count",
+    "longest_line",
+];
 
 impl std::fmt::Debug for PluginManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -46,6 +52,9 @@ impl PluginManager {
             match plugin.as_str() {
                 "word_count" => manager.register(Box::new(WordCountPlugin::default())),
                 "line_count" => manager.register(Box::new(LineCountPlugin::default())),
+                "character_count" => manager.register(Box::new(CharacterCountPlugin::default())),
+                "byte_count" => manager.register(Box::new(ByteCountPlugin::default())),
+                "longest_line" => manager.register(Box::new(LongestLinePlugin::default())),
                 _ => {}
             }
         }
@@ -116,7 +125,13 @@ impl PluginConfig {
 }
 
 fn default_plugins() -> Vec<String> {
-    vec!["word_count".to_string(), "line_count".to_string()]
+    vec![
+        "word_count".to_string(),
+        "line_count".to_string(),
+        "character_count".to_string(),
+        "byte_count".to_string(),
+        "longest_line".to_string(),
+    ]
 }
 
 #[repr(C)]
@@ -258,5 +273,129 @@ impl Plugin for LineCountPlugin {
             label: "Lignes".to_string(),
             value: self.lines.to_string(),
         })
+    }
+}
+
+#[derive(Default)]
+struct CharacterCountPlugin {
+    characters: usize,
+}
+
+impl Plugin for CharacterCountPlugin {
+    fn name(&self) -> &str {
+        "character_count"
+    }
+
+    fn on_text_changed(&mut self, text: &str, _context: &PluginContext) {
+        self.characters = text.chars().count();
+    }
+
+    fn status(&self) -> Option<PluginStatus> {
+        Some(PluginStatus {
+            label: "Caractères".to_string(),
+            value: self.characters.to_string(),
+        })
+    }
+}
+
+#[derive(Default)]
+struct ByteCountPlugin {
+    bytes: usize,
+}
+
+impl Plugin for ByteCountPlugin {
+    fn name(&self) -> &str {
+        "byte_count"
+    }
+
+    fn on_text_changed(&mut self, text: &str, _context: &PluginContext) {
+        self.bytes = text.len();
+    }
+
+    fn status(&self) -> Option<PluginStatus> {
+        Some(PluginStatus {
+            label: "Octets".to_string(),
+            value: self.bytes.to_string(),
+        })
+    }
+}
+
+#[derive(Default)]
+struct LongestLinePlugin {
+    longest_line: usize,
+    longest_line_index: usize,
+}
+
+impl Plugin for LongestLinePlugin {
+    fn name(&self) -> &str {
+        "longest_line"
+    }
+
+    fn on_text_changed(&mut self, text: &str, _context: &PluginContext) {
+        let mut max_len = 0;
+        let mut max_index = 0;
+        for (index, line) in text.split('\n').enumerate() {
+            let len = line.chars().count();
+            if len > max_len {
+                max_len = len;
+                max_index = index;
+            }
+        }
+        self.longest_line = max_len;
+        self.longest_line_index = max_index;
+    }
+
+    fn status(&self) -> Option<PluginStatus> {
+        Some(PluginStatus {
+            label: "Ligne max".to_string(),
+            value: format!("{} (L{})", self.longest_line, self.longest_line_index + 1),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PluginConfig, PluginManager};
+
+    #[test]
+    fn plugin_manager_collects_statuses() {
+        let config = PluginConfig {
+            enabled: vec![
+                "word_count".to_string(),
+                "line_count".to_string(),
+                "character_count".to_string(),
+                "byte_count".to_string(),
+                "longest_line".to_string(),
+            ],
+            dynamic: Vec::new(),
+        };
+        let (mut manager, warnings) = PluginManager::new(&config);
+        assert!(warnings.is_empty());
+
+        manager.on_text_changed("hi\nBonjour", "demo.txt");
+
+        let statuses = manager
+            .statuses()
+            .into_iter()
+            .map(|status| (status.label, status.value))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(statuses.get("Mots").map(String::as_str), Some("2"));
+        assert_eq!(statuses.get("Lignes").map(String::as_str), Some("2"));
+        assert_eq!(statuses.get("Caractères").map(String::as_str), Some("10"));
+        assert_eq!(statuses.get("Octets").map(String::as_str), Some("10"));
+        assert_eq!(statuses.get("Ligne max").map(String::as_str), Some("7 (L2)"));
+    }
+
+    #[test]
+    fn plugin_config_warns_on_unknown_plugins() {
+        let config = PluginConfig {
+            enabled: vec!["word_count".to_string(), "mystery".to_string()],
+            dynamic: Vec::new(),
+        };
+
+        let warnings = config.warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("mystery"));
     }
 }
