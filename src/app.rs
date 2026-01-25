@@ -3,7 +3,7 @@ use crate::editor::highlight::MatchPosition;
 use crate::editor::{Position, TextBuffer, ViewportCache, highlight};
 use crate::keymap::{KeyAction, Keymap, KeymapMode};
 use crate::plugins::PluginManager;
-use crate::theme::ThemePalette;
+use crate::theme::{ThemeConfig, ThemePalette};
 use iced::alignment::{Horizontal, Vertical};
 use iced::theme;
 use iced::widget::button;
@@ -96,6 +96,8 @@ pub enum Message {
     MenuAction(MenuAction),
     FileLoaded(Result<String, String>),
     FileSaved(Result<(), String>),
+    ThemeExported(Result<PathBuf, String>),
+    ThemeImported(Result<ThemeConfig, String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +115,8 @@ pub enum Menu {
 pub enum MenuAction {
     Open,
     Save,
+    ExportTheme,
+    ImportTheme,
     Find,
     FindNext,
     FindPrevious,
@@ -739,6 +743,8 @@ impl Application for RoxanneApp {
                 match action {
                     MenuAction::Open => self.open_file(),
                     MenuAction::Save => self.save_file(),
+                    MenuAction::ExportTheme => self.export_theme(),
+                    MenuAction::ImportTheme => self.import_theme(),
                     MenuAction::Find => {
                         self.status_message = Some(
                             "Recherche: utilisez le champ de recherche dans la barre d'état."
@@ -833,6 +839,37 @@ impl Application for RoxanneApp {
                 }
                 Command::none()
             }
+            Message::ThemeExported(result) => {
+                match result {
+                    Ok(path) => {
+                        self.status_message =
+                            Some(format!("Thème exporté vers {}.", path.display()));
+                    }
+                    Err(message) => {
+                        self.status_message = Some(format!("Export thème: {message}"));
+                    }
+                }
+                Command::none()
+            }
+            Message::ThemeImported(result) => {
+                match result {
+                    Ok(theme_config) => {
+                        let mut palette = self.theme;
+                        let warnings = theme_config.apply_to(&mut palette);
+                        highlight::set_syntax_palette(palette.syntax);
+                        self.theme = palette;
+                        self.status_message = Some(if warnings.is_empty() {
+                            "Thème importé.".to_string()
+                        } else {
+                            format!("Thème importé avec {} alerte(s).", warnings.len())
+                        });
+                    }
+                    Err(message) => {
+                        self.status_message = Some(format!("Import thème: {message}"));
+                    }
+                }
+                Command::none()
+            }
         }
     }
 
@@ -905,6 +942,50 @@ impl RoxanneApp {
             async move { atomic_write(&filename, &text).map_err(|err| err.to_string()) },
             Message::FileSaved,
         )
+    }
+
+    fn export_theme(&mut self) -> Command<Message> {
+        let path = match Self::theme_file_path() {
+            Ok(path) => path,
+            Err(message) => {
+                self.status_message = Some(format!("Export thème: {message}"));
+                return Command::none();
+            }
+        };
+        let theme = self.theme.to_config();
+        Command::perform(
+            async move {
+                let contents = toml::to_string_pretty(&theme).map_err(|err| err.to_string())?;
+                std::fs::write(&path, contents).map_err(|err| err.to_string())?;
+                Ok(path)
+            },
+            Message::ThemeExported,
+        )
+    }
+
+    fn import_theme(&mut self) -> Command<Message> {
+        let path = match Self::theme_file_path() {
+            Ok(path) => path,
+            Err(message) => {
+                self.status_message = Some(format!("Import thème: {message}"));
+                return Command::none();
+            }
+        };
+        Command::perform(
+            async move {
+                let contents = std::fs::read_to_string(&path).map_err(|err| err.to_string())?;
+                let theme = toml::from_str::<ThemeConfig>(&contents)
+                    .map_err(|err| err.to_string())?;
+                Ok(theme)
+            },
+            Message::ThemeImported,
+        )
+    }
+
+    fn theme_file_path() -> Result<PathBuf, String> {
+        std::env::current_dir()
+            .map(|dir| dir.join(".roxanne-theme.toml"))
+            .map_err(|err| err.to_string())
     }
 
     fn handle_key_action(&mut self, action: KeyAction) -> Command<Message> {
@@ -1031,7 +1112,12 @@ impl RoxanneApp {
         let (label, actions) = match self.active_menu? {
             Menu::File => (
                 "File",
-                vec![("Open", MenuAction::Open), ("Save", MenuAction::Save)],
+                vec![
+                    ("Open", MenuAction::Open),
+                    ("Save", MenuAction::Save),
+                    ("Export Theme", MenuAction::ExportTheme),
+                    ("Import Theme", MenuAction::ImportTheme),
+                ],
             ),
             Menu::Edit => (
                 "Edit",
