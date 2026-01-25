@@ -2,6 +2,7 @@ use crate::keymap::{Keymap, KeymapConfig};
 use crate::plugins::PluginConfig;
 use crate::theme::{ThemeConfig, ThemePalette};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -68,6 +69,23 @@ impl AppConfig {
         if let Some(keymap) = &file.keymap {
             warnings.extend(self.keymap.apply_config(keymap));
         }
+        if let Some(keymap) = &file.keybindings {
+            warnings.push("Config: section 'keybindings' obsolète, utilisez 'keymap'.".to_string());
+            warnings.extend(self.keymap.apply_config(keymap));
+        }
+        if let Some(profile_name) = file.keymap_profile.as_deref() {
+            match file.keymap_profiles.as_ref() {
+                Some(profiles) => match profiles.get(profile_name) {
+                    Some(profile) => warnings.extend(self.keymap.apply_config(profile)),
+                    None => warnings.push(format!(
+                        "Config: profil keymap '{profile_name}' introuvable."
+                    )),
+                },
+                None => warnings.push(format!(
+                    "Config: keymap_profile '{profile_name}' défini sans keymap_profiles."
+                )),
+            }
+        }
         if let Some(plugins) = &file.plugins {
             self.plugins = plugins.clone();
             warnings.extend(plugins.warnings());
@@ -91,6 +109,9 @@ struct ConfigFile {
     pub profile: Option<String>,
     pub theme: Option<ThemeConfig>,
     pub keymap: Option<KeymapConfig>,
+    pub keybindings: Option<KeymapConfig>,
+    pub keymap_profile: Option<String>,
+    pub keymap_profiles: Option<HashMap<String, KeymapConfig>>,
     pub plugins: Option<PluginConfig>,
 }
 

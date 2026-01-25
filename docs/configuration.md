@@ -38,6 +38,7 @@
 ## Exemple minimal (TOML)
 ```toml
 profile = "work"
+keymap_profile = "vim"
 
 [theme]
 name = "dark"
@@ -53,6 +54,10 @@ string = "#ce9178"
 [keymap]
 save = "cmd+s"
 find_next = "f3"
+
+[keymap_profiles.vim]
+enter_insert_mode = "i"
+enter_normal_mode = "escape"
 
 [keymap.insert]
 completion = "ctrl+space"
@@ -119,6 +124,13 @@ Clés possibles dans `[keymap]` :
 
 Les sections `[keymap.insert]` et `[keymap.normal]` permettent de surcharger par mode.
 Les actions non applicables à un mode sont ignorées avec un avertissement.
+
+Clés supplémentaires :
+- `keymap_profile` : nom du profil à charger depuis `keymap_profiles`.
+- `[keymap_profiles.<nom>]` : définit un profil de raccourcis réutilisable (mêmes clés que `[keymap]`).
+
+Migration :
+- La section `[keybindings]` est toujours acceptée mais obsolète (utiliser `[keymap]`).
 
 ### Plugins
 Clés possibles dans `[plugins]` :
