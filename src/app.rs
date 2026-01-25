@@ -11,11 +11,13 @@ use iced::widget::text_editor::{
     Action as EditorAction, Content as EditorContent, Edit as EditorEdit, Motion,
 };
 use iced::widget::{
-    Button, Container, Row, Scrollable, TextInput, column, container, row, text, text_editor,
+    Button, Column, Container, Scrollable, TextInput, column, container, row, text, text_editor,
 };
+use iced::advanced::{layout, overlay, renderer, widget, Clipboard, Layout, Shell, Widget};
 use iced::{
     Alignment, Application, Background, Color, Command, Element, Font, Length, Settings,
-    Subscription, Theme, clipboard, event, executor, keyboard,
+    Point, Rectangle, Renderer, Size, Subscription, Theme, Vector, clipboard, event,
+    executor, keyboard, mouse,
 };
 use regex::{Regex, RegexBuilder};
 use std::collections::HashSet;
@@ -127,6 +129,282 @@ pub enum MenuAction {
     About,
 }
 
+const MENU_BAR_PADDING_X: f32 = 16.0;
+
+struct MenuOverlay<'a> {
+    content: Element<'a, Message>,
+    overlay: Option<Element<'a, Message>>,
+    dismiss_message: Option<Message>,
+}
+
+impl<'a> MenuOverlay<'a> {
+    fn new(
+        content: impl Into<Element<'a, Message>>,
+        overlay: Option<Element<'a, Message>>,
+        dismiss_message: Option<Message>,
+    ) -> Self {
+        Self {
+            content: content.into(),
+            overlay,
+            dismiss_message,
+        }
+    }
+}
+
+impl<'a> Widget<Message, Theme, Renderer> for MenuOverlay<'a> {
+    fn children(&self) -> Vec<widget::Tree> {
+        let mut children = vec![widget::Tree::new(&self.content)];
+        if let Some(overlay) = &self.overlay {
+            children.push(widget::Tree::new(overlay));
+        }
+        children
+    }
+
+    fn diff(&self, tree: &mut widget::Tree) {
+        let mut children = vec![self.content.as_widget()];
+        if let Some(overlay) = &self.overlay {
+            children.push(overlay.as_widget());
+        }
+        tree.diff_children(&children);
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn size_hint(&self) -> Size<Length> {
+        self.content.as_widget().size_hint()
+    }
+
+    fn layout(
+        &self,
+        tree: &mut widget::Tree,
+        renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.content
+            .as_widget()
+            .layout(&mut tree.children[0], renderer, limits)
+    }
+
+    fn on_event(
+        &mut self,
+        tree: &mut widget::Tree,
+        event: event::Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) -> event::Status {
+        self.content.as_widget_mut().on_event(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        )
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &widget::Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        self.content.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout,
+            cursor,
+            viewport,
+            renderer,
+        )
+    }
+
+    fn draw(
+        &self,
+        tree: &widget::Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        renderer_style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        self.content.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            renderer_style,
+            layout,
+            cursor,
+            viewport,
+        );
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut widget::Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        let mut children = tree.children.iter_mut();
+        let content_overlay = self.content.as_widget_mut().overlay(
+            children.next().unwrap(),
+            layout,
+            renderer,
+            translation,
+        );
+
+        let overlay_element = match (&mut self.overlay, children.next()) {
+            (Some(overlay), Some(state)) => Some(overlay::Element::new(Box::new(
+                MenuOverlayLayer {
+                    position: layout.position() + translation,
+                    bounds: layout.bounds(),
+                    overlay,
+                    state,
+                    dismiss_message: self.dismiss_message.clone(),
+                },
+            ))),
+            _ => None,
+        };
+
+        match (content_overlay, overlay_element) {
+            (Some(content_overlay), Some(overlay_element)) => {
+                Some(overlay::Group::with_children(vec![
+                    content_overlay,
+                    overlay_element,
+                ])
+                .overlay())
+            }
+            (Some(content_overlay), None) => Some(content_overlay),
+            (None, Some(overlay_element)) => Some(overlay_element),
+            (None, None) => None,
+        }
+    }
+}
+
+impl<'a> From<MenuOverlay<'a>> for Element<'a, Message> {
+    fn from(overlay: MenuOverlay<'a>) -> Self {
+        Element::new(overlay)
+    }
+}
+
+struct MenuOverlayLayer<'a, 'b> {
+    position: Point,
+    bounds: Rectangle,
+    overlay: &'b mut Element<'a, Message>,
+    state: &'b mut widget::Tree,
+    dismiss_message: Option<Message>,
+}
+
+impl<'a, 'b> overlay::Overlay<Message, Theme, Renderer> for MenuOverlayLayer<'a, 'b> {
+    fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
+        let overlay_top = self.bounds.y + self.bounds.height;
+        let overlay_height = (bounds.height - overlay_top).max(0.0);
+        let overlay_bounds = Rectangle {
+            x: 0.0,
+            y: overlay_top,
+            width: bounds.width,
+            height: overlay_height,
+        };
+
+        let overlay_layout = self.overlay.as_widget().layout(
+            self.state,
+            renderer,
+            &layout::Limits::new(Size::ZERO, overlay_bounds.size()),
+        );
+
+        let submenu_offset = Vector::new(self.position.x + MENU_BAR_PADDING_X, 0.0);
+
+        layout::Node::with_children(
+            overlay_bounds.size(),
+            vec![overlay_layout.translate(submenu_offset)],
+        )
+        .translate(Vector::new(overlay_bounds.x, overlay_bounds.y))
+    }
+
+    fn draw(
+        &self,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        renderer_style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+    ) {
+        if let Some(child) = layout.children().next() {
+            self.overlay.as_widget().draw(
+                self.state,
+                renderer,
+                theme,
+                renderer_style,
+                child,
+                cursor,
+                &Rectangle::with_size(Size::INFINITY),
+            );
+        }
+    }
+
+    fn on_event(
+        &mut self,
+        event: event::Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+    ) -> event::Status {
+        if let Some(child) = layout.children().next() {
+            if cursor.is_over(child.bounds()) {
+                return self.overlay.as_widget_mut().on_event(
+                    self.state,
+                    event,
+                    child,
+                    cursor,
+                    renderer,
+                    clipboard,
+                    shell,
+                    &Rectangle::with_size(Size::INFINITY),
+                );
+            }
+        }
+
+        if let event::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event {
+            if let Some(message) = self.dismiss_message.clone() {
+                shell.publish(message);
+                return event::Status::Captured;
+            }
+        }
+
+        event::Status::Ignored
+    }
+
+    fn mouse_interaction(
+        &self,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        if let Some(child) = layout.children().next() {
+            return self.overlay.as_widget().mouse_interaction(
+                self.state,
+                child,
+                cursor,
+                viewport,
+                renderer,
+            );
+        }
+        mouse::Interaction::Idle
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchScope {
     CurrentFile,
@@ -732,12 +1010,8 @@ impl RoxanneApp {
                 palette: self.theme,
             })));
 
-        let mut column = column![top_row];
-        if let Some(submenu) = self.submenu() {
-            column = column.push(submenu);
-        }
-
-        Container::new(column).width(Length::Fill).into()
+        let dismiss_message = self.active_menu.map(Message::MenuSelected);
+        MenuOverlay::new(top_row, self.submenu(), dismiss_message).into()
     }
 
     fn menu_button(&self, label: &str, menu: Menu) -> Element<'_, Message> {
@@ -792,12 +1066,12 @@ impl RoxanneApp {
             Menu::Help => ("Help", vec![("About", MenuAction::About)]),
         };
 
-        let row = row![
+        let row = column![
             text(label)
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(180, 180, 180)),
-            Row::with_children(
+            Column::with_children(
                 actions
                     .into_iter()
                     .map(|(name, action)| {
@@ -811,15 +1085,14 @@ impl RoxanneApp {
                     })
                     .collect::<Vec<Element<Message>>>(),
             )
-            .spacing(8),
+            .spacing(6),
         ]
-        .spacing(12)
-        .align_items(Alignment::Center)
-        .padding([4, 16]);
+        .spacing(8)
+        .align_items(Alignment::Start)
+        .padding([8, 16]);
 
         Some(
             Container::new(row)
-                .width(Length::Fill)
                 .style(theme::Container::Custom(Box::new(SubmenuStyle {
                     palette: self.theme,
                 })))
