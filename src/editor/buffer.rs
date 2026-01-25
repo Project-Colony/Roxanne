@@ -52,7 +52,7 @@ impl Selection {
 
 #[derive(Debug, Clone)]
 struct BufferSnapshot {
-    text: String,
+    text: Box<str>,
 }
 
 const MAX_HISTORY: usize = 200;
@@ -186,31 +186,41 @@ impl TextBuffer {
     }
 
     pub fn record_snapshot(&mut self) {
-        if self.undo_stack.len() >= MAX_HISTORY {
-            self.undo_stack.pop_front();
+        let current = self.text.as_str();
+        let is_duplicate = self
+            .undo_stack
+            .back()
+            .map_or(false, |snapshot| snapshot.text.as_ref() == current);
+        if !is_duplicate {
+            if self.undo_stack.len() >= MAX_HISTORY {
+                self.undo_stack.pop_front();
+            }
+            self.undo_stack
+                .push_back(BufferSnapshot { text: current.into() });
         }
-        self.undo_stack.push_back(BufferSnapshot {
-            text: self.text.clone(),
-        });
         self.redo_stack.clear();
     }
 
-    pub fn undo(&mut self) -> Option<String> {
-        let snapshot = self.undo_stack.pop_back()?;
-        self.redo_stack.push_back(BufferSnapshot {
-            text: self.text.clone(),
-        });
-        self.replace(&snapshot.text);
-        Some(snapshot.text)
+    pub fn undo(&mut self) -> bool {
+        let Some(snapshot) = self.undo_stack.pop_back() else {
+            return false;
+        };
+        self.redo_stack
+            .push_back(BufferSnapshot { text: self.text.as_str().into() });
+        let snapshot_text: String = snapshot.text.into();
+        self.replace_owned(snapshot_text);
+        true
     }
 
-    pub fn redo(&mut self) -> Option<String> {
-        let snapshot = self.redo_stack.pop_back()?;
-        self.undo_stack.push_back(BufferSnapshot {
-            text: self.text.clone(),
-        });
-        self.replace(&snapshot.text);
-        Some(snapshot.text)
+    pub fn redo(&mut self) -> bool {
+        let Some(snapshot) = self.redo_stack.pop_back() else {
+            return false;
+        };
+        self.undo_stack
+            .push_back(BufferSnapshot { text: self.text.as_str().into() });
+        let snapshot_text: String = snapshot.text.into();
+        self.replace_owned(snapshot_text);
+        true
     }
 
     pub fn clear_history(&mut self) {
@@ -224,6 +234,17 @@ impl TextBuffer {
 
     fn bump_revision(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn replace_owned(&mut self, text: String) {
+        if self.text == text {
+            return;
+        }
+        let (lines, line_offsets) = build_lines(&text);
+        self.text = text;
+        self.lines = lines;
+        self.line_offsets = line_offsets;
+        self.bump_revision();
     }
 }
 
@@ -331,12 +352,26 @@ mod tests {
     fn undo_redo_roundtrip() {
         let mut buffer = TextBuffer::from("hello");
         buffer.record_snapshot();
+        buffer.record_snapshot();
+        assert_eq!(buffer.undo_stack.len(), 1);
+        let snapshot_bytes: usize = buffer
+            .undo_stack
+            .iter()
+            .map(|snapshot| snapshot.text.len())
+            .sum();
+        assert_eq!(snapshot_bytes, "hello".len());
         buffer.insert(Position::new(0, 5), " world");
         assert_eq!(buffer.text(), "hello world");
-        buffer.undo();
+        assert!(buffer.undo());
         assert_eq!(buffer.text(), "hello");
-        buffer.redo();
+        assert!(buffer.redo());
         assert_eq!(buffer.text(), "hello world");
+
+        for index in 0..(super::MAX_HISTORY + 5) {
+            buffer.record_snapshot();
+            buffer.replace(&format!("entry {index}"));
+        }
+        assert_eq!(buffer.undo_stack.len(), super::MAX_HISTORY);
     }
 
     #[test]

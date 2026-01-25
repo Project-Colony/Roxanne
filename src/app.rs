@@ -2153,17 +2153,19 @@ impl RoxanneApp {
     }
 
     fn apply_undo(&mut self) {
-        let Some(previous) = self.buffer.undo() else {
+        if !self.buffer.undo() {
             return;
         };
-        self.apply_snapshot(previous);
+        let text = self.buffer.text();
+        self.apply_snapshot(text);
     }
 
     fn apply_redo(&mut self) {
-        let Some(next) = self.buffer.redo() else {
+        if !self.buffer.redo() {
             return;
         };
-        self.apply_snapshot(next);
+        let text = self.buffer.text();
+        self.apply_snapshot(text);
     }
 
     fn apply_snapshot(&mut self, text: String) {
