@@ -2695,6 +2695,39 @@ fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::atomic_write;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn atomic_write_writes_contents_without_temp_leftover() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("note.txt");
+        atomic_write(path.to_str().expect("path"), "hello").expect("atomic write");
+
+        let contents = fs::read_to_string(&path).expect("read file");
+        assert_eq!(contents, "hello");
+
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(|name| name.ends_with(".tmp"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temporary files were not cleaned up: {leftovers:?}"
+        );
+    }
+}
+
 struct SearchResultLine {
     line: usize,
     column: usize,

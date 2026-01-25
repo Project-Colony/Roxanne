@@ -13,6 +13,7 @@ walkdir = "2.5"
 
 [dev-dependencies]
 criterion = "0.5"
+tempfile = "3.12"
 
 [[bench]]
 name = "text_buffer"
