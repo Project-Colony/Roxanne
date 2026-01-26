@@ -23,8 +23,9 @@ use iced::{
 use regex::{Regex, RegexBuilder};
 use std::collections::HashSet;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use walkdir::{DirEntry, WalkDir};
 
@@ -2748,6 +2749,8 @@ fn should_skip_file(path: &Path) -> bool {
 }
 
 fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let path = Path::new(path);
     let parent = path.parent().unwrap_or(Path::new(""));
     let file_name = path
@@ -2758,19 +2761,31 @@ fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|err| err.to_string())?
         .as_millis();
-    let temp_name = format!(".{file_name}.{stamp}.tmp");
-    let temp_path = if parent.as_os_str().is_empty() {
-        PathBuf::from(&temp_name)
-    } else {
-        parent.join(&temp_name)
+    let base_name = format!(".{file_name}.{stamp}");
+    let mut attempts = 0_u32;
+    let (temp_path, mut temp_file) = loop {
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temp_name = format!("{base_name}.{counter}.tmp");
+        let temp_path = if parent.as_os_str().is_empty() {
+            PathBuf::from(&temp_name)
+        } else {
+            parent.join(&temp_name)
+        };
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => break (temp_path, file),
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                attempts += 1;
+                if attempts > 1000 {
+                    return Err("impossible de créer un fichier temporaire unique".to_string());
+                }
+            }
+            Err(err) => return Err(err.to_string()),
+        }
     };
-
-    let mut temp_file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&temp_path)
-        .map_err(|err| err.to_string())?;
     temp_file
         .write_all(contents.as_bytes())
         .and_then(|_| temp_file.sync_all())
