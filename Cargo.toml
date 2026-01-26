@@ -5,6 +5,9 @@ edition = "2024"
 
 [dependencies]
 iced = { version = "0.12", features = ["advanced"] }
+
+[patch.crates-io]
+iced_widget = { path = "vendor/iced_widget" }
 libloading = "0.8"
 regex = "1.11"
 serde = { version = "1.0", features = ["derive"] }
