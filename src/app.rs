@@ -27,6 +27,8 @@ use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use walkdir::{DirEntry, WalkDir};
 
@@ -3015,6 +3017,36 @@ fn should_skip_file(path: &Path, include_hidden: bool) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
+fn rename_failure_state() -> &'static Mutex<Option<PathBuf>> {
+    static RENAME_FAILURE_TARGET: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    RENAME_FAILURE_TARGET.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn set_rename_failure_target(path: Option<PathBuf>) {
+    let mut guard = rename_failure_state().lock().expect("rename failure lock");
+    *guard = path;
+}
+
+fn rename_file(from: &Path, to: &Path) -> Result<(), std::io::Error> {
+    #[cfg(test)]
+    {
+        let mut guard = rename_failure_state().lock().expect("rename failure lock");
+        if let Some(target) = guard.as_ref() {
+            if target.as_path() == to {
+                *guard = None;
+                return Err(std::io::Error::new(
+                    ErrorKind::Other,
+                    "simulated rename failure",
+                ));
+            }
+        }
+    }
+
+    std::fs::rename(from, to)
+}
+
 fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -3058,25 +3090,56 @@ fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
         .and_then(|_| temp_file.sync_all())
         .map_err(|err| err.to_string())?;
 
-    match std::fs::rename(&temp_path, path) {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            if path.exists() {
-                if let Err(remove_err) = std::fs::remove_file(path) {
-                    let _ = std::fs::remove_file(&temp_path);
-                    return Err(format!("{err} (suppression échouée: {remove_err})"));
-                }
-                match std::fs::rename(&temp_path, path) {
-                    Ok(()) => Ok(()),
-                    Err(err) => {
-                        let _ = std::fs::remove_file(&temp_path);
-                        Err(err.to_string())
-                    }
-                }
+    let backup_path = if path.exists() {
+        let mut attempts = 0_u32;
+        loop {
+            let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let backup_name = format!("{base_name}.{counter}.bak");
+            let candidate = if parent.as_os_str().is_empty() {
+                PathBuf::from(&backup_name)
             } else {
-                let _ = std::fs::remove_file(&temp_path);
-                Err(err.to_string())
+                parent.join(&backup_name)
+            };
+            if !candidate.exists() {
+                break Some(candidate);
             }
+            attempts += 1;
+            if attempts > 1000 {
+                let _ = std::fs::remove_file(&temp_path);
+                return Err("impossible de créer un fichier de sauvegarde unique".to_string());
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Some(backup_path) = backup_path.as_ref() {
+        if let Err(err) = rename_file(path, backup_path) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(err.to_string());
+        }
+    }
+
+    match rename_file(&temp_path, path) {
+        Ok(()) => {
+            if let Some(backup_path) = backup_path {
+                if let Err(err) = std::fs::remove_file(&backup_path) {
+                    return Err(format!("suppression sauvegarde échouée: {err}"));
+                }
+            }
+            Ok(())
+        }
+        Err(err) => {
+            let _ = std::fs::remove_file(&temp_path);
+            if let Some(backup_path) = backup_path {
+                if let Err(restore_err) = rename_file(&backup_path, path) {
+                    let _ = std::fs::remove_file(&backup_path);
+                    return Err(format!(
+                        "{err} (restauration échouée: {restore_err})"
+                    ));
+                }
+            }
+            Err(err.to_string())
         }
     }
 }
@@ -3085,7 +3148,7 @@ fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
 mod tests {
     use super::{
         RoxanneApp, SearchOptions, analyze_diagnostics, atomic_write, find_matches,
-        should_skip_entry, should_skip_file,
+        set_rename_failure_target, should_skip_entry, should_skip_file,
     };
     use crate::editor::TextBuffer;
     use std::fs;
@@ -3136,6 +3199,36 @@ mod tests {
 
         assert_eq!(contents.len(), payload.len());
         assert_eq!(contents, payload);
+    }
+
+    #[test]
+    fn atomic_write_preserves_original_on_rename_failure() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("note.txt");
+        fs::write(&path, "original").expect("write original");
+
+        set_rename_failure_target(Some(path.clone()));
+        let result = atomic_write(path.to_str().expect("path"), "updated");
+        assert!(result.is_err(), "atomic write should fail");
+
+        let contents = fs::read_to_string(&path).expect("read original");
+        assert_eq!(contents, "original");
+
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(|name| name.ends_with(".tmp") || name.ends_with(".bak"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temporary files were not cleaned up: {leftovers:?}"
+        );
     }
 
     #[test]
