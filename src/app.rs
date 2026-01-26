@@ -131,7 +131,7 @@ pub enum Message {
     GotoLineClosed,
     SearchInFiles,
     SearchResultsLoaded(Result<SearchResultsSummary, String>),
-    SearchResultOpened(Result<(String, SearchResult), String>),
+    SearchResultOpened(Result<SearchResultLoadResult, String>),
     SearchResultsCleared,
     DiagnosticsToggled,
     CompletionRequested,
@@ -154,6 +154,13 @@ pub enum Message {
 #[derive(Debug, Clone)]
 struct FileLoadResult {
     text: String,
+    lossy: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SearchResultLoadResult {
+    text: String,
+    result: SearchResult,
     lossy: bool,
 }
 
@@ -484,7 +491,7 @@ impl SearchScope {
 
 #[derive(Debug, Clone)]
 pub struct SearchResult {
-    path: String,
+    path: PathBuf,
     line: usize,
     column: usize,
     preview: String,
@@ -787,8 +794,10 @@ impl Application for RoxanneApp {
             }
             Message::SearchResultOpened(result) => {
                 match result {
-                    Ok((text, nav)) => {
-                        self.filename = nav.path.clone();
+                    Ok(load) => {
+                        let nav = load.result;
+                        let text = load.text;
+                        self.filename = nav.path.display().to_string();
                         self.content = EditorContent::with_text(&text);
                         self.buffer.replace(&text);
                         self.buffer.clear_history();
@@ -799,12 +808,19 @@ impl Application for RoxanneApp {
                         self.plugins.on_text_changed(&self.content.text(), &self.filename);
                         self.refresh_viewport_cache();
                         self.jump_to_position(nav.line, nav.column);
-                        self.status_message = Some(format!(
-                            "Recherche: ouvert {} (ligne {}, colonne {}).",
-                            nav.path,
+                        let opened_message = format!(
+                            "Recherche: ouvert {} (ligne {}, colonne {})",
+                            nav.path.display(),
                             nav.line + 1,
                             nav.column + 1
-                        ));
+                        );
+                        if load.lossy {
+                            self.status_message = Some(format!(
+                                "{opened_message} (caractères invalides remplacés)."
+                            ));
+                        } else {
+                            self.status_message = Some(format!("{opened_message}."));
+                        }
                     }
                     Err(message) => {
                         self.status_message = Some(format!("Recherche fichiers: {message}"));
@@ -1483,7 +1499,7 @@ impl RoxanneApp {
                 .map(|(index, result)| {
                     let title = text(format!(
                         "{}:{}:{}",
-                        result.path,
+                        result.path.display(),
                         result.line + 1,
                         result.column + 1
                     ))
@@ -2016,9 +2032,14 @@ impl RoxanneApp {
         let path = result.path.clone();
         Command::perform(
             async move {
-                std::fs::read_to_string(&path)
-                    .map(|text| (text, result))
-                    .map_err(|err| err.to_string())
+                let bytes = std::fs::read(&path).map_err(|err| err.to_string())?;
+                let lossy_text = String::from_utf8_lossy(&bytes);
+                let lossy = matches!(lossy_text, Cow::Owned(_));
+                Ok(SearchResultLoadResult {
+                    text: lossy_text.into_owned(),
+                    result,
+                    lossy,
+                })
             },
             Message::SearchResultOpened,
         )
@@ -2645,7 +2666,7 @@ async fn search_in_workspace(
 
         for line_match in find_matches_in_text(&contents, &matcher) {
             results.push(SearchResult {
-                path: entry.path().display().to_string(),
+                path: entry.path().to_path_buf(),
                 line: line_match.line,
                 column: line_match.column,
                 preview: line_match.preview,
