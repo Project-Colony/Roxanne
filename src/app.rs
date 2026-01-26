@@ -2240,9 +2240,11 @@ impl RoxanneApp {
             .sort_by(|left, right| left.start.cmp(&right.start).then(left.end.cmp(&right.end)));
 
         let mut filtered = Vec::new();
+        let mut ignored_operations = 0;
         let mut last_end = 0;
         for operation in operations {
             if operation.start < last_end {
+                ignored_operations += 1;
                 continue;
             }
             last_end = operation.end;
@@ -2267,10 +2269,17 @@ impl RoxanneApp {
             self.move_cursor_to(primary.line, primary.column);
         }
         self.multi_cursors = new_positions.into_iter().skip(1).collect();
-        self.status_message = Some(format!(
-            "Multi-curseurs: édition sur {} curseur(s).",
-            self.multi_cursors.len() + 1
-        ));
+        let applied_cursors = self.multi_cursors.len() + 1;
+        if ignored_operations > 0 {
+            self.status_message = Some(format!(
+                "Multi-curseurs: édition sur {applied_cursors} curseur(s). \
+{ignored_operations} curseur(s) ignoré(s) car leurs edits se chevauchent."
+            ));
+        } else {
+            self.status_message = Some(format!(
+                "Multi-curseurs: édition sur {applied_cursors} curseur(s)."
+            ));
+        }
     }
 
     fn record_undo_snapshot(&mut self) {
