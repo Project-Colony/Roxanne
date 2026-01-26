@@ -1961,6 +1961,38 @@ impl RoxanneApp {
         }
     }
 
+    fn resolve_workspace_root(&self) -> Result<PathBuf, String> {
+        if let Some(root) = Self::workspace_root_from_filename(&self.filename) {
+            return Ok(root);
+        }
+        std::env::current_dir().map_err(|err| err.to_string())
+    }
+
+    fn workspace_root_from_filename(filename: &str) -> Option<PathBuf> {
+        let trimmed = filename.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        let path = Path::new(trimmed);
+        let base_dir = if path.is_file() {
+            path.parent()?
+        } else if path.is_dir() {
+            path
+        } else {
+            return None;
+        };
+
+        for ancestor in base_dir.ancestors() {
+            let candidate = ancestor.join(".roxanne.toml");
+            if candidate.is_file() {
+                return Some(ancestor.to_path_buf());
+            }
+        }
+
+        Some(base_dir.to_path_buf())
+    }
+
     fn search_in_files(&mut self) -> Command<Message> {
         if self.search_query.trim().is_empty() {
             self.status_message = Some("Recherche fichiers: saisissez un terme.".to_string());
@@ -1985,7 +2017,7 @@ impl RoxanneApp {
 
         let query = self.search_query.clone();
         let options = self.search_options();
-        let root = match std::env::current_dir() {
+        let root = match self.resolve_workspace_root() {
             Ok(path) => path,
             Err(err) => {
                 self.status_message = Some(format!("Recherche fichiers: {err}"));
