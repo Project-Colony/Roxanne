@@ -448,7 +448,7 @@ where
         layout: Layout<'_>,
         renderer: &Renderer,
         translation: Vector,
-    ) -> Option<overlay::Element<'_, Message, Theme, Renderer>> {
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         let children = self
             .contents
             .iter_mut()
