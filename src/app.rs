@@ -129,7 +129,7 @@ pub enum Message {
     GotoLineSubmit,
     GotoLineClosed,
     SearchInFiles,
-    SearchResultsLoaded(Result<Vec<SearchResult>, String>),
+    SearchResultsLoaded(Result<SearchResultsSummary, String>),
     SearchResultOpened(Result<(String, SearchResult), String>),
     SearchResultsCleared,
     DiagnosticsToggled,
@@ -484,6 +484,12 @@ pub struct SearchResult {
 }
 
 #[derive(Debug, Clone)]
+struct SearchResultsSummary {
+    results: Vec<SearchResult>,
+    skipped_errors: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct Diagnostic {
     line: usize,
     column: usize,
@@ -749,15 +755,20 @@ impl Application for RoxanneApp {
                     self.performance.last_search_files = Some(started.elapsed());
                 }
                 match result {
-                    Ok(results) => {
-                        self.search_results = results;
+                    Ok(summary) => {
+                        self.search_results = summary.results;
                         let duration = self
                             .performance
                             .last_search_files
                             .map(format_duration)
                             .unwrap_or_else(|| "-".to_string());
+                        let skipped_note = if summary.skipped_errors > 0 {
+                            format!(", {} fichier(s) ignoré(s)", summary.skipped_errors)
+                        } else {
+                            String::new()
+                        };
                         self.status_message = Some(format!(
-                            "Recherche fichiers: {} résultat(s) ({duration}).",
+                            "Recherche fichiers: {} résultat(s) ({duration}){skipped_note}.",
                             self.search_results.len()
                         ));
                     }
@@ -2554,22 +2565,32 @@ async fn search_in_workspace(
     root: PathBuf,
     query: String,
     options: SearchOptions,
-) -> Result<Vec<SearchResult>, String> {
+) -> Result<SearchResultsSummary, String> {
     if query.trim().is_empty() {
-        return Ok(Vec::new());
+        return Ok(SearchResultsSummary {
+            results: Vec::new(),
+            skipped_errors: 0,
+        });
     }
 
     let matcher = build_matcher(&query, options)?;
     let mut results = Vec::new();
     let mut collected = 0usize;
     let max_results = 500usize;
+    let mut skipped_errors = 0usize;
 
     for entry in WalkDir::new(&root)
         .follow_links(false)
         .into_iter()
         .filter_entry(|entry| !should_skip_entry(entry))
     {
-        let entry = entry.map_err(|err| err.to_string())?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                skipped_errors += 1;
+                continue;
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
@@ -2578,14 +2599,23 @@ async fn search_in_workspace(
             continue;
         }
 
-        let metadata = entry.metadata().map_err(|err| err.to_string())?;
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                skipped_errors += 1;
+                continue;
+            }
+        };
         if metadata.len() > 1_000_000 {
             continue;
         }
 
         let contents = match std::fs::read_to_string(entry.path()) {
             Ok(contents) => contents,
-            Err(_) => continue,
+            Err(_) => {
+                skipped_errors += 1;
+                continue;
+            }
         };
 
         for line_match in find_matches_in_text(&contents, &matcher) {
@@ -2597,12 +2627,18 @@ async fn search_in_workspace(
             });
             collected += 1;
             if collected >= max_results {
-                return Ok(results);
+                return Ok(SearchResultsSummary {
+                    results,
+                    skipped_errors,
+                });
             }
         }
     }
 
-    Ok(results)
+    Ok(SearchResultsSummary {
+        results,
+        skipped_errors,
+    })
 }
 
 fn build_matcher(needle: &str, options: SearchOptions) -> Result<SearchMatcher, String> {
