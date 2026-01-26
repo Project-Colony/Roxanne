@@ -35,8 +35,7 @@ use walkdir::{DirEntry, WalkDir};
 
 const DEFAULT_VIEWPORT_HEIGHT: usize = 24;
 const EDITOR_CONTAINER_ID: &str = "roxanne-editor-area";
-const EDITOR_VERTICAL_PADDING: f32 = 12.0;
-const EDITOR_VERTICAL_PADDING_TOTAL: f32 = EDITOR_VERTICAL_PADDING * 2.0;
+const EDITOR_VERTICAL_PADDING: f32 = 24.0;
 const EDITOR_LINE_HEIGHT: f32 = 16.0;
 
 fn editor_container_id() -> container::Id {
@@ -1200,9 +1199,9 @@ impl RoxanneApp {
     }
 
     fn update_viewport_height(&mut self, bounds: Rectangle) {
-        let available_height = (bounds.height - EDITOR_VERTICAL_PADDING_TOTAL).max(0.0);
+        let available_height = (bounds.height - EDITOR_VERTICAL_PADDING).max(0.0);
         let line_height = EDITOR_LINE_HEIGHT.max(1.0);
-        let visible_lines = (available_height / line_height).ceil().max(1.0) as usize;
+        let visible_lines = (available_height / line_height).floor().max(1.0) as usize;
         if visible_lines != self.viewport_height {
             self.viewport_height = visible_lines;
             self.refresh_viewport_cache();
@@ -1701,7 +1700,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
 
     fn editor_area(&self) -> Element<'_, Message> {
         let line_height = EDITOR_LINE_HEIGHT.max(1.0);
-        let vertical_padding = EDITOR_VERTICAL_PADDING;
+        let vertical_padding = 12.0;
         let line_number_size = 14;
         let line_count = self.buffer.line_count().max(1);
         let gutter_digits = line_count.to_string().len();
