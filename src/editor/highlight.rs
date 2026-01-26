@@ -156,26 +156,52 @@ fn current_syntax_palette() -> SyntaxPalette {
 fn highlight_rust_line(line: &str) -> Vec<(Range<usize>, HighlightToken)> {
     let mut highlights = Vec::new();
     let mut protected_ranges = Vec::new();
+    let bytes = line.as_bytes();
+    let mut string_start = None;
+    let mut escaped = false;
+    let mut comment_start = None;
 
-    if let Some(comment_start) = line.find("//") {
-        highlights.push((comment_start..line.len(), HighlightToken::Comment));
-        protected_ranges.push(comment_start..line.len());
-    }
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
 
-    let mut search_index = 0;
-    while let Some(start) = line[search_index..].find('"') {
-        let quote_start = search_index + start;
-        let after_start = quote_start + 1;
-        if let Some(end) = line[after_start..].find('"') {
-            let quote_end = after_start + end + 1;
-            highlights.push((quote_start..quote_end, HighlightToken::String));
-            protected_ranges.push(quote_start..quote_end);
-            search_index = quote_end;
-        } else {
-            highlights.push((quote_start..line.len(), HighlightToken::String));
-            protected_ranges.push(quote_start..line.len());
+        if let Some(start) = string_start {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                let end = index + 1;
+                highlights.push((start..end, HighlightToken::String));
+                protected_ranges.push(start..end);
+                string_start = None;
+            }
+            index += 1;
+            continue;
+        }
+
+        if byte == b'"' {
+            string_start = Some(index);
+            index += 1;
+            continue;
+        }
+
+        if byte == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
+            comment_start = Some(index);
             break;
         }
+
+        index += 1;
+    }
+
+    if let Some(start) = string_start {
+        highlights.push((start..line.len(), HighlightToken::String));
+        protected_ranges.push(start..line.len());
+    }
+
+    if let Some(start) = comment_start {
+        highlights.push((start..line.len(), HighlightToken::Comment));
+        protected_ranges.push(start..line.len());
     }
 
     let keywords = [
@@ -236,6 +262,19 @@ fn is_in_ranges(start: usize, end: usize, ranges: &[Range<usize>]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fallback_ignores_comment_markers_inside_string() {
+        let line = r#"let s = "http://example.com // still string";"#;
+        let highlights = highlight_rust_line(line);
+
+        assert!(
+            !highlights
+                .iter()
+                .any(|(_, token)| *token == HighlightToken::Comment),
+            "expected no comment tokens in line: {line}"
+        );
+    }
 
     #[test]
     fn does_not_mark_string_slashes_as_comment() {
