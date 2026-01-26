@@ -612,7 +612,10 @@ impl Application for RoxanneApp {
                 goto_panel_open: false,
                 search_scope: SearchScope::CurrentFile,
                 search_results: Vec::new(),
-                highlight_settings: highlight::Settings::default(),
+                highlight_settings: highlight::Settings {
+                    buffer_text: initial_text.into(),
+                    ..highlight::Settings::default()
+                },
                 multi_cursors: Vec::new(),
                 diagnostics,
                 diagnostics_panel_open: false,
@@ -653,6 +656,7 @@ impl Application for RoxanneApp {
                     self.content.perform(action);
                     self.buffer.replace(&self.content.text());
                 }
+                self.sync_highlight_buffer();
                 self.refresh_search_matches(true, true);
                 self.refresh_diagnostics();
                 self.plugins
@@ -748,6 +752,7 @@ impl Application for RoxanneApp {
                         self.record_undo_snapshot();
                         self.apply_multi_cursor_edit(&insert);
                     }
+                    self.sync_highlight_buffer();
                     self.refresh_search_matches(true, true);
                     self.refresh_diagnostics();
                     self.plugins
@@ -860,6 +865,7 @@ impl Application for RoxanneApp {
                         self.completion_items.clear();
                         self.suppress_undo_snapshot = false;
                         self.last_saved_text = text;
+                        self.sync_highlight_buffer();
                         self.refresh_search_matches(false, true);
                         self.refresh_diagnostics();
                         self.plugins
@@ -991,6 +997,7 @@ impl Application for RoxanneApp {
                         self.completion_panel_open = false;
                         self.completion_items.clear();
                         self.suppress_undo_snapshot = false;
+                        self.sync_highlight_buffer();
                         self.refresh_search_matches(false, true);
                         self.refresh_diagnostics();
                         self.plugins
@@ -1257,6 +1264,7 @@ impl RoxanneApp {
                     self.content
                         .perform(EditorAction::Edit(EditorEdit::Backspace));
                     self.buffer.replace(&self.content.text());
+                    self.sync_highlight_buffer();
                     self.refresh_search_matches(true, true);
                     self.refresh_diagnostics();
                     self.plugins
@@ -2305,6 +2313,7 @@ impl RoxanneApp {
         let new_text = apply_operations(&text, &filtered);
         self.buffer.replace(&new_text);
         self.content = EditorContent::with_text(&self.buffer.text());
+        self.sync_highlight_buffer();
 
         let new_indices = compute_new_indices(&cursor_slots, &filtered);
         let mut new_positions = Vec::new();
@@ -2360,12 +2369,17 @@ impl RoxanneApp {
         self.suppress_undo_snapshot = true;
         self.content = EditorContent::with_text(&text);
         self.buffer.replace(&text);
+        self.sync_highlight_buffer();
         self.refresh_search_matches(true, true);
         self.refresh_diagnostics();
         self.plugins
             .on_text_changed(&self.content.text(), &self.filename);
         self.refresh_viewport_cache();
         self.suppress_undo_snapshot = false;
+    }
+
+    fn sync_highlight_buffer(&mut self) {
+        self.highlight_settings.buffer_text = self.content.text().into();
     }
 
     fn refresh_viewport_cache(&mut self) {
@@ -2427,6 +2441,7 @@ impl RoxanneApp {
             self.record_undo_snapshot();
             self.apply_multi_cursor_edit(&insert);
         }
+        self.sync_highlight_buffer();
         self.refresh_search_matches(true, true);
         self.refresh_diagnostics();
         self.plugins
