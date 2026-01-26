@@ -791,6 +791,8 @@ impl Application for RoxanneApp {
                         self.filename = nav.path.clone();
                         self.content = EditorContent::with_text(&text);
                         self.buffer.replace(&text);
+                        self.buffer.clear_history();
+                        self.suppress_undo_snapshot = false;
                         self.last_saved_text = text;
                         self.refresh_search_matches(false);
                         self.refresh_diagnostics();
@@ -2858,7 +2860,13 @@ fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
                     let _ = std::fs::remove_file(&temp_path);
                     return Err(format!("{err} (suppression échouée: {remove_err})"));
                 }
-                std::fs::rename(&temp_path, path).map_err(|err| err.to_string())
+                match std::fs::rename(&temp_path, path) {
+                    Ok(()) => Ok(()),
+                    Err(err) => {
+                        let _ = std::fs::remove_file(&temp_path);
+                        Err(err.to_string())
+                    }
+                }
             } else {
                 let _ = std::fs::remove_file(&temp_path);
                 Err(err.to_string())
@@ -2958,6 +2966,20 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].column, 1);
         assert_eq!(matches[0].length, 1);
+    }
+
+    #[test]
+    fn diagnostics_ignore_escaped_quotes() {
+        let text = r#"let value = "hello\"world";"#;
+        let buffer = TextBuffer::from(text);
+
+        let diagnostics = analyze_diagnostics(&buffer);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|item| item.message != "Chaîne non terminée."),
+            "escaped quote should not trigger unterminated string diagnostic"
+        );
     }
 }
 
@@ -3184,6 +3206,7 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
 
     for (line_index, line) in buffer.lines().enumerate() {
         let mut quotes = 0usize;
+        let mut backslashes = 0usize;
         for (column, ch) in line.chars().enumerate() {
             match ch {
                 '{' | '(' | '[' => stack.push((ch, Position::new(line_index, column))),
@@ -3209,8 +3232,14 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
                         });
                     }
                 }
-                '"' => quotes += 1,
-                _ => {}
+                '"' => {
+                    if backslashes % 2 == 0 {
+                        quotes += 1;
+                    }
+                    backslashes = 0;
+                }
+                '\\' => backslashes += 1,
+                _ => backslashes = 0,
             }
         }
 
