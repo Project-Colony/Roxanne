@@ -653,7 +653,7 @@ impl Application for RoxanneApp {
                     self.content.perform(action);
                     self.buffer.replace(&self.content.text());
                 }
-                self.refresh_search_matches(true);
+                self.refresh_search_matches(true, true);
                 self.refresh_diagnostics();
                 self.plugins
                     .on_text_changed(&self.content.text(), &self.filename);
@@ -662,9 +662,8 @@ impl Application for RoxanneApp {
             }
             Message::SearchChanged(value) => {
                 self.search_query = value;
-                if self.search_scope == SearchScope::CurrentFile {
-                    self.refresh_search_matches(false);
-                }
+                let update_status = self.search_scope == SearchScope::CurrentFile;
+                self.refresh_search_matches(false, update_status);
                 Command::none()
             }
             Message::SearchNext => self.find_next_match(true),
@@ -673,14 +672,14 @@ impl Application for RoxanneApp {
             Message::SearchToggleCaseSensitive => {
                 self.search_case_sensitive = !self.search_case_sensitive;
                 if self.search_scope == SearchScope::CurrentFile {
-                    self.refresh_search_matches(false);
+                    self.refresh_search_matches(false, true);
                 }
                 Command::none()
             }
             Message::SearchToggleRegex => {
                 self.search_regex = !self.search_regex;
                 if self.search_scope == SearchScope::CurrentFile {
-                    self.refresh_search_matches(false);
+                    self.refresh_search_matches(false, true);
                 }
                 Command::none()
             }
@@ -691,7 +690,7 @@ impl Application for RoxanneApp {
             Message::SearchScopeSelected(scope) => {
                 self.search_scope = scope;
                 if self.search_scope == SearchScope::CurrentFile {
-                    self.refresh_search_matches(false);
+                    self.refresh_search_matches(false, true);
                 }
                 Command::none()
             }
@@ -749,7 +748,7 @@ impl Application for RoxanneApp {
                         self.record_undo_snapshot();
                         self.apply_multi_cursor_edit(&insert);
                     }
-                    self.refresh_search_matches(true);
+                    self.refresh_search_matches(true, true);
                     self.refresh_diagnostics();
                     self.plugins
                         .on_text_changed(&self.content.text(), &self.filename);
@@ -861,7 +860,7 @@ impl Application for RoxanneApp {
                         self.completion_items.clear();
                         self.suppress_undo_snapshot = false;
                         self.last_saved_text = text;
-                        self.refresh_search_matches(false);
+                        self.refresh_search_matches(false, true);
                         self.refresh_diagnostics();
                         self.plugins
                             .on_text_changed(&self.content.text(), &self.filename);
@@ -992,7 +991,7 @@ impl Application for RoxanneApp {
                         self.completion_panel_open = false;
                         self.completion_items.clear();
                         self.suppress_undo_snapshot = false;
-                        self.refresh_search_matches(false);
+                        self.refresh_search_matches(false, true);
                         self.refresh_diagnostics();
                         self.plugins
                             .on_file_opened(&self.content.text(), &self.filename);
@@ -1258,7 +1257,7 @@ impl RoxanneApp {
                     self.content
                         .perform(EditorAction::Edit(EditorEdit::Backspace));
                     self.buffer.replace(&self.content.text());
-                    self.refresh_search_matches(true);
+                    self.refresh_search_matches(true, true);
                     self.refresh_diagnostics();
                     self.plugins
                         .on_text_changed(&self.content.text(), &self.filename);
@@ -2021,7 +2020,7 @@ impl RoxanneApp {
 
         if self.search_scope == SearchScope::CurrentFile {
             let started = Instant::now();
-            self.refresh_search_matches(false);
+            self.refresh_search_matches(false, true);
             self.performance.last_search = Some(started.elapsed());
             let duration = self
                 .performance
@@ -2052,7 +2051,7 @@ impl RoxanneApp {
         )
     }
 
-    fn refresh_search_matches(&mut self, preserve_index: bool) {
+    fn refresh_search_matches(&mut self, preserve_index: bool, update_status: bool) {
         let options = self.search_options();
         self.search_matches = match find_matches(&self.buffer, &self.search_query, options) {
             Ok(matches) => matches,
@@ -2060,7 +2059,7 @@ impl RoxanneApp {
                 self.current_match_index = None;
                 self.search_matches.clear();
                 self.highlight_settings.search_matches.clear();
-                if !self.search_query.is_empty() {
+                if update_status && !self.search_query.is_empty() {
                     self.status_message = Some(format!("Recherche: {message}"));
                 }
                 return;
@@ -2069,7 +2068,7 @@ impl RoxanneApp {
         self.highlight_settings.search_matches = self.search_matches.clone();
         if self.search_matches.is_empty() {
             self.current_match_index = None;
-            if !self.search_query.is_empty() {
+            if update_status && !self.search_query.is_empty() {
                 self.status_message = Some("Recherche: aucune occurrence.".to_string());
             }
             return;
@@ -2082,7 +2081,7 @@ impl RoxanneApp {
             None
         };
 
-        if !self.search_query.is_empty() {
+        if update_status && !self.search_query.is_empty() {
             self.status_message = Some(format!(
                 "Recherche: {} occurrence(s).",
                 self.search_matches.len()
@@ -2361,7 +2360,7 @@ impl RoxanneApp {
         self.suppress_undo_snapshot = true;
         self.content = EditorContent::with_text(&text);
         self.buffer.replace(&text);
-        self.refresh_search_matches(true);
+        self.refresh_search_matches(true, true);
         self.refresh_diagnostics();
         self.plugins
             .on_text_changed(&self.content.text(), &self.filename);
@@ -2428,7 +2427,7 @@ impl RoxanneApp {
             self.record_undo_snapshot();
             self.apply_multi_cursor_edit(&insert);
         }
-        self.refresh_search_matches(true);
+        self.refresh_search_matches(true, true);
         self.refresh_diagnostics();
         self.plugins
             .on_text_changed(&self.content.text(), &self.filename);
