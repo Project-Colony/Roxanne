@@ -187,6 +187,8 @@ pub enum Menu {
     View,
     Goto,
     Tools,
+    Project,
+    Preferences,
     Help,
 }
 
@@ -211,6 +213,23 @@ pub enum MenuAction {
     ReloadConfig,
     PerformanceReport,
     About,
+    Placeholder(&'static str),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MenuEntry {
+    Action(&'static str, MenuAction),
+    Separator,
+}
+
+impl MenuEntry {
+    fn action(label: &'static str, action: MenuAction) -> Self {
+        Self::Action(label, action)
+    }
+
+    fn placeholder(label: &'static str) -> Self {
+        Self::Action(label, MenuAction::Placeholder(label))
+    }
 }
 
 const MENU_BAR_PADDING_X: f32 = 16.0;
@@ -989,6 +1008,10 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                             Some("Roxanne MVP: éditeur inspiré de Sublime Text.".to_string());
                         Command::none()
                     }
+                    MenuAction::Placeholder(label) => {
+                        self.status_message = Some(format!("Non implémenté : {label}."));
+                        Command::none()
+                    }
                 }
             }
             Message::FileLoaded(result) => {
@@ -1338,6 +1361,8 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             self.menu_button("View", Menu::View),
             self.menu_button("Goto", Menu::Goto),
             self.menu_button("Tools", Menu::Tools),
+            self.menu_button("Project", Menu::Project),
+            self.menu_button("Preferences", Menu::Preferences),
             self.menu_button("Help", Menu::Help),
         ]
         .spacing(16)
@@ -1376,42 +1401,176 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             Menu::File => (
                 "File",
                 vec![
-                    ("Open", MenuAction::Open),
-                    ("Save", MenuAction::Save),
-                    ("Export Theme", MenuAction::ExportTheme),
-                    ("Import Theme", MenuAction::ImportTheme),
+                    MenuEntry::placeholder("New File — Ctrl+N"),
+                    MenuEntry::placeholder("New Window — Ctrl+Shift+N"),
+                    MenuEntry::action("Open File… — Ctrl+O", MenuAction::Open),
+                    MenuEntry::placeholder("Open Folder… — Ctrl+Shift+O"),
+                    MenuEntry::placeholder("Open Recent ▸"),
+                    MenuEntry::placeholder("Reopen Closed File — Ctrl+Shift+T"),
+                    MenuEntry::Separator,
+                    MenuEntry::placeholder("Close File — Ctrl+W"),
+                    MenuEntry::placeholder("Close Window — Ctrl+Shift+W"),
+                    MenuEntry::Separator,
+                    MenuEntry::action("Save — Ctrl+S", MenuAction::Save),
+                    MenuEntry::placeholder("Save As… — Ctrl+Shift+S"),
+                    MenuEntry::placeholder("Save All — Ctrl+Alt+S"),
+                    MenuEntry::placeholder("Save with Encoding ▸"),
+                    MenuEntry::placeholder("Save with Line Endings ▸"),
+                    MenuEntry::Separator,
+                    MenuEntry::action("Export Theme", MenuAction::ExportTheme),
+                    MenuEntry::action("Import Theme", MenuAction::ImportTheme),
+                    MenuEntry::Separator,
+                    MenuEntry::placeholder("Print… — Ctrl+P"),
+                    MenuEntry::placeholder("Exit — Ctrl+Q"),
                 ],
             ),
             Menu::Edit => (
                 "Edit",
                 vec![
-                    ("Find", MenuAction::Find),
-                    ("Find Next", MenuAction::FindNext),
-                    ("Find Previous", MenuAction::FindPrevious),
-                    ("Find in Files", MenuAction::FindInFiles),
-                    ("Search Panel", MenuAction::ToggleSearchPanel),
-                    ("Diagnostics Panel", MenuAction::ToggleDiagnosticsPanel),
+                    MenuEntry::placeholder("Undo — Ctrl+Z"),
+                    MenuEntry::placeholder("Redo — Ctrl+Y"),
+                    MenuEntry::placeholder("Undo Selection — Ctrl+U"),
+                    MenuEntry::placeholder("Soft Undo — Alt+Backspace"),
+                    MenuEntry::placeholder("Soft Redo — Alt+Shift+Backspace"),
+                    MenuEntry::Separator,
+                    MenuEntry::placeholder("Cut — Ctrl+X"),
+                    MenuEntry::placeholder("Copy — Ctrl+C"),
+                    MenuEntry::placeholder("Copy as RTF"),
+                    MenuEntry::placeholder("Paste — Ctrl+V"),
+                    MenuEntry::placeholder("Paste and Indent — Ctrl+Shift+V"),
+                    MenuEntry::placeholder("Paste from History ▸"),
+                    MenuEntry::placeholder("Paste Special ▸"),
+                    MenuEntry::Separator,
+                    MenuEntry::action("Find — Ctrl+F", MenuAction::Find),
+                    MenuEntry::action("Find Next — F3", MenuAction::FindNext),
+                    MenuEntry::action("Find Previous — Shift+F3", MenuAction::FindPrevious),
+                    MenuEntry::action("Find in Files… — Ctrl+Shift+F", MenuAction::FindInFiles),
+                    MenuEntry::placeholder("Replace… — Ctrl+H"),
+                    MenuEntry::Separator,
+                    MenuEntry::action("Search Panel", MenuAction::ToggleSearchPanel),
+                    MenuEntry::action("Diagnostics Panel", MenuAction::ToggleDiagnosticsPanel),
                 ],
             ),
             Menu::Selection => (
                 "Selection",
                 vec![
-                    ("Select All", MenuAction::SelectAll),
-                    ("Add Cursor Next", MenuAction::AddCursorNextMatch),
-                    ("Add Cursors All", MenuAction::AddCursorsAllMatches),
-                    ("Clear Cursors", MenuAction::ClearMultiCursors),
+                    MenuEntry::placeholder("Single Selection — Esc"),
+                    MenuEntry::action("Select All — Ctrl+A", MenuAction::SelectAll),
+                    MenuEntry::placeholder("Expand Selection to Line — Ctrl+L"),
+                    MenuEntry::placeholder("Split Selection into Lines — Ctrl+Shift+L"),
+                    MenuEntry::action(
+                        "Add Cursor to Next Match — Ctrl+D",
+                        MenuAction::AddCursorNextMatch,
+                    ),
+                    MenuEntry::action(
+                        "Add Cursors to All Matches — Alt+F3",
+                        MenuAction::AddCursorsAllMatches,
+                    ),
+                    MenuEntry::action("Clear Cursors — Esc", MenuAction::ClearMultiCursors),
+                    MenuEntry::Separator,
+                    MenuEntry::placeholder("Expand Selection to Word — Ctrl+D"),
+                    MenuEntry::placeholder("Expand Selection to Paragraph — Ctrl+Shift+Space"),
+                    MenuEntry::placeholder("Expand Selection to Brackets — Ctrl+Shift+M"),
+                    MenuEntry::placeholder("Expand Selection to Tag — Ctrl+Shift+A"),
                 ],
             ),
-            Menu::View => ("View", vec![("Status Bar", MenuAction::ToggleStatusBar)]),
-            Menu::Goto => ("Goto", vec![("Go to Line", MenuAction::GoToLine)]),
+            Menu::View => (
+                "View",
+                vec![
+                    MenuEntry::placeholder("Side Bar"),
+                    MenuEntry::placeholder("Show Minimap"),
+                    MenuEntry::placeholder("Show Tabs"),
+                    MenuEntry::action("Show Status Bar", MenuAction::ToggleStatusBar),
+                    MenuEntry::placeholder("Show Menu"),
+                    MenuEntry::Separator,
+                    MenuEntry::placeholder("Enter Full Screen — F11"),
+                    MenuEntry::placeholder("Distraction Free Mode — Shift+F11"),
+                    MenuEntry::Separator,
+                    MenuEntry::placeholder("Layout ▸"),
+                    MenuEntry::placeholder("Groups ▸"),
+                    MenuEntry::placeholder("Move File to Group ▸"),
+                    MenuEntry::placeholder("Focus Group ▸"),
+                ],
+            ),
+            Menu::Goto => (
+                "Goto",
+                vec![
+                    MenuEntry::placeholder("Goto Anything… — Ctrl+P"),
+                    MenuEntry::placeholder("Goto Symbol… — Ctrl+R"),
+                    MenuEntry::placeholder("Goto Symbol in Project… — Ctrl+Shift+R"),
+                    MenuEntry::placeholder("Goto Definition — F12"),
+                    MenuEntry::placeholder("Goto Reference — Shift+F12"),
+                    MenuEntry::Separator,
+                    MenuEntry::action("Go to Line… — Ctrl+G", MenuAction::GoToLine),
+                    MenuEntry::placeholder("Go to Word… — Ctrl+;"),
+                    MenuEntry::placeholder("Go to Section… — Ctrl+Shift+;"),
+                ],
+            ),
             Menu::Tools => (
                 "Tools",
                 vec![
-                    ("Reload Config", MenuAction::ReloadConfig),
-                    ("Performance Report", MenuAction::PerformanceReport),
+                    MenuEntry::placeholder("Command Palette… — Ctrl+Shift+P"),
+                    MenuEntry::Separator,
+                    MenuEntry::placeholder("Build — Ctrl+B"),
+                    MenuEntry::placeholder("Build With… — Ctrl+Shift+B"),
+                    MenuEntry::placeholder("Cancel Build"),
+                    MenuEntry::Separator,
+                    MenuEntry::placeholder("Record Macro"),
+                    MenuEntry::placeholder("Stop Recording Macro"),
+                    MenuEntry::placeholder("Playback Macro — Ctrl+Shift+Q"),
+                    MenuEntry::placeholder("Save Macro…"),
+                    MenuEntry::Separator,
+                    MenuEntry::action("Reload Config", MenuAction::ReloadConfig),
+                    MenuEntry::action("Performance Report", MenuAction::PerformanceReport),
                 ],
             ),
-            Menu::Help => ("Help", vec![("About", MenuAction::About)]),
+            Menu::Project => (
+                "Project",
+                vec![
+                    MenuEntry::placeholder("Open Project…"),
+                    MenuEntry::placeholder("Switch Project ▸"),
+                    MenuEntry::placeholder("Quick Switch Project… — Ctrl+Alt+P"),
+                    MenuEntry::Separator,
+                    MenuEntry::placeholder("Save Project As…"),
+                    MenuEntry::placeholder("Close Project"),
+                    MenuEntry::placeholder("Edit Project"),
+                    MenuEntry::Separator,
+                    MenuEntry::placeholder("Add Folder to Project…"),
+                    MenuEntry::placeholder("Remove Folder from Project"),
+                ],
+            ),
+            Menu::Preferences => (
+                "Preferences",
+                vec![
+                    MenuEntry::placeholder("Browse Packages…"),
+                    MenuEntry::placeholder("Browse Cache…"),
+                    MenuEntry::Separator,
+                    MenuEntry::placeholder("Settings"),
+                    MenuEntry::placeholder("Settings — Syntax Specific"),
+                    MenuEntry::placeholder("Settings — Distraction Free"),
+                    MenuEntry::Separator,
+                    MenuEntry::placeholder("Key Bindings"),
+                    MenuEntry::placeholder("Mouse Bindings"),
+                    MenuEntry::placeholder("Menu"),
+                    MenuEntry::placeholder("Macros"),
+                    MenuEntry::placeholder("Commands"),
+                    MenuEntry::Separator,
+                    MenuEntry::placeholder("Package Settings ▸"),
+                    MenuEntry::placeholder("Select Color Scheme ▸"),
+                    MenuEntry::placeholder("Select Theme ▸"),
+                ],
+            ),
+            Menu::Help => (
+                "Help",
+                vec![
+                    MenuEntry::placeholder("Documentation"),
+                    MenuEntry::placeholder("Report a Bug"),
+                    MenuEntry::placeholder("Support Roxanne"),
+                    MenuEntry::Separator,
+                    MenuEntry::placeholder("License"),
+                    MenuEntry::action("About", MenuAction::About),
+                ],
+            ),
         };
 
         let row = column![
@@ -1422,14 +1581,17 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             Column::with_children(
                 actions
                     .into_iter()
-                    .map(|(name, action)| {
-                        Button::new(text(name).size(12).font(Font::MONOSPACE))
-                            .padding([2, 8])
-                            .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                                palette: self.theme,
-                            })))
-                            .on_press(Message::MenuAction(action))
-                            .into()
+                    .map(|entry| match entry {
+                        MenuEntry::Action(name, action) => Button::new(
+                            text(name).size(12).font(Font::MONOSPACE),
+                        )
+                        .padding([2, 8])
+                        .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
+                            palette: self.theme,
+                        })))
+                        .on_press(Message::MenuAction(action))
+                        .into(),
+                        MenuEntry::Separator => self.submenu_separator(),
                     })
                     .collect::<Vec<Element<Message>>>(),
             )
@@ -1446,6 +1608,15 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                 })))
                 .into(),
         )
+    }
+
+    fn submenu_separator(&self) -> Element<'_, Message> {
+        Container::new(Space::with_height(Length::Fixed(1.0)))
+            .width(Length::Fill)
+            .style(theme::Container::Custom(Box::new(SubmenuSeparatorStyle {
+                palette: self.theme,
+            })))
+            .into()
     }
 
     fn tab_bar(&self) -> Element<'_, Message> {
@@ -2547,6 +2718,23 @@ impl container::StyleSheet for SubmenuStyle {
     fn appearance(&self, _style: &Self::Style) -> container::Appearance {
         container::Appearance {
             background: Some(Background::Color(self.palette.submenu_bar)),
+            text_color: None,
+            border: Default::default(),
+            shadow: Default::default(),
+        }
+    }
+}
+
+struct SubmenuSeparatorStyle {
+    palette: ThemePalette,
+}
+
+impl container::StyleSheet for SubmenuSeparatorStyle {
+    type Style = Theme;
+
+    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
+        container::Appearance {
+            background: Some(Background::Color(self.palette.menu_button_hover)),
             text_color: None,
             border: Default::default(),
             shadow: Default::default(),
