@@ -1069,6 +1069,14 @@ impl RoxanneApp {
         self.perf_file_open_started = Some(Instant::now());
         Command::perform(
             async move {
+                let metadata = std::fs::metadata(&filename).map_err(|err| err.to_string())?;
+                if metadata.len() > MAX_OPEN_FILE_SIZE {
+                    return Err(format!(
+                        "fichier trop volumineux ({} octets, limite {} octets)",
+                        metadata.len(),
+                        MAX_OPEN_FILE_SIZE
+                    ));
+                }
                 let bytes = std::fs::read(&filename).map_err(|err| err.to_string())?;
                 let lossy_text = String::from_utf8_lossy(&bytes);
                 let lossy = matches!(lossy_text, Cow::Owned(_));
@@ -2038,6 +2046,14 @@ impl RoxanneApp {
         let path = result.path.clone();
         Command::perform(
             async move {
+                let metadata = std::fs::metadata(&path).map_err(|err| err.to_string())?;
+                if metadata.len() > MAX_OPEN_FILE_SIZE {
+                    return Err(format!(
+                        "fichier trop volumineux ({} octets, limite {} octets)",
+                        metadata.len(),
+                        MAX_OPEN_FILE_SIZE
+                    ));
+                }
                 let bytes = std::fs::read(&path).map_err(|err| err.to_string())?;
                 let lossy_text = String::from_utf8_lossy(&bytes);
                 let lossy = matches!(lossy_text, Cow::Owned(_));
@@ -2612,6 +2628,8 @@ fn find_matches(
     Ok(matches)
 }
 
+const MAX_OPEN_FILE_SIZE: u64 = 5 * 1024 * 1024;
+
 async fn search_in_workspace(
     root: PathBuf,
     query: String,
@@ -2657,7 +2675,7 @@ async fn search_in_workspace(
                 continue;
             }
         };
-        if metadata.len() > 1_000_000 {
+        if metadata.len() > MAX_OPEN_FILE_SIZE {
             skipped_errors += 1;
             continue;
         }
