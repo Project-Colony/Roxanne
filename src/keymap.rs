@@ -587,7 +587,7 @@ impl KeySpec {
             return Ok(Self::Named(named));
         }
 
-        if input.len() == 1 {
+        if input.chars().count() == 1 {
             Ok(Self::Character(input.chars().next().unwrap()))
         } else {
             Err(format!("touche inconnue '{input}'"))
@@ -612,5 +612,16 @@ fn action_allowed_in_mode(action: KeyAction, mode: KeymapMode) -> bool {
         KeymapMode::Normal => {
             action != KeyAction::Completion && action != KeyAction::EnterNormalMode
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_multibyte_character() {
+        let key = KeySpec::parse("é").expect("expected multibyte character to parse");
+        assert_eq!(key, KeySpec::Character('é'));
     }
 }
