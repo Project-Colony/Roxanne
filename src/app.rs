@@ -4,6 +4,7 @@ use crate::editor::{Position, TextBuffer, ViewportCache, highlight};
 use crate::keymap::{KeyAction, Keymap, KeymapMode};
 use crate::plugins::PluginManager;
 use crate::theme::{ThemeConfig, ThemePalette};
+use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, overlay, renderer, widget};
 use iced::alignment::{Horizontal, Vertical};
 use iced::theme;
 use iced::widget::button;
@@ -14,11 +15,10 @@ use iced::widget::{
     Button, Column, Container, Scrollable, Space, TextInput, column, container, row, text,
     text_editor,
 };
-use iced::advanced::{layout, overlay, renderer, widget, Clipboard, Layout, Shell, Widget};
 use iced::{
-    Alignment, Application, Background, Color, Command, Element, Font, Length, Settings,
-    Point, Rectangle, Renderer, Size, Subscription, Theme, Vector, clipboard, event,
-    executor, keyboard, mouse,
+    Alignment, Application, Background, Color, Command, Element, Font, Length, Point, Rectangle,
+    Renderer, Settings, Size, Subscription, Theme, Vector, clipboard, event, executor, keyboard,
+    mouse, window,
 };
 use regex::{Regex, RegexBuilder};
 use std::borrow::Cow;
@@ -31,6 +31,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use walkdir::{DirEntry, WalkDir};
 
 const DEFAULT_VIEWPORT_HEIGHT: usize = 24;
+const EDITOR_CONTAINER_ID: &str = "roxanne-editor-area";
+const EDITOR_DEFAULT_FONT_SIZE: f32 = 16.0;
+const EDITOR_LINE_HEIGHT_FACTOR: f32 = 1.3;
+const EDITOR_VERTICAL_PADDING: f32 = 24.0;
+
+fn editor_container_id() -> container::Id {
+    container::Id::new(EDITOR_CONTAINER_ID)
+}
 
 #[derive(Debug)]
 pub struct RoxanneApp {
@@ -149,6 +157,7 @@ pub enum Message {
     FileSaved(Result<(), String>),
     ThemeExported(Result<PathBuf, String>),
     ThemeImported(Result<ThemeConfig, String>),
+    EditorBoundsChanged(Option<Rectangle>),
 }
 
 #[derive(Debug, Clone)]
@@ -333,26 +342,22 @@ impl<'a> Widget<Message, Theme, Renderer> for MenuOverlay<'a> {
         );
 
         let overlay_element = match (&mut self.overlay, children.next()) {
-            (Some(overlay), Some(state)) => Some(overlay::Element::new(Box::new(
-                MenuOverlayLayer {
+            (Some(overlay), Some(state)) => {
+                Some(overlay::Element::new(Box::new(MenuOverlayLayer {
                     position: layout.position() + translation,
                     bounds: layout.bounds(),
                     overlay,
                     state,
                     dismiss_message: self.dismiss_message.clone(),
-                },
-            ))),
+                })))
+            }
             _ => None,
         };
 
         match (content_overlay, overlay_element) {
-            (Some(content_overlay), Some(overlay_element)) => {
-                Some(overlay::Group::with_children(vec![
-                    content_overlay,
-                    overlay_element,
-                ])
-                .overlay())
-            }
+            (Some(content_overlay), Some(overlay_element)) => Some(
+                overlay::Group::with_children(vec![content_overlay, overlay_element]).overlay(),
+            ),
             (Some(content_overlay), None) => Some(content_overlay),
             (None, Some(overlay_element)) => Some(overlay_element),
             (None, None) => None,
@@ -463,13 +468,10 @@ impl<'a, 'b> overlay::Overlay<Message, Theme, Renderer> for MenuOverlayLayer<'a,
         renderer: &Renderer,
     ) -> mouse::Interaction {
         if let Some(child) = layout.children().next() {
-            return self.overlay.as_widget().mouse_interaction(
-                self.state,
-                child,
-                cursor,
-                viewport,
-                renderer,
-            );
+            return self
+                .overlay
+                .as_widget()
+                .mouse_interaction(self.state, child, cursor, viewport, renderer);
         }
         mouse::Interaction::Idle
     }
@@ -582,10 +584,7 @@ impl Application for RoxanneApp {
         let mut performance = PerformanceMetrics::default();
         performance.startup = Some(startup_duration);
         if status_message.is_none() {
-            status_message = Some(format!(
-                "Démarrage: {}.",
-                format_duration(startup_duration)
-            ));
+            status_message = Some(format!("Démarrage: {}.", format_duration(startup_duration)));
         }
         highlight::set_syntax_palette(flags.theme.syntax);
         (
@@ -625,7 +624,7 @@ impl Application for RoxanneApp {
                 perf_file_save_started: None,
                 perf_search_files_started: None,
             },
-            Command::none(),
+            Self::editor_bounds_command(),
         )
     }
 
@@ -687,7 +686,7 @@ impl Application for RoxanneApp {
             }
             Message::SearchPanelToggled => {
                 self.search_panel_open = !self.search_panel_open;
-                Command::none()
+                Self::editor_bounds_command()
             }
             Message::GotoLineChanged(value) => {
                 self.goto_line_input = value;
@@ -699,16 +698,16 @@ impl Application for RoxanneApp {
             }
             Message::GotoLineClosed => {
                 self.goto_panel_open = false;
-                Command::none()
+                Self::editor_bounds_command()
             }
             Message::DiagnosticsToggled => {
                 self.diagnostics_panel_open = !self.diagnostics_panel_open;
-                Command::none()
+                Self::editor_bounds_command()
             }
             Message::CompletionRequested => {
                 self.refresh_completions();
                 self.completion_panel_open = !self.completion_items.is_empty();
-                Command::none()
+                Self::editor_bounds_command()
             }
             Message::CompletionSelected(index) => {
                 self.apply_completion(index);
@@ -717,6 +716,12 @@ impl Application for RoxanneApp {
             Message::CompletionClosed => {
                 self.completion_panel_open = false;
                 self.completion_items.clear();
+                Self::editor_bounds_command()
+            }
+            Message::EditorBoundsChanged(bounds) => {
+                if let Some(bounds) = bounds {
+                    self.update_viewport_height(bounds);
+                }
                 Command::none()
             }
             Message::PasteFromClipboard(text) => {
@@ -742,23 +747,32 @@ impl Application for RoxanneApp {
                 Command::none()
             }
             Message::Event(event) => {
-                if let event::Event::Keyboard(keyboard::Event::KeyPressed {
-                    key, modifiers, ..
-                }) = event
-                {
-                    if let Some(action) = self.keymap.match_event(&key, modifiers, self.mode) {
-                        if matches!(action, KeyAction::Copy | KeyAction::Cut | KeyAction::Paste) {
-                            if let keyboard::Key::Character(value) = &key {
-                                let key_char = value.to_ascii_lowercase();
-                                if modifiers.command()
-                                    && matches!(key_char.as_str(), "c" | "x" | "v")
-                                {
-                                    return Command::none();
+                match event {
+                    event::Event::Keyboard(keyboard::Event::KeyPressed {
+                        key, modifiers, ..
+                    }) => {
+                        if let Some(action) = self.keymap.match_event(&key, modifiers, self.mode) {
+                            if matches!(action, KeyAction::Copy | KeyAction::Cut | KeyAction::Paste)
+                            {
+                                if let keyboard::Key::Character(value) = &key {
+                                    let key_char = value.to_ascii_lowercase();
+                                    if modifiers.command()
+                                        && matches!(key_char.as_str(), "c" | "x" | "v")
+                                    {
+                                        return Command::none();
+                                    }
                                 }
                             }
+                            return self.handle_key_action(action);
                         }
-                        return self.handle_key_action(action);
                     }
+                    event::Event::Window(
+                        _,
+                        window::Event::Resized { .. } | window::Event::Opened { .. },
+                    ) => {
+                        return Self::editor_bounds_command();
+                    }
+                    _ => {}
                 }
                 Command::none()
             }
@@ -808,7 +822,8 @@ impl Application for RoxanneApp {
                         self.last_saved_text = text;
                         self.refresh_search_matches(false);
                         self.refresh_diagnostics();
-                        self.plugins.on_text_changed(&self.content.text(), &self.filename);
+                        self.plugins
+                            .on_text_changed(&self.content.text(), &self.filename);
                         self.refresh_viewport_cache();
                         self.jump_to_position(nav.line, nav.column);
                         let opened_message = format!(
@@ -869,7 +884,7 @@ impl Application for RoxanneApp {
                     MenuAction::FindInFiles => {
                         self.search_panel_open = true;
                         self.search_scope = SearchScope::Workspace;
-                        self.search_in_files()
+                        Command::batch([Self::editor_bounds_command(), self.search_in_files()])
                     }
                     MenuAction::SelectAll => {
                         self.status_message =
@@ -892,7 +907,7 @@ impl Application for RoxanneApp {
                     }
                     MenuAction::ToggleDiagnosticsPanel => {
                         self.diagnostics_panel_open = !self.diagnostics_panel_open;
-                        Command::none()
+                        Self::editor_bounds_command()
                     }
                     MenuAction::ToggleStatusBar => {
                         self.status_message =
@@ -901,13 +916,13 @@ impl Application for RoxanneApp {
                     }
                     MenuAction::ToggleSearchPanel => {
                         self.search_panel_open = !self.search_panel_open;
-                        Command::none()
+                        Self::editor_bounds_command()
                     }
                     MenuAction::GoToLine => {
                         let (line, _) = self.content.cursor_position();
                         self.goto_line_input = format!("{}", line + 1);
                         self.goto_panel_open = true;
-                        Command::none()
+                        Self::editor_bounds_command()
                     }
                     MenuAction::ReloadConfig => self.reload_config(),
                     MenuAction::PerformanceReport => {
@@ -938,8 +953,10 @@ impl Application for RoxanneApp {
                         self.suppress_undo_snapshot = false;
                         self.refresh_search_matches(false);
                         self.refresh_diagnostics();
-                        self.plugins.on_file_opened(&self.content.text(), &self.filename);
-                        self.plugins.on_text_changed(&self.content.text(), &self.filename);
+                        self.plugins
+                            .on_file_opened(&self.content.text(), &self.filename);
+                        self.plugins
+                            .on_text_changed(&self.content.text(), &self.filename);
                         self.refresh_viewport_cache();
                         let duration = self
                             .performance
@@ -967,7 +984,8 @@ impl Application for RoxanneApp {
                 match result {
                     Ok(()) => {
                         self.last_saved_text = self.content.text().to_string();
-                        self.plugins.on_file_saved(&self.last_saved_text, &self.filename);
+                        self.plugins
+                            .on_file_saved(&self.last_saved_text, &self.filename);
                         let duration = self
                             .performance
                             .last_file_save
@@ -1060,6 +1078,20 @@ impl Application for RoxanneApp {
 }
 
 impl RoxanneApp {
+    fn editor_bounds_command() -> Command<Message> {
+        container::visible_bounds(editor_container_id()).map(Message::EditorBoundsChanged)
+    }
+
+    fn update_viewport_height(&mut self, bounds: Rectangle) {
+        let available_height = (bounds.height - EDITOR_VERTICAL_PADDING).max(0.0);
+        let line_height = (EDITOR_DEFAULT_FONT_SIZE * EDITOR_LINE_HEIGHT_FACTOR).max(1.0);
+        let visible_lines = (available_height / line_height).floor().max(1.0) as usize;
+        if visible_lines != self.viewport_height {
+            self.viewport_height = visible_lines;
+            self.refresh_viewport_cache();
+        }
+    }
+
     fn open_file(&mut self) -> Command<Message> {
         if self.filename.trim().is_empty() {
             self.status_message = Some("Nom de fichier manquant.".to_string());
@@ -1134,8 +1166,8 @@ impl RoxanneApp {
         Command::perform(
             async move {
                 let contents = std::fs::read_to_string(&path).map_err(|err| err.to_string())?;
-                let theme = toml::from_str::<ThemeConfig>(&contents)
-                    .map_err(|err| err.to_string())?;
+                let theme =
+                    toml::from_str::<ThemeConfig>(&contents).map_err(|err| err.to_string())?;
                 Ok(theme)
             },
             Message::ThemeImported,
@@ -1154,8 +1186,7 @@ impl RoxanneApp {
             KeyAction::Open => self.open_file(),
             KeyAction::Find => {
                 self.status_message = Some(
-                    "Recherche: utilisez le champ de recherche dans la barre d'état."
-                        .to_string(),
+                    "Recherche: utilisez le champ de recherche dans la barre d'état.".to_string(),
                 );
                 Command::none()
             }
@@ -1299,10 +1330,7 @@ impl RoxanneApp {
                     ("Clear Cursors", MenuAction::ClearMultiCursors),
                 ],
             ),
-            Menu::View => (
-                "View",
-                vec![("Status Bar", MenuAction::ToggleStatusBar)],
-            ),
+            Menu::View => ("View", vec![("Status Bar", MenuAction::ToggleStatusBar)]),
             Menu::Goto => ("Goto", vec![("Go to Line", MenuAction::GoToLine)]),
             Menu::Tools => (
                 "Tools",
@@ -1435,6 +1463,7 @@ impl RoxanneApp {
         let editor = Container::new(editor)
             .width(Length::Fill)
             .height(Length::Fill)
+            .id(editor_container_id())
             .style(theme::Container::Custom(Box::new(EditorStyle {
                 palette: self.theme,
             })));
@@ -1601,9 +1630,7 @@ impl RoxanneApp {
         .spacing(8)
         .align_items(Alignment::Center);
 
-        let panel = column![header, input, actions]
-            .spacing(10)
-            .padding([8, 16]);
+        let panel = column![header, input, actions].spacing(10).padding([8, 16]);
 
         Some(
             Container::new(panel)
@@ -1851,12 +1878,7 @@ impl RoxanneApp {
             .into()
     }
 
-    fn toggle_button(
-        &self,
-        label: &str,
-        active: bool,
-        message: Message,
-    ) -> Element<'_, Message> {
+    fn toggle_button(&self, label: &str, active: bool, message: Message) -> Element<'_, Message> {
         Button::new(text(label).size(12).font(Font::MONOSPACE))
             .padding([2, 6])
             .style(theme::Button::Custom(Box::new(ToggleButtonStyle {
@@ -2776,10 +2798,7 @@ fn find_matches_in_line(line: &str, matcher: &SearchMatcher) -> Vec<(usize, usiz
                     if end_index == 0 {
                         break;
                     }
-                    let start_original = mapping
-                        .get(start_index)
-                        .copied()
-                        .unwrap_or_default();
+                    let start_original = mapping.get(start_index).copied().unwrap_or_default();
                     let end_original = mapping
                         .get(end_index.saturating_sub(1))
                         .copied()
