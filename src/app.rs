@@ -1999,7 +1999,7 @@ impl RoxanneApp {
         } else if path.is_dir() {
             path
         } else {
-            return None;
+            path.parent()?
         };
 
         for ancestor in base_dir.ancestors() {
@@ -3049,8 +3049,8 @@ fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SearchOptions, analyze_diagnostics, atomic_write, find_matches, should_skip_entry,
-        should_skip_file,
+        RoxanneApp, SearchOptions, analyze_diagnostics, atomic_write, find_matches,
+        should_skip_entry, should_skip_file,
     };
     use crate::editor::TextBuffer;
     use std::fs;
@@ -3253,6 +3253,23 @@ mod tests {
             diagnostics.is_empty(),
             "raw string braces/quotes should be ignored: {diagnostics:?}"
         );
+    }
+
+    #[test]
+    fn workspace_root_from_filename_uses_parent_for_missing_file() {
+        let dir = tempdir().expect("tempdir");
+        let root_marker = dir.path().join(".roxanne.toml");
+        fs::write(&root_marker, "root = true").expect("write root marker");
+        let nested = dir.path().join("nested");
+        fs::create_dir_all(&nested).expect("create nested dir");
+        let missing = nested.join("missing.txt");
+
+        let resolved = RoxanneApp::workspace_root_from_filename(
+            missing.to_str().expect("missing path"),
+        )
+        .expect("workspace root");
+
+        assert_eq!(resolved, dir.path());
     }
 }
 
