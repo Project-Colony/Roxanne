@@ -20,6 +20,7 @@ use iced::{
     Renderer, Settings, Size, Subscription, Theme, Vector, clipboard, event, executor, keyboard,
     mouse, window,
 };
+use iced::widget::text::LineHeight;
 use regex::{Regex, RegexBuilder};
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -34,9 +35,8 @@ use walkdir::{DirEntry, WalkDir};
 
 const DEFAULT_VIEWPORT_HEIGHT: usize = 24;
 const EDITOR_CONTAINER_ID: &str = "roxanne-editor-area";
-const EDITOR_DEFAULT_FONT_SIZE: f32 = 16.0;
-const EDITOR_LINE_HEIGHT_FACTOR: f32 = 1.3;
 const EDITOR_VERTICAL_PADDING: f32 = 24.0;
+const EDITOR_LINE_HEIGHT: f32 = 16.0;
 
 fn editor_container_id() -> container::Id {
     container::Id::new(EDITOR_CONTAINER_ID)
@@ -1200,7 +1200,7 @@ impl RoxanneApp {
 
     fn update_viewport_height(&mut self, bounds: Rectangle) {
         let available_height = (bounds.height - EDITOR_VERTICAL_PADDING).max(0.0);
-        let line_height = (EDITOR_DEFAULT_FONT_SIZE * EDITOR_LINE_HEIGHT_FACTOR).max(1.0);
+        let line_height = EDITOR_LINE_HEIGHT.max(1.0);
         let visible_lines = (available_height / line_height).floor().max(1.0) as usize;
         if visible_lines != self.viewport_height {
             self.viewport_height = visible_lines;
@@ -1699,19 +1699,22 @@ Relancez “Enregistrer” pour confirmer l’écriture."
     }
 
     fn editor_area(&self) -> Element<'_, Message> {
+        let line_height = EDITOR_LINE_HEIGHT;
+        let vertical_padding = 12.0;
         let line_number_size = 14;
         let line_count = self.buffer.line_count().max(1);
         let gutter_digits = line_count.to_string().len();
         let gutter_width = (gutter_digits as f32 * (line_number_size as f32 * 0.6)) + 24.0;
-        let mut gutter_children = self
-            .viewport_cache
-            .lines()
-            .iter()
-            .map(|line| {
-                text(format!("{:>width$}", line.line + 1, width = gutter_digits))
+        let (start_line, _) = self.viewport_cache.range().unwrap_or((0, 0));
+        let visible_lines = self.viewport_height.max(1);
+        let end_line = (start_line + visible_lines).min(line_count);
+        let mut gutter_children = (start_line..end_line)
+            .map(|line_index| {
+                text(format!("{:>width$}", line_index + 1, width = gutter_digits))
                     .size(line_number_size)
                     .font(Font::MONOSPACE)
                     .style(Color::from_rgb8(140, 140, 140))
+                    .line_height(LineHeight::Absolute(line_height.into()))
                     .horizontal_alignment(Horizontal::Right)
                     .into()
             })
@@ -1726,7 +1729,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         let gutter = Container::new(gutter_lines)
             .width(Length::Fixed(gutter_width))
             .height(Length::Fill)
-            .padding([12, 8])
+            .padding([vertical_padding, 8.0])
             .style(theme::Container::Custom(Box::new(GutterStyle {
                 palette: self.theme,
             })));
@@ -1734,7 +1737,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         let editor = text_editor(&self.content)
             .on_action(Message::Edit)
             .font(Font::MONOSPACE)
-            .padding([12, 16])
+            .padding([vertical_padding, 16.0])
             .height(Length::Fill)
             .highlight::<highlight::RoxanneHighlighter>(
                 self.highlight_settings.clone(),
