@@ -3,7 +3,7 @@ use crate::theme::SyntaxPalette;
 use iced::advanced::text::highlighter::{self, Highlighter};
 use iced::{Font, Theme};
 use std::ops::Range;
-use std::sync::{LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -16,6 +16,7 @@ pub enum Language {
 pub struct Settings {
     pub language: Language,
     pub search_matches: Vec<MatchPosition>,
+    pub buffer_text: Arc<str>,
 }
 
 impl Default for Settings {
@@ -23,6 +24,7 @@ impl Default for Settings {
         Self {
             language: Language::Rust,
             search_matches: Vec::new(),
+            buffer_text: Arc::from(""),
         }
     }
 }
@@ -44,10 +46,10 @@ pub struct MatchPosition {
     pub length: usize,
 }
 
-#[derive(Debug, Clone)]
 pub struct RoxanneHighlighter {
     settings: Settings,
     current_line: usize,
+    syntax_highlighter: Option<syntax::SyntaxHighlighter>,
 }
 
 impl Highlighter for RoxanneHighlighter {
@@ -59,10 +61,24 @@ impl Highlighter for RoxanneHighlighter {
         Self {
             settings: settings.clone(),
             current_line: 0,
+            syntax_highlighter: syntax::SyntaxHighlighter::new(
+                settings.language,
+                &settings.buffer_text,
+            ),
         }
     }
 
     fn update(&mut self, new_settings: &Self::Settings) {
+        if self.settings.language != new_settings.language {
+            self.syntax_highlighter =
+                syntax::SyntaxHighlighter::new(new_settings.language, &new_settings.buffer_text);
+        } else if let Some(highlighter) = self.syntax_highlighter.as_mut() {
+            highlighter.update_text(&new_settings.buffer_text);
+        } else {
+            self.syntax_highlighter =
+                syntax::SyntaxHighlighter::new(new_settings.language, &new_settings.buffer_text);
+        }
+
         if &self.settings != new_settings {
             self.settings = new_settings.clone();
             self.current_line = 0;
@@ -79,8 +95,33 @@ impl Highlighter for RoxanneHighlighter {
 
         let mut highlights = match self.settings.language {
             Language::Plain => Vec::new(),
-            Language::Rust => syntax::highlight_line(self.settings.language, line)
-                .unwrap_or_else(|| highlight_rust_line(line)),
+            Language::Rust => {
+                if let Some(highlighter) = self.syntax_highlighter.as_mut() {
+                    if let Some(line_range) = highlighter.line_byte_range(line_index) {
+                        let line_start = line_range.start;
+                        let line_end = line_start + line.len();
+                        let tokens = highlighter
+                            .highlight_range(line_index..line_index.saturating_add(1))
+                            .unwrap_or_default();
+                        tokens
+                            .into_iter()
+                            .filter_map(|(range, token)| {
+                                let start = range.start.max(line_start);
+                                let end = range.end.min(line_end);
+                                if start < end {
+                                    Some((start - line_start..end - line_start, token))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    highlight_rust_line(line)
+                }
+            }
         };
 
         if !self.settings.search_matches.is_empty() {
@@ -278,8 +319,12 @@ mod tests {
 
     #[test]
     fn does_not_mark_string_slashes_as_comment() {
-        let mut highlighter = RoxanneHighlighter::new(&Settings::default());
         let line = r#"let s = "// not comment";"#;
+        let settings = Settings {
+            buffer_text: line.into(),
+            ..Settings::default()
+        };
+        let mut highlighter = RoxanneHighlighter::new(&settings);
         let highlights: Vec<_> = highlighter.highlight_line(line).collect();
 
         assert!(
@@ -292,8 +337,12 @@ mod tests {
 
     #[test]
     fn still_highlights_actual_comment_after_string() {
-        let mut highlighter = RoxanneHighlighter::new(&Settings::default());
         let line = r#"let s = "// not comment"; // real comment"#;
+        let settings = Settings {
+            buffer_text: line.into(),
+            ..Settings::default()
+        };
+        let mut highlighter = RoxanneHighlighter::new(&settings);
         let highlights: Vec<_> = highlighter.highlight_line(line).collect();
         let comment_start = line
             .rfind("// real comment")
@@ -313,6 +362,31 @@ mod tests {
         assert!(
             comment_ranges.iter().any(|range| range.start == comment_start),
             "expected comment token starting at {comment_start}, got {comment_ranges:?}"
+        );
+    }
+
+    #[test]
+    fn tree_sitter_keeps_multiline_comments_coherent() {
+        let text = "/* bloc\ncommentaire */\nlet value = 42;";
+        let settings = Settings {
+            buffer_text: text.into(),
+            ..Settings::default()
+        };
+        let mut highlighter = RoxanneHighlighter::new(&settings);
+        let first_line_highlights: Vec<_> = highlighter.highlight_line("/* bloc").collect();
+        let second_line_highlights: Vec<_> = highlighter.highlight_line("commentaire */").collect();
+
+        assert!(
+            first_line_highlights
+                .iter()
+                .any(|(_, token)| *token == HighlightToken::Comment),
+            "expected comment token on first line"
+        );
+        assert!(
+            second_line_highlights
+                .iter()
+                .any(|(_, token)| *token == HighlightToken::Comment),
+            "expected comment token on second line"
         );
     }
 }
