@@ -3189,6 +3189,30 @@ mod tests {
             "multiline strings should not trigger unterminated string diagnostic"
         );
     }
+
+    #[test]
+    fn diagnostics_ignore_char_literals_with_braces() {
+        let text = "fn main() { let left = '{'; let right = '}'; }";
+        let buffer = TextBuffer::from(text);
+
+        let diagnostics = analyze_diagnostics(&buffer);
+        assert!(
+            diagnostics.is_empty(),
+            "char literal braces should be ignored: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn diagnostics_ignore_raw_string_with_braces_and_quotes() {
+        let text = r##"fn main() { let value = r#"{ "quoted" }"#; }"##;
+        let buffer = TextBuffer::from(text);
+
+        let diagnostics = analyze_diagnostics(&buffer);
+        assert!(
+            diagnostics.is_empty(),
+            "raw string braces/quotes should be ignored: {diagnostics:?}"
+        );
+    }
 }
 
 struct SearchResultLine {
@@ -3412,12 +3436,16 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut stack: Vec<(char, Position)> = Vec::new();
     let mut in_string = false;
+    let mut in_char = false;
+    let mut raw_string_hashes: Option<usize> = None;
     let mut in_block_comment = false;
     let mut escaped = false;
     let mut string_start: Option<Position> = None;
+    let mut raw_string_start: Option<Position> = None;
+    let mut char_start: Option<Position> = None;
 
     for (line_index, line) in buffer.lines().enumerate() {
-        if in_string {
+        if in_string || in_char {
             escaped = false;
         }
         let mut chars = line.chars().enumerate().peekable();
@@ -3426,6 +3454,34 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
                 if ch == '*' && matches!(chars.peek(), Some((_, '/'))) {
                     chars.next();
                     in_block_comment = false;
+                }
+                continue;
+            }
+
+            if let Some(hashes) = raw_string_hashes {
+                if ch == '"' {
+                    if hashes == 0 {
+                        raw_string_hashes = None;
+                        raw_string_start = None;
+                    } else {
+                        let mut lookahead = chars.clone();
+                        let mut matched = 0;
+                        while matched < hashes {
+                            if matches!(lookahead.peek(), Some((_, '#'))) {
+                                matched += 1;
+                                lookahead.next();
+                            } else {
+                                break;
+                            }
+                        }
+                        if matched == hashes {
+                            for _ in 0..hashes {
+                                chars.next();
+                            }
+                            raw_string_hashes = None;
+                            raw_string_start = None;
+                        }
+                    }
                 }
                 continue;
             }
@@ -3448,6 +3504,24 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
                 continue;
             }
 
+            if in_char {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                match ch {
+                    '\\' => {
+                        escaped = true;
+                    }
+                    '\'' => {
+                        in_char = false;
+                        char_start = None;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             if ch == '/' && matches!(chars.peek(), Some((_, '*'))) {
                 chars.next();
                 in_block_comment = true;
@@ -3459,10 +3533,46 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
             }
 
             match ch {
+                'r' => {
+                    let mut lookahead = chars.clone();
+                    let mut hashes = 0;
+                    let mut valid = false;
+                    if let Some((_, next)) = lookahead.peek() {
+                        if *next == '"' {
+                            valid = true;
+                        } else if *next == '#' {
+                            while let Some((_, '#')) = lookahead.peek() {
+                                hashes += 1;
+                                lookahead.next();
+                            }
+                            if matches!(lookahead.peek(), Some((_, '"'))) {
+                                valid = true;
+                            }
+                        }
+                    }
+                    if valid {
+                        if hashes == 0 {
+                            chars.next();
+                        } else {
+                            for _ in 0..hashes {
+                                chars.next();
+                            }
+                            chars.next();
+                        }
+                        raw_string_hashes = Some(hashes);
+                        raw_string_start = Some(Position::new(line_index, column));
+                        continue;
+                    }
+                }
                 '"' => {
                     in_string = true;
                     escaped = false;
                     string_start = Some(Position::new(line_index, column));
+                }
+                '\'' => {
+                    in_char = true;
+                    escaped = false;
+                    char_start = Some(Position::new(line_index, column));
                 }
                 '{' | '(' | '[' => stack.push((ch, Position::new(line_index, column))),
                 '}' | ')' | ']' => {
@@ -3492,12 +3602,32 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
         }
     }
 
+    if raw_string_hashes.is_some() {
+        let position = raw_string_start.unwrap_or_else(|| Position::new(0, 0));
+        diagnostics.push(Diagnostic {
+            line: position.line,
+            column: position.column,
+            message: "Chaîne non terminée.".to_string(),
+            severity: DiagnosticSeverity::Warning,
+        });
+    }
+
     if in_string {
         let position = string_start.unwrap_or_else(|| Position::new(0, 0));
         diagnostics.push(Diagnostic {
             line: position.line,
             column: position.column,
             message: "Chaîne non terminée.".to_string(),
+            severity: DiagnosticSeverity::Warning,
+        });
+    }
+
+    if in_char {
+        let position = char_start.unwrap_or_else(|| Position::new(0, 0));
+        diagnostics.push(Diagnostic {
+            line: position.line,
+            column: position.column,
+            message: "Caractère non terminé.".to_string(),
             severity: DiagnosticSeverity::Warning,
         });
     }
