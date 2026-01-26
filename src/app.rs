@@ -3035,6 +3035,32 @@ mod tests {
             "comment delimiters should be ignored: {diagnostics:?}"
         );
     }
+
+    #[test]
+    fn diagnostics_ignore_block_comment_delimiters() {
+        let text = "fn main() {\n    /* { [ ( */\n    let value = 1;\n}\n";
+        let buffer = TextBuffer::from(text);
+
+        let diagnostics = analyze_diagnostics(&buffer);
+        assert!(
+            diagnostics.is_empty(),
+            "block comment delimiters should be ignored: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn diagnostics_allow_multiline_strings() {
+        let text = "fn main() {\n    let value = \"multi\nline\";\n}\n";
+        let buffer = TextBuffer::from(text);
+
+        let diagnostics = analyze_diagnostics(&buffer);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|item| item.message != "Chaîne non terminée."),
+            "multiline strings should not trigger unterminated string diagnostic"
+        );
+    }
 }
 
 struct SearchResultLine {
@@ -3257,16 +3283,25 @@ fn build_completion_items(prefix: &str) -> Vec<CompletionItem> {
 fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut stack: Vec<(char, Position)> = Vec::new();
+    let mut in_string = false;
+    let mut in_block_comment = false;
+    let mut escaped = false;
+    let mut string_start: Option<Position> = None;
 
     for (line_index, line) in buffer.lines().enumerate() {
-        let mut in_string = false;
-        let mut in_line_comment = false;
-        let mut escaped = false;
+        if in_string {
+            escaped = false;
+        }
         let mut chars = line.chars().enumerate().peekable();
         while let Some((column, ch)) = chars.next() {
-            if in_line_comment {
-                break;
+            if in_block_comment {
+                if ch == '*' && matches!(chars.peek(), Some((_, '/'))) {
+                    chars.next();
+                    in_block_comment = false;
+                }
+                continue;
             }
+
             if in_string {
                 if escaped {
                     escaped = false;
@@ -3278,14 +3313,20 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
                     }
                     '"' => {
                         in_string = false;
+                        string_start = None;
                     }
                     _ => {}
                 }
                 continue;
             }
 
+            if ch == '/' && matches!(chars.peek(), Some((_, '*'))) {
+                chars.next();
+                in_block_comment = true;
+                continue;
+            }
+
             if ch == '/' && matches!(chars.peek(), Some((_, '/'))) {
-                in_line_comment = true;
                 break;
             }
 
@@ -3293,6 +3334,7 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
                 '"' => {
                     in_string = true;
                     escaped = false;
+                    string_start = Some(Position::new(line_index, column));
                 }
                 '{' | '(' | '[' => stack.push((ch, Position::new(line_index, column))),
                 '}' | ')' | ']' => {
@@ -3320,15 +3362,16 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
                 _ => {}
             }
         }
+    }
 
-        if in_string {
-            diagnostics.push(Diagnostic {
-                line: line_index,
-                column: line.chars().count().saturating_sub(1),
-                message: "Chaîne non terminée.".to_string(),
-                severity: DiagnosticSeverity::Warning,
-            });
-        }
+    if in_string {
+        let position = string_start.unwrap_or_else(|| Position::new(0, 0));
+        diagnostics.push(Diagnostic {
+            line: position.line,
+            column: position.column,
+            message: "Chaîne non terminée.".to_string(),
+            severity: DiagnosticSeverity::Warning,
+        });
     }
 
     for (open, position) in stack {
