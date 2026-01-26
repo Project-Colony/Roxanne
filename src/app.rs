@@ -3091,6 +3091,7 @@ fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
         .write_all(contents.as_bytes())
         .and_then(|_| temp_file.sync_all())
         .map_err(|err| err.to_string())?;
+    drop(temp_file);
 
     let backup_path = if path.exists() {
         let mut attempts = 0_u32;
@@ -3215,6 +3216,36 @@ mod tests {
 
         let contents = fs::read_to_string(&path).expect("read original");
         assert_eq!(contents, "original");
+
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .map(|name| name.ends_with(".tmp") || name.ends_with(".bak"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temporary files were not cleaned up: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn atomic_write_restores_backup_after_failed_rename() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("report.txt");
+        fs::write(&path, "baseline").expect("write original");
+
+        set_rename_failure_target(Some(path.clone()));
+        let result = atomic_write(path.to_str().expect("path"), "replacement");
+        assert!(result.is_err(), "atomic write should fail");
+
+        let contents = fs::read_to_string(&path).expect("read original");
+        assert_eq!(contents, "baseline");
 
         let leftovers: Vec<_> = fs::read_dir(dir.path())
             .expect("read dir")
