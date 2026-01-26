@@ -21,6 +21,7 @@ use iced::{
     executor, keyboard, mouse,
 };
 use regex::{Regex, RegexBuilder};
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
@@ -144,10 +145,16 @@ pub enum Message {
     SavePressed,
     MenuSelected(Menu),
     MenuAction(MenuAction),
-    FileLoaded(Result<String, String>),
+    FileLoaded(Result<FileLoadResult, String>),
     FileSaved(Result<(), String>),
     ThemeExported(Result<PathBuf, String>),
     ThemeImported(Result<ThemeConfig, String>),
+}
+
+#[derive(Debug, Clone)]
+struct FileLoadResult {
+    text: String,
+    lossy: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -898,7 +905,8 @@ impl Application for RoxanneApp {
                     self.performance.last_file_open = Some(started.elapsed());
                 }
                 match result {
-                    Ok(text) => {
+                    Ok(load) => {
+                        let text = load.text;
                         self.content = EditorContent::with_text(&text);
                         self.buffer.replace(&text);
                         self.last_saved_text = text;
@@ -914,7 +922,13 @@ impl Application for RoxanneApp {
                             .last_file_open
                             .map(format_duration)
                             .unwrap_or_else(|| "-".to_string());
-                        self.status_message = Some(format!("Fichier chargé ({duration})."));
+                        if load.lossy {
+                            self.status_message = Some(format!(
+                                "Fichier chargé ({duration}, caractères invalides remplacés)."
+                            ));
+                        } else {
+                            self.status_message = Some(format!("Fichier chargé ({duration})."));
+                        }
                     }
                     Err(message) => {
                         self.status_message = Some(format!("Erreur d'ouverture: {message}"));
@@ -1030,7 +1044,15 @@ impl RoxanneApp {
         let filename = self.filename.clone();
         self.perf_file_open_started = Some(Instant::now());
         Command::perform(
-            async move { std::fs::read_to_string(&filename).map_err(|err| err.to_string()) },
+            async move {
+                let bytes = std::fs::read(&filename).map_err(|err| err.to_string())?;
+                let lossy_text = String::from_utf8_lossy(&bytes);
+                let lossy = matches!(lossy_text, Cow::Owned(_));
+                Ok(FileLoadResult {
+                    text: lossy_text.into_owned(),
+                    lossy,
+                })
+            },
             Message::FileLoaded,
         )
     }
@@ -2607,6 +2629,7 @@ async fn search_in_workspace(
             }
         };
         if metadata.len() > 1_000_000 {
+            skipped_errors += 1;
             continue;
         }
 

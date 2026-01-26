@@ -175,6 +175,22 @@ impl DynamicPlugin {
             name,
         })
     }
+
+    fn to_cstring_with_warning(&self, value: &str, label: &str) -> CString {
+        match CString::new(value) {
+            Ok(cstring) => cstring,
+            Err(_) => {
+                let sanitized = value.replace('\0', "�");
+                eprintln!(
+                    "Plugin {}: {label} contient des caractères NUL, remplacement avant callback.",
+                    self.name
+                );
+                CString::new(sanitized).unwrap_or_else(|_| {
+                    CString::new("�").expect("CString de secours valide pour plugin")
+                })
+            }
+        }
+    }
 }
 
 impl Plugin for DynamicPlugin {
@@ -184,8 +200,9 @@ impl Plugin for DynamicPlugin {
 
     fn on_file_opened(&mut self, text: &str, context: &PluginContext) {
         if let Some(callback) = self.api.on_file_opened {
-            let text = CString::new(text).unwrap_or_default();
-            let filename = CString::new(context.filename.as_str()).unwrap_or_default();
+            let text = self.to_cstring_with_warning(text, "texte");
+            let filename =
+                self.to_cstring_with_warning(context.filename.as_str(), "nom de fichier");
             unsafe {
                 callback(text.as_ptr(), filename.as_ptr());
             }
@@ -194,8 +211,9 @@ impl Plugin for DynamicPlugin {
 
     fn on_file_saved(&mut self, text: &str, context: &PluginContext) {
         if let Some(callback) = self.api.on_file_saved {
-            let text = CString::new(text).unwrap_or_default();
-            let filename = CString::new(context.filename.as_str()).unwrap_or_default();
+            let text = self.to_cstring_with_warning(text, "texte");
+            let filename =
+                self.to_cstring_with_warning(context.filename.as_str(), "nom de fichier");
             unsafe {
                 callback(text.as_ptr(), filename.as_ptr());
             }
@@ -204,8 +222,9 @@ impl Plugin for DynamicPlugin {
 
     fn on_text_changed(&mut self, text: &str, context: &PluginContext) {
         if let Some(callback) = self.api.on_text_changed {
-            let text = CString::new(text).unwrap_or_default();
-            let filename = CString::new(context.filename.as_str()).unwrap_or_default();
+            let text = self.to_cstring_with_warning(text, "texte");
+            let filename =
+                self.to_cstring_with_warning(context.filename.as_str(), "nom de fichier");
             unsafe {
                 callback(text.as_ptr(), filename.as_ptr());
             }
