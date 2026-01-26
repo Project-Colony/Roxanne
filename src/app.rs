@@ -167,13 +167,13 @@ pub enum Message {
 }
 
 #[derive(Debug, Clone)]
-struct FileLoadResult {
+pub struct FileLoadResult {
     text: String,
     lossy: bool,
 }
 
 #[derive(Debug, Clone)]
-struct SearchResultLoadResult {
+pub struct SearchResultLoadResult {
     text: String,
     result: SearchResult,
     lossy: bool,
@@ -559,7 +559,7 @@ pub struct SearchResult {
 }
 
 #[derive(Debug, Clone)]
-struct SearchResultsSummary {
+pub struct SearchResultsSummary {
     results: Vec<SearchResult>,
     skipped_read_errors: usize,
     skipped_too_large: usize,
