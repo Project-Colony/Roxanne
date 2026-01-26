@@ -888,7 +888,8 @@ impl Application for RoxanneApp {
                         );
                         if load.lossy {
                             self.status_message = Some(format!(
-                                "{opened_message} (caractères invalides remplacés)."
+                                "{opened_message} (caractères invalides remplacés). Sauvegarde \
+bloquée tant qu'une confirmation explicite n'est pas donnée."
                             ));
                         } else {
                             self.status_message = Some(format!("{opened_message}."));
@@ -1022,7 +1023,8 @@ impl Application for RoxanneApp {
                             .unwrap_or_else(|| "-".to_string());
                         if load.lossy {
                             self.status_message = Some(format!(
-                                "Fichier chargé ({duration}, caractères invalides remplacés)."
+                                "Fichier chargé ({duration}, caractères invalides remplacés). \
+Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                             ));
                         } else {
                             self.status_message = Some(format!("Fichier chargé ({duration})."));
