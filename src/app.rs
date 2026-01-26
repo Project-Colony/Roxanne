@@ -67,6 +67,8 @@ pub struct RoxanneApp {
     completion_prefix: String,
     completion_panel_open: bool,
     status_message: Option<String>,
+    file_is_lossy: bool,
+    lossy_save_acknowledged: bool,
     theme: ThemePalette,
     keymap: Keymap,
     mode: KeymapMode,
@@ -623,6 +625,8 @@ impl Application for RoxanneApp {
                 completion_prefix: String::new(),
                 completion_panel_open: false,
                 status_message,
+                file_is_lossy: false,
+                lossy_save_acknowledged: false,
                 theme: flags.theme,
                 keymap: flags.keymap,
                 mode: KeymapMode::Insert,
@@ -856,6 +860,8 @@ impl Application for RoxanneApp {
                     Ok(load) => {
                         let nav = load.result;
                         let text = load.text;
+                        self.file_is_lossy = load.lossy;
+                        self.lossy_save_acknowledged = false;
                         self.filename = nav.path.display().to_string();
                         self.content = EditorContent::with_text(&text);
                         self.buffer.replace(&text);
@@ -989,6 +995,8 @@ impl Application for RoxanneApp {
                 match result {
                     Ok(load) => {
                         let text = load.text;
+                        self.file_is_lossy = load.lossy;
+                        self.lossy_save_acknowledged = false;
                         self.content = EditorContent::with_text(&text);
                         self.buffer.replace(&text);
                         self.last_saved_text = text;
@@ -1172,6 +1180,18 @@ impl RoxanneApp {
         if self.filename.trim().is_empty() {
             self.status_message = Some("Nom de fichier manquant.".to_string());
             return Command::none();
+        }
+        if self.file_is_lossy && !self.lossy_save_acknowledged {
+            self.lossy_save_acknowledged = true;
+            self.status_message = Some(
+                "Sauvegarde bloquée: le fichier contient des caractères invalides remplacés. \
+Relancez “Enregistrer” pour confirmer l’écriture."
+                    .to_string(),
+            );
+            return Command::none();
+        }
+        if self.file_is_lossy {
+            self.lossy_save_acknowledged = false;
         }
         let filename = self.filename.clone();
         self.buffer.replace(&self.content.text());
