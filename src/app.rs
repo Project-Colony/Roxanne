@@ -3002,6 +3002,33 @@ mod tests {
             "escaped quote should not trigger unterminated string diagnostic"
         );
     }
+
+    #[test]
+    fn diagnostics_ignore_delimiters_in_strings_and_comments() {
+        let text = r#"fn main() {
+    let value = "{[()]}"; // } ]) )
+    let url = "http://example.com";
+}"#;
+        let buffer = TextBuffer::from(text);
+
+        let diagnostics = analyze_diagnostics(&buffer);
+        assert!(
+            diagnostics.is_empty(),
+            "string/comment delimiters should be ignored: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn diagnostics_ignore_comment_delimiters() {
+        let text = "fn main() { // }\n    let value = \"{\";\n}";
+        let buffer = TextBuffer::from(text);
+
+        let diagnostics = analyze_diagnostics(&buffer);
+        assert!(
+            diagnostics.is_empty(),
+            "comment delimiters should be ignored: {diagnostics:?}"
+        );
+    }
 }
 
 struct SearchResultLine {
@@ -3226,10 +3253,41 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
     let mut stack: Vec<(char, Position)> = Vec::new();
 
     for (line_index, line) in buffer.lines().enumerate() {
-        let mut quotes = 0usize;
-        let mut backslashes = 0usize;
-        for (column, ch) in line.chars().enumerate() {
+        let mut in_string = false;
+        let mut in_line_comment = false;
+        let mut escaped = false;
+        let mut chars = line.chars().enumerate().peekable();
+        while let Some((column, ch)) = chars.next() {
+            if in_line_comment {
+                break;
+            }
+            if in_string {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                match ch {
+                    '\\' => {
+                        escaped = true;
+                    }
+                    '"' => {
+                        in_string = false;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            if ch == '/' && matches!(chars.peek(), Some((_, '/'))) {
+                in_line_comment = true;
+                break;
+            }
+
             match ch {
+                '"' => {
+                    in_string = true;
+                    escaped = false;
+                }
                 '{' | '(' | '[' => stack.push((ch, Position::new(line_index, column))),
                 '}' | ')' | ']' => {
                     if let Some((open, position)) = stack.pop() {
@@ -3253,18 +3311,11 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
                         });
                     }
                 }
-                '"' => {
-                    if backslashes % 2 == 0 {
-                        quotes += 1;
-                    }
-                    backslashes = 0;
-                }
-                '\\' => backslashes += 1,
-                _ => backslashes = 0,
+                _ => {}
             }
         }
 
-        if quotes % 2 == 1 {
+        if in_string {
             diagnostics.push(Diagnostic {
                 line: line_index,
                 column: line.chars().count().saturating_sub(1),
