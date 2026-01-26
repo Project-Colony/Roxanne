@@ -505,6 +505,7 @@ struct SearchResultsSummary {
     skipped_read_errors: usize,
     skipped_too_large: usize,
     skipped_invalid_utf8: usize,
+    truncated: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -822,8 +823,13 @@ impl Application for RoxanneApp {
                         } else {
                             String::new()
                         };
+                        let truncated_note = if summary.truncated {
+                            " résultats partiels / limite atteinte"
+                        } else {
+                            ""
+                        };
                         self.status_message = Some(format!(
-                            "Recherche fichiers: {} résultat(s) ({duration}){skipped_note}.",
+                            "Recherche fichiers: {} résultat(s) ({duration}){skipped_note}{truncated_note}.",
                             self.search_results.len()
                         ));
                     }
@@ -2731,6 +2737,7 @@ async fn search_in_workspace(
             skipped_read_errors: 0,
             skipped_too_large: 0,
             skipped_invalid_utf8: 0,
+            truncated: false,
         });
     }
 
@@ -2741,6 +2748,7 @@ async fn search_in_workspace(
     let mut skipped_read_errors = 0usize;
     let mut skipped_too_large = 0usize;
     let mut skipped_invalid_utf8 = 0usize;
+    let mut truncated = false;
 
     for entry in WalkDir::new(&root)
         .follow_links(false)
@@ -2795,11 +2803,13 @@ async fn search_in_workspace(
             });
             collected += 1;
             if collected >= max_results {
+                truncated = true;
                 return Ok(SearchResultsSummary {
                     results,
                     skipped_read_errors,
                     skipped_too_large,
                     skipped_invalid_utf8,
+                    truncated,
                 });
             }
         }
@@ -2810,6 +2820,7 @@ async fn search_in_workspace(
         skipped_read_errors,
         skipped_too_large,
         skipped_invalid_utf8,
+        truncated,
     })
 }
 
