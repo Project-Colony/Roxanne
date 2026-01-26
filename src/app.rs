@@ -1586,6 +1586,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                             text(name).size(12).font(Font::MONOSPACE),
                         )
                         .padding([2, 8])
+                        .width(Length::Shrink)
                         .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
                             palette: self.theme,
                         })))
@@ -2751,7 +2752,7 @@ impl button::StyleSheet for SubmenuButtonStyle {
 
     fn active(&self, _style: &Self::Style) -> button::Appearance {
         button::Appearance {
-            background: Some(Background::Color(self.palette.button_base)),
+            background: None,
             text_color: Color::from_rgb8(230, 230, 230),
             border: Default::default(),
             shadow_offset: Default::default(),
