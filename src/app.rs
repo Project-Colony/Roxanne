@@ -53,6 +53,7 @@ pub struct RoxanneApp {
     current_match_index: Option<usize>,
     search_case_sensitive: bool,
     search_regex: bool,
+    search_include_hidden: bool,
     search_panel_open: bool,
     goto_line_input: String,
     goto_panel_open: bool,
@@ -132,6 +133,7 @@ pub enum Message {
     SearchResultSelected(usize),
     SearchToggleCaseSensitive,
     SearchToggleRegex,
+    SearchToggleIncludeHidden,
     SearchScopeSelected(SearchScope),
     SearchPanelToggled,
     GotoLineChanged(String),
@@ -532,6 +534,7 @@ pub struct CompletionItem {
 struct SearchOptions {
     regex: bool,
     case_sensitive: bool,
+    include_hidden: bool,
 }
 
 enum SearchMatcher {
@@ -603,6 +606,7 @@ impl Application for RoxanneApp {
                 current_match_index: None,
                 search_case_sensitive: false,
                 search_regex: false,
+                search_include_hidden: false,
                 search_panel_open: false,
                 goto_line_input: String::new(),
                 goto_panel_open: false,
@@ -678,6 +682,10 @@ impl Application for RoxanneApp {
                 if self.search_scope == SearchScope::CurrentFile {
                     self.refresh_search_matches(false);
                 }
+                Command::none()
+            }
+            Message::SearchToggleIncludeHidden => {
+                self.search_include_hidden = !self.search_include_hidden;
                 Command::none()
             }
             Message::SearchScopeSelected(scope) => {
@@ -1533,6 +1541,11 @@ impl RoxanneApp {
                 Message::SearchToggleCaseSensitive
             ),
             self.toggle_button(".*", self.search_regex, Message::SearchToggleRegex),
+            self.toggle_button(
+                "Cachés",
+                self.search_include_hidden,
+                Message::SearchToggleIncludeHidden
+            ),
         ]
         .spacing(8)
         .align_items(Alignment::Center);
@@ -1964,6 +1977,7 @@ impl RoxanneApp {
         SearchOptions {
             regex: self.search_regex,
             case_sensitive: self.search_case_sensitive,
+            include_hidden: self.search_include_hidden,
         }
     }
 
@@ -2753,7 +2767,7 @@ async fn search_in_workspace(
     for entry in WalkDir::new(&root)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|entry| !should_skip_entry(entry))
+        .filter_entry(|entry| !should_skip_entry(entry, options.include_hidden))
     {
         let entry = match entry {
             Ok(entry) => entry,
@@ -2766,7 +2780,7 @@ async fn search_in_workspace(
             continue;
         }
 
-        if should_skip_file(entry.path()) {
+        if should_skip_file(entry.path(), options.include_hidden) {
             continue;
         }
 
@@ -2934,7 +2948,7 @@ fn find_matches_in_text(text: &str, matcher: &SearchMatcher) -> Vec<SearchResult
     matches
 }
 
-fn should_skip_entry(entry: &DirEntry) -> bool {
+fn should_skip_entry(entry: &DirEntry, include_hidden: bool) -> bool {
     if entry.depth() == 0 {
         return false;
     }
@@ -2943,15 +2957,18 @@ fn should_skip_entry(entry: &DirEntry) -> bool {
     if entry.file_type().is_dir() && skip_dirs.contains(&name.as_ref()) {
         return true;
     }
+    if include_hidden {
+        return false;
+    }
     name.starts_with('.')
 }
 
-fn should_skip_file(path: &Path) -> bool {
+fn should_skip_file(path: &Path, include_hidden: bool) -> bool {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("");
-    if file_name.starts_with('.') {
+    if file_name.starts_with('.') && !include_hidden {
         return true;
     }
 
@@ -3032,7 +3049,10 @@ fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SearchOptions, analyze_diagnostics, atomic_write, find_matches};
+    use super::{
+        SearchOptions, analyze_diagnostics, atomic_write, find_matches, should_skip_entry,
+        should_skip_file,
+    };
     use crate::editor::TextBuffer;
     use std::fs;
     use tempfile::tempdir;
@@ -3091,6 +3111,7 @@ mod tests {
         let options = SearchOptions {
             regex: false,
             case_sensitive: true,
+            include_hidden: false,
         };
 
         let matches = find_matches(&buffer, "👍", options).expect("matches");
@@ -3115,12 +3136,33 @@ mod tests {
         let options = SearchOptions {
             regex: false,
             case_sensitive: false,
+            include_hidden: false,
         };
 
         let matches = find_matches(&buffer, "a", options).expect("matches");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].column, 1);
         assert_eq!(matches[0].length, 1);
+    }
+
+    #[test]
+    fn include_hidden_allows_hidden_files_in_filters() {
+        let dir = tempdir().expect("tempdir");
+        let hidden_path = dir.path().join(".secret.txt");
+        fs::write(&hidden_path, "secret").expect("write hidden file");
+
+        let hidden_entry = walkdir::WalkDir::new(dir.path())
+            .min_depth(1)
+            .max_depth(1)
+            .into_iter()
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name() == ".secret.txt")
+            .expect("hidden entry");
+
+        assert!(should_skip_entry(&hidden_entry, false));
+        assert!(!should_skip_entry(&hidden_entry, true));
+        assert!(should_skip_file(&hidden_path, false));
+        assert!(!should_skip_file(&hidden_path, true));
     }
 
     #[test]
