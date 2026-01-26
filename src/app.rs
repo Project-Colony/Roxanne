@@ -502,7 +502,9 @@ pub struct SearchResult {
 #[derive(Debug, Clone)]
 struct SearchResultsSummary {
     results: Vec<SearchResult>,
-    skipped_errors: usize,
+    skipped_read_errors: usize,
+    skipped_too_large: usize,
+    skipped_invalid_utf8: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -790,8 +792,33 @@ impl Application for RoxanneApp {
                             .last_search_files
                             .map(format_duration)
                             .unwrap_or_else(|| "-".to_string());
-                        let skipped_note = if summary.skipped_errors > 0 {
-                            format!(", {} fichier(s) ignoré(s)", summary.skipped_errors)
+                        let skipped_total = summary.skipped_read_errors
+                            + summary.skipped_too_large
+                            + summary.skipped_invalid_utf8;
+                        let skipped_note = if skipped_total > 0 {
+                            let mut details = Vec::new();
+                            if summary.skipped_too_large > 0 {
+                                details.push(format!(
+                                    "{} trop volumineux",
+                                    summary.skipped_too_large
+                                ));
+                            }
+                            if summary.skipped_invalid_utf8 > 0 {
+                                details.push(format!(
+                                    "{} non UTF-8",
+                                    summary.skipped_invalid_utf8
+                                ));
+                            }
+                            if summary.skipped_read_errors > 0 {
+                                details.push(format!(
+                                    "{} erreur(s) de lecture",
+                                    summary.skipped_read_errors
+                                ));
+                            }
+                            format!(
+                                ", {skipped_total} fichier(s) ignoré(s) : {}",
+                                details.join(", ")
+                            )
                         } else {
                             String::new()
                         };
@@ -2660,7 +2687,9 @@ async fn search_in_workspace(
     if query.trim().is_empty() {
         return Ok(SearchResultsSummary {
             results: Vec::new(),
-            skipped_errors: 0,
+            skipped_read_errors: 0,
+            skipped_too_large: 0,
+            skipped_invalid_utf8: 0,
         });
     }
 
@@ -2668,7 +2697,9 @@ async fn search_in_workspace(
     let mut results = Vec::new();
     let mut collected = 0usize;
     let max_results = 500usize;
-    let mut skipped_errors = 0usize;
+    let mut skipped_read_errors = 0usize;
+    let mut skipped_too_large = 0usize;
+    let mut skipped_invalid_utf8 = 0usize;
 
     for entry in WalkDir::new(&root)
         .follow_links(false)
@@ -2678,7 +2709,7 @@ async fn search_in_workspace(
         let entry = match entry {
             Ok(entry) => entry,
             Err(_) => {
-                skipped_errors += 1;
+                skipped_read_errors += 1;
                 continue;
             }
         };
@@ -2693,19 +2724,23 @@ async fn search_in_workspace(
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(_) => {
-                skipped_errors += 1;
+                skipped_read_errors += 1;
                 continue;
             }
         };
         if metadata.len() > MAX_OPEN_FILE_SIZE {
-            skipped_errors += 1;
+            skipped_too_large += 1;
             continue;
         }
 
         let contents = match std::fs::read_to_string(entry.path()) {
             Ok(contents) => contents,
-            Err(_) => {
-                skipped_errors += 1;
+            Err(err) => {
+                if err.kind() == std::io::ErrorKind::InvalidData {
+                    skipped_invalid_utf8 += 1;
+                } else {
+                    skipped_read_errors += 1;
+                }
                 continue;
             }
         };
@@ -2721,7 +2756,9 @@ async fn search_in_workspace(
             if collected >= max_results {
                 return Ok(SearchResultsSummary {
                     results,
-                    skipped_errors,
+                    skipped_read_errors,
+                    skipped_too_large,
+                    skipped_invalid_utf8,
                 });
             }
         }
@@ -2729,7 +2766,9 @@ async fn search_in_workspace(
 
     Ok(SearchResultsSummary {
         results,
-        skipped_errors,
+        skipped_read_errors,
+        skipped_too_large,
+        skipped_invalid_utf8,
     })
 }
 
