@@ -233,11 +233,13 @@ impl MenuEntry {
 }
 
 const MENU_BAR_PADDING_X: f32 = 16.0;
+const MENU_BUTTON_PADDING_X: u16 = 6;
 
 struct MenuOverlay<'a> {
     content: Element<'a, Message>,
     overlay: Option<Element<'a, Message>>,
     dismiss_message: Option<Message>,
+    active_menu_index: Option<usize>,
 }
 
 impl<'a> MenuOverlay<'a> {
@@ -245,11 +247,13 @@ impl<'a> MenuOverlay<'a> {
         content: impl Into<Element<'a, Message>>,
         overlay: Option<Element<'a, Message>>,
         dismiss_message: Option<Message>,
+        active_menu_index: Option<usize>,
     ) -> Self {
         Self {
             content: content.into(),
             overlay,
             dismiss_message,
+            active_menu_index,
         }
     }
 }
@@ -366,6 +370,10 @@ impl<'a> Widget<Message, Theme, Renderer> for MenuOverlay<'a> {
             translation,
         );
 
+        let active_button_x = self
+            .active_menu_index
+            .and_then(|index| active_menu_label_x(layout, index));
+
         let overlay_element = match (&mut self.overlay, children.next()) {
             (Some(overlay), Some(state)) => {
                 Some(overlay::Element::new(Box::new(MenuOverlayLayer {
@@ -374,6 +382,7 @@ impl<'a> Widget<Message, Theme, Renderer> for MenuOverlay<'a> {
                     overlay,
                     state,
                     dismiss_message: self.dismiss_message.clone(),
+                    active_button_x,
                 })))
             }
             _ => None,
@@ -390,6 +399,27 @@ impl<'a> Widget<Message, Theme, Renderer> for MenuOverlay<'a> {
     }
 }
 
+fn active_menu_label_x(layout: Layout<'_>, index: usize) -> Option<f32> {
+    let mut children = layout.children();
+    let row_layout = children.next()?;
+    let button_layout = row_layout.children().nth(index)?;
+    Some(button_layout.bounds().x + f32::from(MENU_BUTTON_PADDING_X))
+}
+
+fn menu_index(menu: Menu) -> usize {
+    match menu {
+        Menu::File => 0,
+        Menu::Edit => 1,
+        Menu::Selection => 2,
+        Menu::View => 3,
+        Menu::Goto => 4,
+        Menu::Tools => 5,
+        Menu::Project => 6,
+        Menu::Preferences => 7,
+        Menu::Help => 8,
+    }
+}
+
 impl<'a> From<MenuOverlay<'a>> for Element<'a, Message> {
     fn from(overlay: MenuOverlay<'a>) -> Self {
         Element::new(overlay)
@@ -402,6 +432,7 @@ struct MenuOverlayLayer<'a, 'b> {
     overlay: &'b mut Element<'a, Message>,
     state: &'b mut widget::Tree,
     dismiss_message: Option<Message>,
+    active_button_x: Option<f32>,
 }
 
 impl<'a, 'b> overlay::Overlay<Message, Theme, Renderer> for MenuOverlayLayer<'a, 'b> {
@@ -421,7 +452,10 @@ impl<'a, 'b> overlay::Overlay<Message, Theme, Renderer> for MenuOverlayLayer<'a,
             &layout::Limits::new(Size::ZERO, overlay_bounds.size()),
         );
 
-        let submenu_offset = Vector::new(self.position.x + MENU_BAR_PADDING_X, 0.0);
+        let submenu_offset_x = self
+            .active_button_x
+            .unwrap_or(self.position.x + MENU_BAR_PADDING_X);
+        let submenu_offset = Vector::new(submenu_offset_x, 0.0);
 
         layout::Node::with_children(
             overlay_bounds.size(),
@@ -1376,7 +1410,8 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             })));
 
         let dismiss_message = self.active_menu.map(Message::MenuSelected);
-        MenuOverlay::new(top_row, self.submenu(), dismiss_message).into()
+        let active_menu_index = self.active_menu.map(menu_index);
+        MenuOverlay::new(top_row, self.submenu(), dismiss_message, active_menu_index).into()
     }
 
     fn menu_button(&self, label: &str, menu: Menu) -> Element<'_, Message> {
@@ -1387,7 +1422,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                 .style(Color::from_rgb8(220, 220, 220))
                 .font(Font::MONOSPACE),
         )
-        .padding([2, 6])
+        .padding([2, MENU_BUTTON_PADDING_X])
         .style(theme::Button::Custom(Box::new(MenuButtonStyle {
             active: is_active,
             palette: self.theme,
