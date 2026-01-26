@@ -1699,7 +1699,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
     }
 
     fn editor_area(&self) -> Element<'_, Message> {
-        let line_height = EDITOR_LINE_HEIGHT;
+        let line_height = EDITOR_LINE_HEIGHT.max(1.0);
         let vertical_padding = 12.0;
         let line_number_size = 14;
         let line_count = self.buffer.line_count().max(1);
@@ -1737,6 +1737,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         let editor = text_editor(&self.content)
             .on_action(Message::Edit)
             .font(Font::MONOSPACE)
+            .line_height(LineHeight::Absolute(line_height.into()))
             .padding([vertical_padding, 16.0])
             .height(Length::Fill)
             .highlight::<highlight::RoxanneHighlighter>(
