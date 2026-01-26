@@ -3218,6 +3218,18 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_ignore_nested_block_comment_delimiters() {
+        let text = "fn main() {\n    /* outer { [ /* inner ( ) */ still ] } */\n}\n";
+        let buffer = TextBuffer::from(text);
+
+        let diagnostics = analyze_diagnostics(&buffer);
+        assert!(
+            diagnostics.is_empty(),
+            "nested block comment delimiters should be ignored: {diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn diagnostics_allow_multiline_strings() {
         let text = "fn main() {\n    let value = \"multi\nline\";\n}\n";
         let buffer = TextBuffer::from(text);
@@ -3496,7 +3508,7 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
     let mut in_string = false;
     let mut in_char = false;
     let mut raw_string_hashes: Option<usize> = None;
-    let mut in_block_comment = false;
+    let mut block_comment_depth = 0usize;
     let mut escaped = false;
     let mut string_start: Option<Position> = None;
     let mut raw_string_start: Option<Position> = None;
@@ -3508,10 +3520,13 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
         }
         let mut chars = line.chars().enumerate().peekable();
         while let Some((column, ch)) = chars.next() {
-            if in_block_comment {
-                if ch == '*' && matches!(chars.peek(), Some((_, '/'))) {
+            if block_comment_depth > 0 {
+                if ch == '/' && matches!(chars.peek(), Some((_, '*'))) {
                     chars.next();
-                    in_block_comment = false;
+                    block_comment_depth += 1;
+                } else if ch == '*' && matches!(chars.peek(), Some((_, '/'))) {
+                    chars.next();
+                    block_comment_depth = block_comment_depth.saturating_sub(1);
                 }
                 continue;
             }
@@ -3582,7 +3597,7 @@ fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
 
             if ch == '/' && matches!(chars.peek(), Some((_, '*'))) {
                 chars.next();
-                in_block_comment = true;
+                block_comment_depth += 1;
                 continue;
             }
 
