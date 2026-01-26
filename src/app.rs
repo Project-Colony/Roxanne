@@ -801,6 +801,9 @@ impl Application for RoxanneApp {
                         self.content = EditorContent::with_text(&text);
                         self.buffer.replace(&text);
                         self.buffer.clear_history();
+                        self.multi_cursors.clear();
+                        self.completion_panel_open = false;
+                        self.completion_items.clear();
                         self.suppress_undo_snapshot = false;
                         self.last_saved_text = text;
                         self.refresh_search_matches(false);
@@ -929,6 +932,9 @@ impl Application for RoxanneApp {
                         self.buffer.replace(&text);
                         self.last_saved_text = text;
                         self.buffer.clear_history();
+                        self.multi_cursors.clear();
+                        self.completion_panel_open = false;
+                        self.completion_items.clear();
                         self.suppress_undo_snapshot = false;
                         self.refresh_search_matches(false);
                         self.refresh_diagnostics();
