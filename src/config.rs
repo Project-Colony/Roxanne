@@ -44,8 +44,10 @@ impl AppConfig {
 
         if let Some(workspace_path) = workspace_config_path() {
             if let Some(file) = load_file(&workspace_path, &mut warnings) {
-                if let Some(profile) = file.profile.as_deref() {
-                    if let Some(profile_path) = profile_config_path(profile) {
+                let profile = file.profile.clone();
+                config.apply_file(&file, &mut warnings);
+                if let Some(profile) = profile {
+                    if let Some(profile_path) = profile_config_path(&profile) {
                         if profile_path.exists() {
                             if let Some(profile_file) = load_file(&profile_path, &mut warnings) {
                                 config.apply_file(&profile_file, &mut warnings);
@@ -57,7 +59,6 @@ impl AppConfig {
                         }
                     }
                 }
-                config.apply_file(&file, &mut warnings);
             }
         }
 
