@@ -5,17 +5,17 @@ edition = "2024"
 
 [dependencies]
 iced = { version = "0.12", features = ["advanced"] }
-
-[patch.crates-io]
-iced_widget = { path = "vendor/iced_widget" }
 libloading = "0.8"
 regex = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 streaming-iterator = "0.1"
+toml = "0.8"
 tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
-toml = "0.8"
 walkdir = "2.5"
+
+[patch.crates-io]
+iced_widget = { path = "vendor/iced_widget" }
 
 [dev-dependencies]
 criterion = "0.5"
