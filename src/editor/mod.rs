@@ -1,5 +1,6 @@
 pub mod buffer;
 pub mod highlight;
+pub mod syntax;
 pub mod viewport;
 
 #[allow(unused_imports)]

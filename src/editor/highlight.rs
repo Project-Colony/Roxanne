@@ -1,3 +1,4 @@
+use crate::editor::syntax;
 use crate::theme::SyntaxPalette;
 use iced::advanced::text::highlighter::{self, Highlighter};
 use iced::{Font, Theme};
@@ -78,7 +79,8 @@ impl Highlighter for RoxanneHighlighter {
 
         let mut highlights = match self.settings.language {
             Language::Plain => Vec::new(),
-            Language::Rust => highlight_rust_line(line),
+            Language::Rust => syntax::highlight_line(self.settings.language, line)
+                .unwrap_or_else(|| highlight_rust_line(line)),
         };
 
         if !self.settings.search_matches.is_empty() {
@@ -229,4 +231,49 @@ fn is_in_ranges(start: usize, end: usize, ranges: &[Range<usize>]) -> bool {
     ranges
         .iter()
         .any(|range| start < range.end && end > range.start)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn does_not_mark_string_slashes_as_comment() {
+        let mut highlighter = RoxanneHighlighter::new(&Settings::default());
+        let line = r#"let s = "// not comment";"#;
+        let highlights: Vec<_> = highlighter.highlight_line(line).collect();
+
+        assert!(
+            !highlights
+                .iter()
+                .any(|(_, token)| *token == HighlightToken::Comment),
+            "expected no comment tokens in line: {line}"
+        );
+    }
+
+    #[test]
+    fn still_highlights_actual_comment_after_string() {
+        let mut highlighter = RoxanneHighlighter::new(&Settings::default());
+        let line = r#"let s = "// not comment"; // real comment"#;
+        let highlights: Vec<_> = highlighter.highlight_line(line).collect();
+        let comment_start = line
+            .rfind("// real comment")
+            .expect("comment marker should exist");
+
+        let comment_ranges: Vec<_> = highlights
+            .iter()
+            .filter_map(|(range, token)| {
+                if *token == HighlightToken::Comment {
+                    Some(range.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert!(
+            comment_ranges.iter().any(|range| range.start == comment_start),
+            "expected comment token starting at {comment_start}, got {comment_ranges:?}"
+        );
+    }
 }
