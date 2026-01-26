@@ -1595,9 +1595,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                     })
                     .collect::<Vec<Element<Message>>>(),
             )
-            )
-            .spacing(6)
-            .width(Length::Shrink),
+            .spacing(6),
         ]
         .spacing(8)
         .align_items(Alignment::Start)
@@ -1605,7 +1603,6 @@ Relancez “Enregistrer” pour confirmer l’écriture."
 
         Some(
             Container::new(row)
-                .width(Length::Shrink)
                 .style(theme::Container::Custom(Box::new(SubmenuStyle {
                     palette: self.theme,
                 })))
@@ -1615,7 +1612,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
 
     fn submenu_separator(&self) -> Element<'_, Message> {
         Container::new(Space::with_height(Length::Fixed(1.0)))
-            .width(Length::Shrink)
+            .width(Length::Fill)
             .style(theme::Container::Custom(Box::new(SubmenuSeparatorStyle {
                 palette: self.theme,
             })))
