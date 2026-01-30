@@ -7,6 +7,7 @@ edition = "2024"
 iced = { version = "0.12", features = ["advanced"] }
 libloading = "0.8"
 regex = "1.11"
+ropey = "1.6"
 serde = { version = "1.0", features = ["derive"] }
 streaming-iterator = "0.1"
 toml = "0.8"

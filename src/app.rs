@@ -2207,14 +2207,31 @@ Relancez “Enregistrer” pour confirmer l’écriture."
     }
 
     fn move_cursor_to(&mut self, line: usize, column: usize) {
-        self.content
-            .perform(EditorAction::Move(Motion::DocumentStart));
-        for _ in 0..line {
-            self.content.perform(EditorAction::Move(Motion::Down));
+        let (cur_line, _cur_col) = self.content.cursor_position();
+
+        // Move vertically: pick the shorter path.
+        if line != cur_line {
+            if line == 0 {
+                self.content
+                    .perform(EditorAction::Move(Motion::DocumentStart));
+            } else if line < cur_line {
+                for _ in 0..(cur_line - line) {
+                    self.content.perform(EditorAction::Move(Motion::Up));
+                }
+            } else {
+                for _ in 0..(line - cur_line) {
+                    self.content.perform(EditorAction::Move(Motion::Down));
+                }
+            }
         }
+
+        // Move horizontally: go to Home first (O(1)), then Right column times.
+        // This avoids the old O(column) issue when column is already nonzero.
+        self.content.perform(EditorAction::Move(Motion::Home));
         for _ in 0..column {
             self.content.perform(EditorAction::Move(Motion::Right));
         }
+
         self.refresh_viewport_cache();
     }
 
