@@ -163,28 +163,91 @@ impl Keymap {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct KeymapConfig {
-    pub save: Option<String>,
-    pub open: Option<String>,
-    pub find: Option<String>,
-    pub find_next: Option<String>,
-    pub find_previous: Option<String>,
-    pub select_all: Option<String>,
-    pub copy: Option<String>,
-    pub cut: Option<String>,
-    pub paste: Option<String>,
-    pub undo: Option<String>,
-    pub redo: Option<String>,
-    pub completion: Option<String>,
-    pub completion_close: Option<String>,
-    pub enter_insert_mode: Option<String>,
-    pub enter_normal_mode: Option<String>,
-    #[serde(default)]
-    pub insert: Option<KeymapModeConfig>,
-    #[serde(default)]
-    pub normal: Option<KeymapModeConfig>,
+macro_rules! keymap_fields {
+    ($struct_name:ident $(, $extra_field:ident : $extra_type:ty)*) => {
+        #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+        pub struct $struct_name {
+            pub save: Option<String>,
+            pub open: Option<String>,
+            pub find: Option<String>,
+            pub find_next: Option<String>,
+            pub find_previous: Option<String>,
+            pub select_all: Option<String>,
+            pub copy: Option<String>,
+            pub cut: Option<String>,
+            pub paste: Option<String>,
+            pub undo: Option<String>,
+            pub redo: Option<String>,
+            pub completion: Option<String>,
+            pub completion_close: Option<String>,
+            pub enter_insert_mode: Option<String>,
+            pub enter_normal_mode: Option<String>,
+            $(
+                #[serde(default)]
+                pub $extra_field: $extra_type,
+            )*
+        }
+    };
 }
+
+keymap_fields!(KeymapConfig,
+    insert: Option<KeymapModeConfig>,
+    normal: Option<KeymapModeConfig>
+);
+
+keymap_fields!(KeymapModeConfig);
+
+const KEYMAP_ACTIONS: &[(&str, KeyAction)] = &[
+    ("save", KeyAction::Save),
+    ("open", KeyAction::Open),
+    ("find", KeyAction::Find),
+    ("find_next", KeyAction::FindNext),
+    ("find_previous", KeyAction::FindPrevious),
+    ("select_all", KeyAction::SelectAll),
+    ("copy", KeyAction::Copy),
+    ("cut", KeyAction::Cut),
+    ("paste", KeyAction::Paste),
+    ("undo", KeyAction::Undo),
+    ("redo", KeyAction::Redo),
+    ("completion", KeyAction::Completion),
+    ("completion_close", KeyAction::CompletionClose),
+    ("enter_insert_mode", KeyAction::EnterInsertMode),
+    ("enter_normal_mode", KeyAction::EnterNormalMode),
+];
+
+trait KeymapEntries {
+    fn field(&self, name: &str) -> Option<&str>;
+}
+
+macro_rules! impl_keymap_entries {
+    ($struct_name:ty) => {
+        impl KeymapEntries for $struct_name {
+            fn field(&self, name: &str) -> Option<&str> {
+                match name {
+                    "save" => self.save.as_deref(),
+                    "open" => self.open.as_deref(),
+                    "find" => self.find.as_deref(),
+                    "find_next" => self.find_next.as_deref(),
+                    "find_previous" => self.find_previous.as_deref(),
+                    "select_all" => self.select_all.as_deref(),
+                    "copy" => self.copy.as_deref(),
+                    "cut" => self.cut.as_deref(),
+                    "paste" => self.paste.as_deref(),
+                    "undo" => self.undo.as_deref(),
+                    "redo" => self.redo.as_deref(),
+                    "completion" => self.completion.as_deref(),
+                    "completion_close" => self.completion_close.as_deref(),
+                    "enter_insert_mode" => self.enter_insert_mode.as_deref(),
+                    "enter_normal_mode" => self.enter_normal_mode.as_deref(),
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+impl_keymap_entries!(KeymapConfig);
+impl_keymap_entries!(KeymapModeConfig);
 
 impl KeymapConfig {
     fn entries_for_mode(&self, mode: KeymapMode) -> (Vec<KeymapEntry<'_>>, Vec<String>) {
@@ -195,9 +258,9 @@ impl KeymapConfig {
             KeymapMode::Normal => self.normal.as_ref(),
         };
 
-        entries.extend(self.entries_from_config(self, mode));
+        entries.extend(collect_entries(self));
         if let Some(mode_config) = mode_config {
-            entries.extend(self.entries_from_config(mode_config, mode));
+            entries.extend(collect_entries(mode_config));
         }
 
         entries.retain(|entry| {
@@ -215,239 +278,18 @@ impl KeymapConfig {
 
         (entries, warnings)
     }
-
-    fn entries_from_config<'a>(
-        &self,
-        config: &'a impl KeymapEntries,
-        _mode: KeymapMode,
-    ) -> Vec<KeymapEntry<'a>> {
-        let mut entries = Vec::new();
-        if let Some(value) = config.save() {
-            entries.push(KeymapEntry {
-                action: KeyAction::Save,
-                shortcut: value,
-            });
-        }
-        if let Some(value) = config.open() {
-            entries.push(KeymapEntry {
-                action: KeyAction::Open,
-                shortcut: value,
-            });
-        }
-        if let Some(value) = config.find() {
-            entries.push(KeymapEntry {
-                action: KeyAction::Find,
-                shortcut: value,
-            });
-        }
-        if let Some(value) = config.find_next() {
-            entries.push(KeymapEntry {
-                action: KeyAction::FindNext,
-                shortcut: value,
-            });
-        }
-        if let Some(value) = config.find_previous() {
-            entries.push(KeymapEntry {
-                action: KeyAction::FindPrevious,
-                shortcut: value,
-            });
-        }
-        if let Some(value) = config.select_all() {
-            entries.push(KeymapEntry {
-                action: KeyAction::SelectAll,
-                shortcut: value,
-            });
-        }
-        if let Some(value) = config.copy() {
-            entries.push(KeymapEntry {
-                action: KeyAction::Copy,
-                shortcut: value,
-            });
-        }
-        if let Some(value) = config.cut() {
-            entries.push(KeymapEntry {
-                action: KeyAction::Cut,
-                shortcut: value,
-            });
-        }
-        if let Some(value) = config.paste() {
-            entries.push(KeymapEntry {
-                action: KeyAction::Paste,
-                shortcut: value,
-            });
-        }
-        if let Some(value) = config.undo() {
-            entries.push(KeymapEntry {
-                action: KeyAction::Undo,
-                shortcut: value,
-            });
-        }
-        if let Some(value) = config.redo() {
-            entries.push(KeymapEntry {
-                action: KeyAction::Redo,
-                shortcut: value,
-            });
-        }
-        if let Some(value) = config.completion() {
-            entries.push(KeymapEntry {
-                action: KeyAction::Completion,
-                shortcut: value,
-            });
-        }
-        if let Some(value) = config.completion_close() {
-            entries.push(KeymapEntry {
-                action: KeyAction::CompletionClose,
-                shortcut: value,
-            });
-        }
-        if let Some(value) = config.enter_insert_mode() {
-            entries.push(KeymapEntry {
-                action: KeyAction::EnterInsertMode,
-                shortcut: value,
-            });
-        }
-        if let Some(value) = config.enter_normal_mode() {
-            entries.push(KeymapEntry {
-                action: KeyAction::EnterNormalMode,
-                shortcut: value,
-            });
-        }
-
-        entries
-    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct KeymapModeConfig {
-    pub save: Option<String>,
-    pub open: Option<String>,
-    pub find: Option<String>,
-    pub find_next: Option<String>,
-    pub find_previous: Option<String>,
-    pub select_all: Option<String>,
-    pub copy: Option<String>,
-    pub cut: Option<String>,
-    pub paste: Option<String>,
-    pub undo: Option<String>,
-    pub redo: Option<String>,
-    pub completion: Option<String>,
-    pub completion_close: Option<String>,
-    pub enter_insert_mode: Option<String>,
-    pub enter_normal_mode: Option<String>,
-}
-
-trait KeymapEntries {
-    fn save(&self) -> Option<&str>;
-    fn open(&self) -> Option<&str>;
-    fn find(&self) -> Option<&str>;
-    fn find_next(&self) -> Option<&str>;
-    fn find_previous(&self) -> Option<&str>;
-    fn select_all(&self) -> Option<&str>;
-    fn copy(&self) -> Option<&str>;
-    fn cut(&self) -> Option<&str>;
-    fn paste(&self) -> Option<&str>;
-    fn undo(&self) -> Option<&str>;
-    fn redo(&self) -> Option<&str>;
-    fn completion(&self) -> Option<&str>;
-    fn completion_close(&self) -> Option<&str>;
-    fn enter_insert_mode(&self) -> Option<&str>;
-    fn enter_normal_mode(&self) -> Option<&str>;
-}
-
-impl KeymapEntries for KeymapConfig {
-    fn save(&self) -> Option<&str> {
-        self.save.as_deref()
-    }
-    fn open(&self) -> Option<&str> {
-        self.open.as_deref()
-    }
-    fn find(&self) -> Option<&str> {
-        self.find.as_deref()
-    }
-    fn find_next(&self) -> Option<&str> {
-        self.find_next.as_deref()
-    }
-    fn find_previous(&self) -> Option<&str> {
-        self.find_previous.as_deref()
-    }
-    fn select_all(&self) -> Option<&str> {
-        self.select_all.as_deref()
-    }
-    fn copy(&self) -> Option<&str> {
-        self.copy.as_deref()
-    }
-    fn cut(&self) -> Option<&str> {
-        self.cut.as_deref()
-    }
-    fn paste(&self) -> Option<&str> {
-        self.paste.as_deref()
-    }
-    fn undo(&self) -> Option<&str> {
-        self.undo.as_deref()
-    }
-    fn redo(&self) -> Option<&str> {
-        self.redo.as_deref()
-    }
-    fn completion(&self) -> Option<&str> {
-        self.completion.as_deref()
-    }
-    fn completion_close(&self) -> Option<&str> {
-        self.completion_close.as_deref()
-    }
-    fn enter_insert_mode(&self) -> Option<&str> {
-        self.enter_insert_mode.as_deref()
-    }
-    fn enter_normal_mode(&self) -> Option<&str> {
-        self.enter_normal_mode.as_deref()
-    }
-}
-
-impl KeymapEntries for KeymapModeConfig {
-    fn save(&self) -> Option<&str> {
-        self.save.as_deref()
-    }
-    fn open(&self) -> Option<&str> {
-        self.open.as_deref()
-    }
-    fn find(&self) -> Option<&str> {
-        self.find.as_deref()
-    }
-    fn find_next(&self) -> Option<&str> {
-        self.find_next.as_deref()
-    }
-    fn find_previous(&self) -> Option<&str> {
-        self.find_previous.as_deref()
-    }
-    fn select_all(&self) -> Option<&str> {
-        self.select_all.as_deref()
-    }
-    fn copy(&self) -> Option<&str> {
-        self.copy.as_deref()
-    }
-    fn cut(&self) -> Option<&str> {
-        self.cut.as_deref()
-    }
-    fn paste(&self) -> Option<&str> {
-        self.paste.as_deref()
-    }
-    fn undo(&self) -> Option<&str> {
-        self.undo.as_deref()
-    }
-    fn redo(&self) -> Option<&str> {
-        self.redo.as_deref()
-    }
-    fn completion(&self) -> Option<&str> {
-        self.completion.as_deref()
-    }
-    fn completion_close(&self) -> Option<&str> {
-        self.completion_close.as_deref()
-    }
-    fn enter_insert_mode(&self) -> Option<&str> {
-        self.enter_insert_mode.as_deref()
-    }
-    fn enter_normal_mode(&self) -> Option<&str> {
-        self.enter_normal_mode.as_deref()
-    }
+fn collect_entries<'a>(config: &'a impl KeymapEntries) -> Vec<KeymapEntry<'a>> {
+    KEYMAP_ACTIONS
+        .iter()
+        .filter_map(|(name, action)| {
+            config.field(name).map(|shortcut| KeymapEntry {
+                action: *action,
+                shortcut,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]

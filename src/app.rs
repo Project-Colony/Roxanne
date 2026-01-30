@@ -1,13 +1,17 @@
+use crate::completion::{self, CompletionItem};
 use crate::config;
+use crate::diagnostics::{self, Diagnostic, DiagnosticSeverity};
 use crate::editor::highlight::MatchPosition;
 use crate::editor::{Position, TextBuffer, ViewportCache, highlight};
+use crate::file_ops::{self, MAX_OPEN_FILE_SIZE};
 use crate::keymap::{KeyAction, Keymap, KeymapMode};
 use crate::plugins::PluginManager;
+use crate::search::{self, SearchOptions, SearchResult, SearchResultsSummary, SearchScope};
 use crate::theme::{ThemeConfig, ThemePalette};
+use crate::ui::styles;
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, overlay, renderer, widget};
 use iced::alignment::{Horizontal, Vertical};
 use iced::theme;
-use iced::widget::button;
 use iced::widget::text_editor::{
     Action as EditorAction, Content as EditorContent, Edit as EditorEdit, Motion,
 };
@@ -16,22 +20,15 @@ use iced::widget::{
     text_editor,
 };
 use iced::{
-    Alignment, Application, Background, Color, Command, Element, Font, Length, Point, Rectangle,
+    Alignment, Application, Color, Command, Element, Font, Length, Point, Rectangle,
     Renderer, Settings, Size, Subscription, Theme, Vector, clipboard, event, executor, keyboard,
     mouse, window,
 };
 use iced::widget::text::LineHeight;
-use regex::{Regex, RegexBuilder};
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::fs::OpenOptions;
-use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(test)]
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use walkdir::{DirEntry, WalkDir};
+use std::time::{Duration, Instant};
 
 const DEFAULT_VIEWPORT_HEIGHT: usize = 24;
 const EDITOR_CONTAINER_ID: &str = "roxanne-editor-area";
@@ -213,7 +210,6 @@ pub enum MenuAction {
     ReloadConfig,
     PerformanceReport,
     About,
-    Placeholder(&'static str),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -227,9 +223,6 @@ impl MenuEntry {
         Self::Action(label, action)
     }
 
-    fn placeholder(label: &'static str) -> Self {
-        Self::Action(label, MenuAction::Placeholder(label))
-    }
 }
 
 const MENU_BAR_PADDING_X: f32 = 16.0;
@@ -535,72 +528,7 @@ impl<'a, 'b> overlay::Overlay<Message, Theme, Renderer> for MenuOverlayLayer<'a,
         mouse::Interaction::Idle
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchScope {
-    CurrentFile,
-    Workspace,
-}
 
-impl SearchScope {
-    fn label(self) -> &'static str {
-        match self {
-            SearchScope::CurrentFile => "Fichier",
-            SearchScope::Workspace => "Workspace",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SearchResult {
-    path: PathBuf,
-    line: usize,
-    column: usize,
-    preview: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct SearchResultsSummary {
-    results: Vec<SearchResult>,
-    skipped_read_errors: usize,
-    skipped_too_large: usize,
-    skipped_invalid_utf8: usize,
-    truncated: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct Diagnostic {
-    line: usize,
-    column: usize,
-    message: String,
-    severity: DiagnosticSeverity,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum DiagnosticSeverity {
-    Error,
-    Warning,
-}
-
-#[derive(Debug, Clone)]
-pub struct CompletionItem {
-    label: String,
-    detail: String,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SearchOptions {
-    regex: bool,
-    case_sensitive: bool,
-    include_hidden: bool,
-}
-
-enum SearchMatcher {
-    Plain {
-        needle: String,
-        case_sensitive: bool,
-    },
-    Regex(Regex),
-}
 
 impl RoxanneApp {
     pub fn run_with_config(config: config::AppConfig) -> iced::Result {
@@ -630,7 +558,7 @@ impl Application for RoxanneApp {
         let buffer = TextBuffer::from(initial_text);
         let mut viewport_cache = ViewportCache::new();
         viewport_cache.update(&buffer, 0, DEFAULT_VIEWPORT_HEIGHT);
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         let (mut plugins, plugin_warnings) = PluginManager::new(&flags.plugins);
         plugins.on_text_changed(initial_text, "untitled.txt");
         let mut warnings = flags.load_warnings.clone();
@@ -1042,10 +970,6 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                             Some("Roxanne MVP: éditeur inspiré de Sublime Text.".to_string());
                         Command::none()
                     }
-                    MenuAction::Placeholder(label) => {
-                        self.status_message = Some(format!("Non implémenté : {label}."));
-                        Command::none()
-                    }
                 }
             }
             Message::FileLoaded(result) => {
@@ -1182,9 +1106,7 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
         Container::new(content)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(theme::Container::Custom(Box::new(AppBackground {
-                palette: self.theme,
-            })))
+            .style(theme::Container::Custom(styles::app_background(&self.theme)))
             .into()
     }
 
@@ -1256,10 +1178,10 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         }
         let filename = self.filename.clone();
         self.buffer.replace(&self.content.text());
-        let text = self.buffer.text();
+        let text = self.buffer.text().to_string();
         self.perf_file_save_started = Some(Instant::now());
         Command::perform(
-            async move { atomic_write(&filename, &text).map_err(|err| err.to_string()) },
+            async move { file_ops::atomic_write(&filename, &text).map_err(|err| err.to_string()) },
             Message::FileSaved,
         )
     }
@@ -1405,9 +1327,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         let top_row = Container::new(menu_items)
             .width(Length::Fill)
             .padding([6, 16])
-            .style(theme::Container::Custom(Box::new(MenuBarStyle {
-                palette: self.theme,
-            })));
+            .style(theme::Container::Custom(styles::menu_bar(&self.theme)));
 
         let dismiss_message = self.active_menu.map(Message::MenuSelected);
         let active_menu_index = self.active_menu.map(menu_index);
@@ -1423,10 +1343,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                 .font(Font::MONOSPACE),
         )
         .padding([2, MENU_BUTTON_PADDING_X])
-        .style(theme::Button::Custom(Box::new(MenuButtonStyle {
-            active: is_active,
-            palette: self.theme,
-        })))
+        .style(theme::Button::Custom(styles::menu_button(&self.theme, is_active)))
         .on_press(Message::MenuSelected(menu))
         .into()
     }
@@ -1436,51 +1353,25 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             Menu::File => (
                 "File",
                 vec![
-                    MenuEntry::placeholder("New File — Ctrl+N"),
-                    MenuEntry::placeholder("New Window — Ctrl+Shift+N"),
                     MenuEntry::action("Open File… — Ctrl+O", MenuAction::Open),
-                    MenuEntry::placeholder("Open Folder… — Ctrl+Shift+O"),
-                    MenuEntry::placeholder("Open Recent ▸"),
-                    MenuEntry::placeholder("Reopen Closed File — Ctrl+Shift+T"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Close File — Ctrl+W"),
-                    MenuEntry::placeholder("Close Window — Ctrl+Shift+W"),
                     MenuEntry::Separator,
                     MenuEntry::action("Save — Ctrl+S", MenuAction::Save),
-                    MenuEntry::placeholder("Save As… — Ctrl+Shift+S"),
-                    MenuEntry::placeholder("Save All — Ctrl+Alt+S"),
-                    MenuEntry::placeholder("Save with Encoding ▸"),
-                    MenuEntry::placeholder("Save with Line Endings ▸"),
                     MenuEntry::Separator,
                     MenuEntry::action("Export Theme", MenuAction::ExportTheme),
                     MenuEntry::action("Import Theme", MenuAction::ImportTheme),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Print… — Ctrl+P"),
-                    MenuEntry::placeholder("Exit — Ctrl+Q"),
                 ],
             ),
             Menu::Edit => (
                 "Edit",
                 vec![
-                    MenuEntry::placeholder("Undo — Ctrl+Z"),
-                    MenuEntry::placeholder("Redo — Ctrl+Y"),
-                    MenuEntry::placeholder("Undo Selection — Ctrl+U"),
-                    MenuEntry::placeholder("Soft Undo — Alt+Backspace"),
-                    MenuEntry::placeholder("Soft Redo — Alt+Shift+Backspace"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Cut — Ctrl+X"),
-                    MenuEntry::placeholder("Copy — Ctrl+C"),
-                    MenuEntry::placeholder("Copy as RTF"),
-                    MenuEntry::placeholder("Paste — Ctrl+V"),
-                    MenuEntry::placeholder("Paste and Indent — Ctrl+Shift+V"),
-                    MenuEntry::placeholder("Paste from History ▸"),
-                    MenuEntry::placeholder("Paste Special ▸"),
                     MenuEntry::Separator,
                     MenuEntry::action("Find — Ctrl+F", MenuAction::Find),
                     MenuEntry::action("Find Next — F3", MenuAction::FindNext),
                     MenuEntry::action("Find Previous — Shift+F3", MenuAction::FindPrevious),
                     MenuEntry::action("Find in Files… — Ctrl+Shift+F", MenuAction::FindInFiles),
-                    MenuEntry::placeholder("Replace… — Ctrl+H"),
                     MenuEntry::Separator,
                     MenuEntry::action("Search Panel", MenuAction::ToggleSearchPanel),
                     MenuEntry::action("Diagnostics Panel", MenuAction::ToggleDiagnosticsPanel),
@@ -1489,10 +1380,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             Menu::Selection => (
                 "Selection",
                 vec![
-                    MenuEntry::placeholder("Single Selection — Esc"),
                     MenuEntry::action("Select All — Ctrl+A", MenuAction::SelectAll),
-                    MenuEntry::placeholder("Expand Selection to Line — Ctrl+L"),
-                    MenuEntry::placeholder("Split Selection into Lines — Ctrl+Shift+L"),
                     MenuEntry::action(
                         "Add Cursor to Next Match — Ctrl+D",
                         MenuAction::AddCursorNextMatch,
@@ -1503,57 +1391,28 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                     ),
                     MenuEntry::action("Clear Cursors — Esc", MenuAction::ClearMultiCursors),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Expand Selection to Word — Ctrl+D"),
-                    MenuEntry::placeholder("Expand Selection to Paragraph — Ctrl+Shift+Space"),
-                    MenuEntry::placeholder("Expand Selection to Brackets — Ctrl+Shift+M"),
-                    MenuEntry::placeholder("Expand Selection to Tag — Ctrl+Shift+A"),
                 ],
             ),
             Menu::View => (
                 "View",
                 vec![
-                    MenuEntry::placeholder("Side Bar"),
-                    MenuEntry::placeholder("Show Minimap"),
-                    MenuEntry::placeholder("Show Tabs"),
                     MenuEntry::action("Show Status Bar", MenuAction::ToggleStatusBar),
-                    MenuEntry::placeholder("Show Menu"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Enter Full Screen — F11"),
-                    MenuEntry::placeholder("Distraction Free Mode — Shift+F11"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Layout ▸"),
-                    MenuEntry::placeholder("Groups ▸"),
-                    MenuEntry::placeholder("Move File to Group ▸"),
-                    MenuEntry::placeholder("Focus Group ▸"),
                 ],
             ),
             Menu::Goto => (
                 "Goto",
                 vec![
-                    MenuEntry::placeholder("Goto Anything… — Ctrl+P"),
-                    MenuEntry::placeholder("Goto Symbol… — Ctrl+R"),
-                    MenuEntry::placeholder("Goto Symbol in Project… — Ctrl+Shift+R"),
-                    MenuEntry::placeholder("Goto Definition — F12"),
-                    MenuEntry::placeholder("Goto Reference — Shift+F12"),
                     MenuEntry::Separator,
                     MenuEntry::action("Go to Line… — Ctrl+G", MenuAction::GoToLine),
-                    MenuEntry::placeholder("Go to Word… — Ctrl+;"),
-                    MenuEntry::placeholder("Go to Section… — Ctrl+Shift+;"),
                 ],
             ),
             Menu::Tools => (
                 "Tools",
                 vec![
-                    MenuEntry::placeholder("Command Palette… — Ctrl+Shift+P"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Build — Ctrl+B"),
-                    MenuEntry::placeholder("Build With… — Ctrl+Shift+B"),
-                    MenuEntry::placeholder("Cancel Build"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Record Macro"),
-                    MenuEntry::placeholder("Stop Recording Macro"),
-                    MenuEntry::placeholder("Playback Macro — Ctrl+Shift+Q"),
-                    MenuEntry::placeholder("Save Macro…"),
                     MenuEntry::Separator,
                     MenuEntry::action("Reload Config", MenuAction::ReloadConfig),
                     MenuEntry::action("Performance Report", MenuAction::PerformanceReport),
@@ -1562,47 +1421,22 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             Menu::Project => (
                 "Project",
                 vec![
-                    MenuEntry::placeholder("Open Project…"),
-                    MenuEntry::placeholder("Switch Project ▸"),
-                    MenuEntry::placeholder("Quick Switch Project… — Ctrl+Alt+P"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Save Project As…"),
-                    MenuEntry::placeholder("Close Project"),
-                    MenuEntry::placeholder("Edit Project"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Add Folder to Project…"),
-                    MenuEntry::placeholder("Remove Folder from Project"),
                 ],
             ),
             Menu::Preferences => (
                 "Preferences",
                 vec![
-                    MenuEntry::placeholder("Browse Packages…"),
-                    MenuEntry::placeholder("Browse Cache…"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Settings"),
-                    MenuEntry::placeholder("Settings — Syntax Specific"),
-                    MenuEntry::placeholder("Settings — Distraction Free"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Key Bindings"),
-                    MenuEntry::placeholder("Mouse Bindings"),
-                    MenuEntry::placeholder("Menu"),
-                    MenuEntry::placeholder("Macros"),
-                    MenuEntry::placeholder("Commands"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Package Settings ▸"),
-                    MenuEntry::placeholder("Select Color Scheme ▸"),
-                    MenuEntry::placeholder("Select Theme ▸"),
                 ],
             ),
             Menu::Help => (
                 "Help",
                 vec![
-                    MenuEntry::placeholder("Documentation"),
-                    MenuEntry::placeholder("Report a Bug"),
-                    MenuEntry::placeholder("Support Roxanne"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("License"),
                     MenuEntry::action("About", MenuAction::About),
                 ],
             ),
@@ -1622,9 +1456,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                         )
                         .width(Length::Shrink)
                         .padding([2, 8])
-                        .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                            palette: self.theme,
-                        })))
+                        .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                         .on_press(Message::MenuAction(action))
                         .into(),
                         MenuEntry::Separator => self.submenu_separator(),
@@ -1641,9 +1473,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         Some(
             Container::new(row)
                 .width(Length::Shrink)
-                .style(theme::Container::Custom(Box::new(SubmenuStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Container::Custom(styles::submenu(&self.theme)))
                 .into(),
         )
     }
@@ -1651,9 +1481,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
     fn submenu_separator(&self) -> Element<'_, Message> {
         Container::new(Space::with_height(Length::Fixed(1.0)))
             .width(Length::Shrink)
-            .style(theme::Container::Custom(Box::new(SubmenuSeparatorStyle {
-                palette: self.theme,
-            })))
+            .style(theme::Container::Custom(styles::submenu_separator(&self.theme)))
             .into()
     }
 
@@ -1680,9 +1508,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
 
         let row = row![
             Container::new(tab)
-                .style(theme::Container::Custom(Box::new(ActiveTabStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Container::Custom(styles::active_tab(&self.theme)))
                 .height(Length::Fill)
         ]
         .spacing(4)
@@ -1692,9 +1518,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         Container::new(row)
             .width(Length::Fill)
             .height(Length::Fixed(32.0))
-            .style(theme::Container::Custom(Box::new(TabBarStyle {
-                palette: self.theme,
-            })))
+            .style(theme::Container::Custom(styles::tab_bar(&self.theme)))
             .into()
     }
 
@@ -1730,9 +1554,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             .width(Length::Fixed(gutter_width))
             .height(Length::Fill)
             .padding([vertical_padding, 8.0])
-            .style(theme::Container::Custom(Box::new(GutterStyle {
-                palette: self.theme,
-            })));
+            .style(theme::Container::Custom(styles::gutter(&self.theme)));
 
         let editor = text_editor(&self.content)
             .on_action(Message::Edit)
@@ -1749,9 +1571,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             .width(Length::Fill)
             .height(Length::Fill)
             .id(editor_container_id())
-            .style(theme::Container::Custom(Box::new(EditorStyle {
-                palette: self.theme,
-            })));
+            .style(theme::Container::Custom(styles::editor(&self.theme)));
 
         row![gutter, editor].height(Length::Fill).into()
     }
@@ -1804,15 +1624,11 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         let action_row = row![
             Button::new(text("Rechercher fichiers").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::SearchInFiles),
             Button::new(text("Effacer résultats").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::SearchResultsCleared),
         ]
         .spacing(8)
@@ -1848,13 +1664,9 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                     Button::new(
                         Container::new(column![title, preview].spacing(2))
                             .padding([4, 12])
-                            .style(theme::Container::Custom(Box::new(SearchResultStyle {
-                                palette: self.theme,
-                            }))),
+                            .style(theme::Container::Custom(styles::panel_item(&self.theme))),
                     )
-                    .style(theme::Button::Custom(Box::new(SearchResultButtonStyle {
-                        palette: self.theme,
-                    })))
+                    .style(theme::Button::Custom(styles::search_result_button(&self.theme)))
                     .on_press(Message::SearchResultSelected(index))
                     .into()
                 })
@@ -1872,9 +1684,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         Some(
             Container::new(panel)
                 .width(Length::Fill)
-                .style(theme::Container::Custom(Box::new(SearchPanelStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Container::Custom(styles::panel(&self.theme)))
                 .into(),
         )
     }
@@ -1906,15 +1716,11 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         let actions = row![
             Button::new(text("Aller").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::GotoLineSubmit),
             Button::new(text("Fermer").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::GotoLineClosed),
         ]
         .spacing(8)
@@ -1925,9 +1731,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         Some(
             Container::new(panel)
                 .width(Length::Fill)
-                .style(theme::Container::Custom(Box::new(SearchPanelStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Container::Custom(styles::panel(&self.theme)))
                 .into(),
         )
     }
@@ -1938,7 +1742,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         }
 
         let header = row![
-            text("Diagnostics LSP")
+            text("Diagnostics (brackets)")
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(220, 220, 220)),
@@ -1977,9 +1781,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
 
                     Container::new(column![title, message].spacing(2))
                         .padding([4, 12])
-                        .style(theme::Container::Custom(Box::new(SearchResultStyle {
-                            palette: self.theme,
-                        })))
+                        .style(theme::Container::Custom(styles::panel_item(&self.theme)))
                         .into()
                 })
                 .collect::<Vec<Element<Message>>>();
@@ -1994,9 +1796,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         Some(
             Container::new(panel)
                 .width(Length::Fill)
-                .style(theme::Container::Custom(Box::new(SearchPanelStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Container::Custom(styles::panel(&self.theme)))
                 .into(),
         )
     }
@@ -2007,7 +1807,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         }
 
         let header = row![
-            text("Complétions LSP")
+            text("Complétions (mots-clés)")
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(220, 220, 220)),
@@ -2043,13 +1843,9 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                     Button::new(
                         Container::new(column![label, detail].spacing(2))
                             .padding([4, 12])
-                            .style(theme::Container::Custom(Box::new(SearchResultStyle {
-                                palette: self.theme,
-                            }))),
+                            .style(theme::Container::Custom(styles::panel_item(&self.theme))),
                     )
-                    .style(theme::Button::Custom(Box::new(SearchResultButtonStyle {
-                        palette: self.theme,
-                    })))
+                    .style(theme::Button::Custom(styles::search_result_button(&self.theme)))
                     .on_press(Message::CompletionSelected(index))
                     .into()
                 })
@@ -2065,9 +1861,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         Some(
             Container::new(panel)
                 .width(Length::Fill)
-                .style(theme::Container::Custom(Box::new(SearchPanelStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Container::Custom(styles::panel(&self.theme)))
                 .into(),
         )
     }
@@ -2099,15 +1893,11 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             self.toggle_button(".*", self.search_regex, Message::SearchToggleRegex),
             Button::new(text("◀").size(12).font(Font::MONOSPACE))
                 .padding([2, 6])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press_maybe(has_matches.then_some(Message::SearchPrevious)),
             Button::new(text("▶").size(12).font(Font::MONOSPACE))
                 .padding([2, 6])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press_maybe(has_matches.then_some(Message::SearchNext)),
             TextInput::new("fichier…", &self.filename)
                 .on_input(Message::FilenameChanged)
@@ -2162,19 +1952,14 @@ Relancez “Enregistrer” pour confirmer l’écriture."
 
         Container::new(row)
             .width(Length::Fill)
-            .style(theme::Container::Custom(Box::new(StatusBarStyle {
-                palette: self.theme,
-            })))
+            .style(theme::Container::Custom(styles::status_bar(&self.theme)))
             .into()
     }
 
     fn toggle_button(&self, label: &str, active: bool, message: Message) -> Element<'_, Message> {
         Button::new(text(label).size(12).font(Font::MONOSPACE))
             .padding([2, 6])
-            .style(theme::Button::Custom(Box::new(ToggleButtonStyle {
-                active,
-                palette: self.theme,
-            })))
+            .style(theme::Button::Custom(styles::toggle_button(&self.theme, active)))
             .on_press(message)
             .into()
     }
@@ -2188,10 +1973,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                 .style(Color::from_rgb8(220, 220, 220)),
         )
         .padding([2, 8])
-        .style(theme::Button::Custom(Box::new(ToggleButtonStyle {
-            active,
-            palette: self.theme,
-        })))
+        .style(theme::Button::Custom(styles::toggle_button(&self.theme, active)))
         .on_press(Message::SearchScopeSelected(scope))
         .into()
     }
@@ -2291,14 +2073,14 @@ Relancez “Enregistrer” pour confirmer l’écriture."
 
         self.perf_search_files_started = Some(Instant::now());
         Command::perform(
-            search_in_workspace(root, query, options),
+            search::search_in_workspace(root, query, options),
             Message::SearchResultsLoaded,
         )
     }
 
     fn refresh_search_matches(&mut self, preserve_index: bool, update_status: bool) {
         let options = self.search_options();
-        self.search_matches = match find_matches(&self.buffer, &self.search_query, options) {
+        self.search_matches = match search::find_matches(&self.buffer, &self.search_query, options) {
             Ok(matches) => matches,
             Err(message) => {
                 self.current_match_index = None;
@@ -2590,19 +2372,19 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         if !self.buffer.undo() {
             return;
         };
-        let text = self.buffer.text();
-        self.apply_snapshot(text);
+        let text = self.buffer.text().to_string();
+        self.apply_snapshot(&text);
     }
 
     fn apply_redo(&mut self) {
         if !self.buffer.redo() {
             return;
         };
-        let text = self.buffer.text();
-        self.apply_snapshot(text);
+        let text = self.buffer.text().to_string();
+        self.apply_snapshot(&text);
     }
 
-    fn apply_snapshot(&mut self, text: String) {
+    fn apply_snapshot(&mut self, text: &str) {
         self.suppress_undo_snapshot = true;
         self.content = EditorContent::with_text(&text);
         self.buffer.replace(&text);
@@ -2636,16 +2418,16 @@ Relancez “Enregistrer” pour confirmer l’écriture."
     }
 
     fn refresh_diagnostics(&mut self) {
-        self.diagnostics = analyze_diagnostics(&self.buffer);
+        self.diagnostics = diagnostics::analyze(&self.buffer);
     }
 
     fn refresh_completions(&mut self) {
         let (line, column) = self.content.cursor_position();
         let line_text = self.buffer.line(line).unwrap_or("");
         let column = column.min(line_text.chars().count());
-        let prefix = extract_prefix(line_text, column);
+        let prefix = completion::extract_prefix(line_text, column);
         self.completion_prefix = prefix.clone();
-        self.completion_items = build_completion_items(&prefix);
+        self.completion_items = completion::build_items(&prefix);
         if self.completion_items.is_empty() {
             self.status_message = Some("Complétions: aucune suggestion.".to_string());
         } else {
@@ -2689,810 +2471,16 @@ Relancez “Enregistrer” pour confirmer l’écriture."
     }
 }
 
-struct AppBackground {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for AppBackground {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.app_background)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct MenuBarStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for MenuBarStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.menu_bar)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct MenuButtonStyle {
-    active: bool,
-    palette: ThemePalette,
-}
-
-impl button::StyleSheet for MenuButtonStyle {
-    type Style = Theme;
-
-    fn active(&self, _style: &Self::Style) -> button::Appearance {
-        button::Appearance {
-            background: self
-                .active
-                .then(|| Background::Color(self.palette.menu_button_active)),
-            text_color: Color::from_rgb8(220, 220, 220),
-            border: Default::default(),
-            shadow_offset: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-
-    fn hovered(&self, style: &Self::Style) -> button::Appearance {
-        let mut appearance = self.active(style);
-        appearance.background = Some(Background::Color(self.palette.menu_button_hover));
-        appearance
-    }
-}
-
-struct SubmenuStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for SubmenuStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.submenu_bar)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct SubmenuSeparatorStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for SubmenuSeparatorStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.menu_button_hover)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct SubmenuButtonStyle {
-    palette: ThemePalette,
-}
-
-impl button::StyleSheet for SubmenuButtonStyle {
-    type Style = Theme;
-
-    fn active(&self, _style: &Self::Style) -> button::Appearance {
-        button::Appearance {
-            background: None,
-            text_color: Color::from_rgb8(230, 230, 230),
-            border: Default::default(),
-            shadow_offset: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-
-    fn hovered(&self, style: &Self::Style) -> button::Appearance {
-        let mut appearance = self.active(style);
-        appearance.background = Some(Background::Color(self.palette.button_hover));
-        appearance
-    }
-}
-
-struct ToggleButtonStyle {
-    active: bool,
-    palette: ThemePalette,
-}
-
-impl button::StyleSheet for ToggleButtonStyle {
-    type Style = Theme;
-
-    fn active(&self, _style: &Self::Style) -> button::Appearance {
-        let background = if self.active {
-            Background::Color(self.palette.toggle_active)
-        } else {
-            Background::Color(self.palette.toggle_inactive)
-        };
-
-        button::Appearance {
-            background: Some(background),
-            text_color: Color::from_rgb8(230, 230, 230),
-            border: Default::default(),
-            shadow_offset: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-
-    fn hovered(&self, style: &Self::Style) -> button::Appearance {
-        let mut appearance = self.active(style);
-        appearance.background = Some(Background::Color(self.palette.button_hover));
-        appearance
-    }
-}
-
-struct TabBarStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for TabBarStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.tab_bar)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct ActiveTabStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for ActiveTabStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.tab_active)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct EditorStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for EditorStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.editor_background)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct GutterStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for GutterStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.panel_background)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct StatusBarStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for StatusBarStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.status_bar)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct SearchPanelStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for SearchPanelStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.panel_background)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct SearchResultStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for SearchResultStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.panel_item_background)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct SearchResultButtonStyle {
-    palette: ThemePalette,
-}
-
-impl button::StyleSheet for SearchResultButtonStyle {
-    type Style = Theme;
-
-    fn active(&self, _style: &Self::Style) -> button::Appearance {
-        button::Appearance {
-            background: None,
-            text_color: Color::WHITE,
-            border: Default::default(),
-            shadow_offset: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-
-    fn hovered(&self, style: &Self::Style) -> button::Appearance {
-        let mut appearance = self.active(style);
-        appearance.background = Some(Background::Color(self.palette.panel_item_hover));
-        appearance
-    }
-}
-
-fn find_matches(
-    buffer: &TextBuffer,
-    needle: &str,
-    options: SearchOptions,
-) -> Result<Vec<MatchPosition>, String> {
-    if needle.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let matcher = build_matcher(needle, options)?;
-    let mut matches = Vec::new();
-    for (line_index, line) in buffer.lines().enumerate() {
-        for (column, length) in find_matches_in_line(line, &matcher) {
-            matches.push(MatchPosition {
-                line: line_index,
-                column,
-                length,
-            });
-        }
-    }
-
-    Ok(matches)
-}
-
-const MAX_OPEN_FILE_SIZE: u64 = 5 * 1024 * 1024;
-
-async fn search_in_workspace(
-    root: PathBuf,
-    query: String,
-    options: SearchOptions,
-) -> Result<SearchResultsSummary, String> {
-    if query.trim().is_empty() {
-        return Ok(SearchResultsSummary {
-            results: Vec::new(),
-            skipped_read_errors: 0,
-            skipped_too_large: 0,
-            skipped_invalid_utf8: 0,
-            truncated: false,
-        });
-    }
-
-    let matcher = build_matcher(&query, options)?;
-    let mut results = Vec::new();
-    let mut collected = 0usize;
-    let max_results = 500usize;
-    let mut skipped_read_errors = 0usize;
-    let mut skipped_too_large = 0usize;
-    let mut skipped_invalid_utf8 = 0usize;
-    let mut truncated = false;
-
-    for entry in WalkDir::new(&root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| !should_skip_entry(entry, options.include_hidden))
-    {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => {
-                skipped_read_errors += 1;
-                continue;
-            }
-        };
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        if should_skip_file(entry.path(), options.include_hidden) {
-            continue;
-        }
-
-        let metadata = match entry.metadata() {
-            Ok(metadata) => metadata,
-            Err(_) => {
-                skipped_read_errors += 1;
-                continue;
-            }
-        };
-        if metadata.len() > MAX_OPEN_FILE_SIZE {
-            skipped_too_large += 1;
-            continue;
-        }
-
-        let contents = match std::fs::read_to_string(entry.path()) {
-            Ok(contents) => contents,
-            Err(err) => {
-                if err.kind() == std::io::ErrorKind::InvalidData {
-                    skipped_invalid_utf8 += 1;
-                } else {
-                    skipped_read_errors += 1;
-                }
-                continue;
-            }
-        };
-
-        for line_match in find_matches_in_text(&contents, &matcher) {
-            results.push(SearchResult {
-                path: entry.path().to_path_buf(),
-                line: line_match.line,
-                column: line_match.column,
-                preview: line_match.preview,
-            });
-            collected += 1;
-            if collected >= max_results {
-                truncated = true;
-                return Ok(SearchResultsSummary {
-                    results,
-                    skipped_read_errors,
-                    skipped_too_large,
-                    skipped_invalid_utf8,
-                    truncated,
-                });
-            }
-        }
-    }
-
-    Ok(SearchResultsSummary {
-        results,
-        skipped_read_errors,
-        skipped_too_large,
-        skipped_invalid_utf8,
-        truncated,
-    })
-}
-
-fn build_matcher(needle: &str, options: SearchOptions) -> Result<SearchMatcher, String> {
-    if options.regex {
-        RegexBuilder::new(needle)
-            .case_insensitive(!options.case_sensitive)
-            .build()
-            .map(SearchMatcher::Regex)
-            .map_err(|err| format!("regex invalide ({err})"))
-    } else {
-        Ok(SearchMatcher::Plain {
-            needle: needle.to_string(),
-            case_sensitive: options.case_sensitive,
-        })
-    }
-}
-
-fn normalize_casefolded(text: &str) -> String {
-    text.chars().flat_map(|ch| ch.to_lowercase()).collect()
-}
-
-fn normalize_casefolded_with_mapping(text: &str) -> (String, Vec<usize>) {
-    let mut normalized = String::new();
-    let mut mapping = Vec::new();
-    for (index, ch) in text.chars().enumerate() {
-        for folded in ch.to_lowercase() {
-            normalized.push(folded);
-            mapping.push(index);
-        }
-    }
-    (normalized, mapping)
-}
-
-fn find_matches_in_line(line: &str, matcher: &SearchMatcher) -> Vec<(usize, usize)> {
-    match matcher {
-        SearchMatcher::Regex(regex) => regex
-            .find_iter(line)
-            .map(|found| {
-                let start = byte_index_to_char_index(line, found.start());
-                let length = line[found.start()..found.end()].chars().count();
-                (start, length)
-            })
-            .collect(),
-        SearchMatcher::Plain {
-            needle,
-            case_sensitive,
-        } => {
-            if needle.is_empty() {
-                return Vec::new();
-            }
-
-            if !case_sensitive {
-                let normalized_needle = normalize_casefolded(needle);
-                if normalized_needle.is_empty() {
-                    return Vec::new();
-                }
-                let (normalized_line, mapping) = normalize_casefolded_with_mapping(line);
-                let mut matches = Vec::new();
-                let mut search_start = 0;
-                while let Some(found) = normalized_line[search_start..].find(&normalized_needle) {
-                    let start_byte = search_start + found;
-                    let end_byte = start_byte + normalized_needle.len();
-                    let start_index = byte_index_to_char_index(&normalized_line, start_byte);
-                    let end_index = byte_index_to_char_index(&normalized_line, end_byte);
-                    if end_index == 0 {
-                        break;
-                    }
-                    let start_original = mapping.get(start_index).copied().unwrap_or_default();
-                    let end_original = mapping
-                        .get(end_index.saturating_sub(1))
-                        .copied()
-                        .map(|index| index + 1)
-                        .unwrap_or(start_original);
-                    let length = end_original.saturating_sub(start_original);
-                    matches.push((start_original, length));
-                    search_start = end_byte;
-                }
-                return matches;
-            }
-
-            let mut matches = Vec::new();
-            let needle_len = needle.len();
-            let needle_chars = needle.chars().count();
-            let mut search_start = 0;
-            while let Some(found) = line[search_start..].find(needle) {
-                let byte_index = search_start + found;
-                let column = byte_index_to_char_index(line, byte_index);
-                matches.push((column, needle_chars));
-                search_start = byte_index + needle_len;
-            }
-
-            matches
-        }
-    }
-}
-
-fn find_matches_in_text(text: &str, matcher: &SearchMatcher) -> Vec<SearchResultLine> {
-    let mut matches = Vec::new();
-    for (line_index, line) in text.lines().enumerate() {
-        for (column, length) in find_matches_in_line(line, matcher) {
-            matches.push(SearchResultLine {
-                line: line_index,
-                column,
-                _length: length,
-                preview: line.to_string(),
-            });
-        }
-    }
-
-    matches
-}
-
-fn should_skip_entry(entry: &DirEntry, include_hidden: bool) -> bool {
-    if entry.depth() == 0 {
-        return false;
-    }
-    let name = entry.file_name().to_string_lossy();
-    let skip_dirs = [".git", "target", "node_modules", "dist", "build", "out"];
-    if entry.file_type().is_dir() && skip_dirs.contains(&name.as_ref()) {
-        return true;
-    }
-    if include_hidden {
-        return false;
-    }
-    name.starts_with('.')
-}
-
-fn should_skip_file(path: &Path, include_hidden: bool) -> bool {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
-    if file_name.starts_with('.') && !include_hidden {
-        return true;
-    }
-
-    let skip_extensions = [
-        "png", "jpg", "jpeg", "gif", "svg", "ico", "zip", "tar", "gz", "pdf", "mp4", "mp3",
-    ];
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| skip_extensions.contains(&ext))
-        .unwrap_or(false)
-}
-
-#[cfg(test)]
-fn rename_failure_state() -> &'static Mutex<Option<PathBuf>> {
-    static RENAME_FAILURE_TARGET: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
-    RENAME_FAILURE_TARGET.get_or_init(|| Mutex::new(None))
-}
-
-#[cfg(test)]
-fn set_rename_failure_target(path: Option<PathBuf>) {
-    let mut guard = rename_failure_state().lock().expect("rename failure lock");
-    *guard = path;
-}
-
-fn rename_file(from: &Path, to: &Path) -> Result<(), std::io::Error> {
-    #[cfg(test)]
-    {
-        let mut guard = rename_failure_state().lock().expect("rename failure lock");
-        if let Some(target) = guard.as_ref() {
-            if target.as_path() == to {
-                *guard = None;
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
-                    "simulated rename failure",
-                ));
-            }
-        }
-    }
-
-    std::fs::rename(from, to)
-}
-
-fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
-    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    let path = Path::new(path);
-    let parent = path.parent().unwrap_or(Path::new(""));
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("roxanne");
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|err| err.to_string())?
-        .as_millis();
-    let base_name = format!(".{file_name}.{stamp}");
-    let mut attempts = 0_u32;
-    let (temp_path, mut temp_file) = loop {
-        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let temp_name = format!("{base_name}.{counter}.tmp");
-        let temp_path = if parent.as_os_str().is_empty() {
-            PathBuf::from(&temp_name)
-        } else {
-            parent.join(&temp_name)
-        };
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
-            Ok(file) => break (temp_path, file),
-            Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-                attempts += 1;
-                if attempts > 1000 {
-                    return Err("impossible de créer un fichier temporaire unique".to_string());
-                }
-            }
-            Err(err) => return Err(err.to_string()),
-        }
-    };
-    temp_file
-        .write_all(contents.as_bytes())
-        .and_then(|_| temp_file.sync_all())
-        .map_err(|err| err.to_string())?;
-    drop(temp_file);
-
-    let backup_path = if path.exists() {
-        let mut attempts = 0_u32;
-        loop {
-            let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let backup_name = format!("{base_name}.{counter}.bak");
-            let candidate = if parent.as_os_str().is_empty() {
-                PathBuf::from(&backup_name)
-            } else {
-                parent.join(&backup_name)
-            };
-            if !candidate.exists() {
-                break Some(candidate);
-            }
-            attempts += 1;
-            if attempts > 1000 {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err("impossible de créer un fichier de sauvegarde unique".to_string());
-            }
-        }
-    } else {
-        None
-    };
-
-    if let Some(backup_path) = backup_path.as_ref() {
-        if let Err(err) = rename_file(path, backup_path) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(err.to_string());
-        }
-    }
-
-    match rename_file(&temp_path, path) {
-        Ok(()) => {
-            if let Some(backup_path) = backup_path {
-                if let Err(err) = std::fs::remove_file(&backup_path) {
-                    return Err(format!("suppression sauvegarde échouée: {err}"));
-                }
-            }
-            Ok(())
-        }
-        Err(err) => {
-            let _ = std::fs::remove_file(&temp_path);
-            if let Some(backup_path) = backup_path {
-                if let Err(restore_err) = rename_file(&backup_path, path) {
-                    let _ = std::fs::remove_file(&backup_path);
-                    return Err(format!(
-                        "{err} (restauration échouée: {restore_err})"
-                    ));
-                }
-            }
-            Err(err.to_string())
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        RoxanneApp, SearchOptions, analyze_diagnostics, atomic_write, find_matches,
-        set_rename_failure_target, should_skip_entry, should_skip_file,
-    };
+    use super::RoxanneApp;
+    use crate::diagnostics;
     use crate::editor::TextBuffer;
+    use crate::search::{self, SearchOptions};
     use std::fs;
     use tempfile::tempdir;
 
-    fn build_text(lines: usize, line_len: usize) -> String {
-        let line = "a".repeat(line_len);
-        std::iter::repeat(line)
-            .take(lines)
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    #[test]
-    fn atomic_write_writes_contents_without_temp_leftover() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("note.txt");
-        atomic_write(path.to_str().expect("path"), "hello").expect("atomic write");
-
-        let contents = fs::read_to_string(&path).expect("read file");
-        assert_eq!(contents, "hello");
-
-        let leftovers: Vec<_> = fs::read_dir(dir.path())
-            .expect("read dir")
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .map(|name| name.ends_with(".tmp"))
-                    .unwrap_or(false)
-            })
-            .collect();
-        assert!(
-            leftovers.is_empty(),
-            "temporary files were not cleaned up: {leftovers:?}"
-        );
-    }
-
-    #[test]
-    fn atomic_write_handles_large_payloads() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("large.txt");
-        let payload = build_text(50_000, 80);
-
-        atomic_write(path.to_str().expect("path"), &payload).expect("atomic write");
-        let contents = fs::read_to_string(&path).expect("read file");
-
-        assert_eq!(contents.len(), payload.len());
-        assert_eq!(contents, payload);
-    }
-
-    #[test]
-    fn atomic_write_preserves_original_on_rename_failure() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("note.txt");
-        fs::write(&path, "original").expect("write original");
-
-        set_rename_failure_target(Some(path.clone()));
-        let result = atomic_write(path.to_str().expect("path"), "updated");
-        assert!(result.is_err(), "atomic write should fail");
-
-        let contents = fs::read_to_string(&path).expect("read original");
-        assert_eq!(contents, "original");
-
-        let leftovers: Vec<_> = fs::read_dir(dir.path())
-            .expect("read dir")
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .map(|name| name.ends_with(".tmp") || name.ends_with(".bak"))
-                    .unwrap_or(false)
-            })
-            .collect();
-        assert!(
-            leftovers.is_empty(),
-            "temporary files were not cleaned up: {leftovers:?}"
-        );
-    }
-
-    #[test]
-    fn atomic_write_restores_backup_after_failed_rename() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("report.txt");
-        fs::write(&path, "baseline").expect("write original");
-
-        set_rename_failure_target(Some(path.clone()));
-        let result = atomic_write(path.to_str().expect("path"), "replacement");
-        assert!(result.is_err(), "atomic write should fail");
-
-        let contents = fs::read_to_string(&path).expect("read original");
-        assert_eq!(contents, "baseline");
-
-        let leftovers: Vec<_> = fs::read_dir(dir.path())
-            .expect("read dir")
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .map(|name| name.ends_with(".tmp") || name.ends_with(".bak"))
-                    .unwrap_or(false)
-            })
-            .collect();
-        assert!(
-            leftovers.is_empty(),
-            "temporary files were not cleaned up: {leftovers:?}"
-        );
-    }
 
     #[test]
     fn search_and_diagnostics_use_character_columns() {
@@ -3504,13 +2492,13 @@ mod tests {
             include_hidden: false,
         };
 
-        let matches = find_matches(&buffer, "👍", options).expect("matches");
+        let matches = search::find_matches(&buffer, "👍", options).expect("matches");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].line, 0);
         assert_eq!(matches[0].column, 2);
         assert_eq!(matches[0].length, 1);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         let diagnostic = diagnostics
             .iter()
             .find(|item| item.message.contains("Fermeture inattendue"))
@@ -3529,7 +2517,7 @@ mod tests {
             include_hidden: false,
         };
 
-        let matches = find_matches(&buffer, "a", options).expect("matches");
+        let matches = search::find_matches(&buffer, "a", options).expect("matches");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].column, 1);
         assert_eq!(matches[0].length, 1);
@@ -3549,10 +2537,10 @@ mod tests {
             .find(|entry| entry.file_name() == ".secret.txt")
             .expect("hidden entry");
 
-        assert!(should_skip_entry(&hidden_entry, false));
-        assert!(!should_skip_entry(&hidden_entry, true));
-        assert!(should_skip_file(&hidden_path, false));
-        assert!(!should_skip_file(&hidden_path, true));
+        assert!(search::should_skip_entry(&hidden_entry, false));
+        assert!(!search::should_skip_entry(&hidden_entry, true));
+        assert!(search::should_skip_file(&hidden_path, false));
+        assert!(!search::should_skip_file(&hidden_path, true));
     }
 
     #[test]
@@ -3560,7 +2548,7 @@ mod tests {
         let text = r#"let value = "hello\"world";"#;
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics
                 .iter()
@@ -3577,7 +2565,7 @@ mod tests {
 }"#;
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics.is_empty(),
             "string/comment delimiters should be ignored: {diagnostics:?}"
@@ -3589,7 +2577,7 @@ mod tests {
         let text = "fn main() { // }\n    let value = \"{\";\n}";
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics.is_empty(),
             "comment delimiters should be ignored: {diagnostics:?}"
@@ -3601,7 +2589,7 @@ mod tests {
         let text = "fn main() {\n    /* { [ ( */\n    let value = 1;\n}\n";
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics.is_empty(),
             "block comment delimiters should be ignored: {diagnostics:?}"
@@ -3613,7 +2601,7 @@ mod tests {
         let text = "fn main() {\n    /* outer { [ /* inner ( ) */ still ] } */\n}\n";
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics.is_empty(),
             "nested block comment delimiters should be ignored: {diagnostics:?}"
@@ -3625,7 +2613,7 @@ mod tests {
         let text = "fn main() {\n    let value = \"multi\nline\";\n}\n";
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics
                 .iter()
@@ -3639,7 +2627,7 @@ mod tests {
         let text = "fn main() { let left = '{'; let right = '}'; }";
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics.is_empty(),
             "char literal braces should be ignored: {diagnostics:?}"
@@ -3651,7 +2639,7 @@ mod tests {
         let text = r##"fn main() { let value = r#"{ "quoted" }"#; }"##;
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics.is_empty(),
             "raw string braces/quotes should be ignored: {diagnostics:?}"
@@ -3676,12 +2664,6 @@ mod tests {
     }
 }
 
-struct SearchResultLine {
-    line: usize,
-    column: usize,
-    _length: usize,
-    preview: String,
-}
 
 #[derive(Debug, Clone)]
 struct CursorSlot {
@@ -3842,286 +2824,3 @@ fn parse_goto_input(input: &str) -> Result<(usize, usize), String> {
     Ok((line - 1, column - 1))
 }
 
-fn extract_prefix(line: &str, column: usize) -> String {
-    let byte_column = char_index_to_byte_index(line, column);
-    let mut start = byte_column;
-    for (index, ch) in line.char_indices() {
-        if index >= byte_column {
-            break;
-        }
-        if !is_word_char(ch) {
-            start = index + ch.len_utf8();
-        }
-    }
-    line[start..byte_column].to_string()
-}
-
-fn is_word_char(ch: char) -> bool {
-    ch.is_alphanumeric() || ch == '_'
-}
-
-fn build_completion_items(prefix: &str) -> Vec<CompletionItem> {
-    if prefix.is_empty() {
-        return Vec::new();
-    }
-    let keywords = [
-        "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn",
-        "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
-        "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe",
-        "use", "where", "while",
-    ];
-    let types = [
-        "bool", "char", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64",
-        "u128", "usize", "f32", "f64", "str", "String", "Option", "Result", "Vec",
-    ];
-    let mut items = Vec::new();
-    let mut seen = HashSet::new();
-    for keyword in keywords.iter().chain(types.iter()) {
-        if keyword.starts_with(prefix) && seen.insert(*keyword) {
-            let detail = if types.contains(keyword) {
-                "Type"
-            } else {
-                "Keyword"
-            };
-            items.push(CompletionItem {
-                label: (*keyword).to_string(),
-                detail: detail.to_string(),
-            });
-        }
-    }
-    items.sort_by(|a, b| a.label.cmp(&b.label));
-    items
-}
-
-fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-    let mut stack: Vec<(char, Position)> = Vec::new();
-    let mut in_string = false;
-    let mut in_char = false;
-    let mut raw_string_hashes: Option<usize> = None;
-    let mut block_comment_depth = 0usize;
-    let mut escaped = false;
-    let mut string_start: Option<Position> = None;
-    let mut raw_string_start: Option<Position> = None;
-    let mut char_start: Option<Position> = None;
-
-    for (line_index, line) in buffer.lines().enumerate() {
-        if in_string || in_char {
-            escaped = false;
-        }
-        let mut chars = line.chars().enumerate().peekable();
-        while let Some((column, ch)) = chars.next() {
-            if block_comment_depth > 0 {
-                if ch == '/' && matches!(chars.peek(), Some((_, '*'))) {
-                    chars.next();
-                    block_comment_depth += 1;
-                } else if ch == '*' && matches!(chars.peek(), Some((_, '/'))) {
-                    chars.next();
-                    block_comment_depth = block_comment_depth.saturating_sub(1);
-                }
-                continue;
-            }
-
-            if let Some(hashes) = raw_string_hashes {
-                if ch == '"' {
-                    if hashes == 0 {
-                        raw_string_hashes = None;
-                        raw_string_start = None;
-                    } else {
-                        let mut lookahead = chars.clone();
-                        let mut matched = 0;
-                        while matched < hashes {
-                            if matches!(lookahead.peek(), Some((_, '#'))) {
-                                matched += 1;
-                                lookahead.next();
-                            } else {
-                                break;
-                            }
-                        }
-                        if matched == hashes {
-                            for _ in 0..hashes {
-                                chars.next();
-                            }
-                            raw_string_hashes = None;
-                            raw_string_start = None;
-                        }
-                    }
-                }
-                continue;
-            }
-
-            if in_string {
-                if escaped {
-                    escaped = false;
-                    continue;
-                }
-                match ch {
-                    '\\' => {
-                        escaped = true;
-                    }
-                    '"' => {
-                        in_string = false;
-                        string_start = None;
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            if in_char {
-                if escaped {
-                    escaped = false;
-                    continue;
-                }
-                match ch {
-                    '\\' => {
-                        escaped = true;
-                    }
-                    '\'' => {
-                        in_char = false;
-                        char_start = None;
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            if ch == '/' && matches!(chars.peek(), Some((_, '*'))) {
-                chars.next();
-                block_comment_depth += 1;
-                continue;
-            }
-
-            if ch == '/' && matches!(chars.peek(), Some((_, '/'))) {
-                break;
-            }
-
-            match ch {
-                'r' => {
-                    let mut lookahead = chars.clone();
-                    let mut hashes = 0;
-                    let mut valid = false;
-                    if let Some((_, next)) = lookahead.peek() {
-                        if *next == '"' {
-                            valid = true;
-                        } else if *next == '#' {
-                            while let Some((_, '#')) = lookahead.peek() {
-                                hashes += 1;
-                                lookahead.next();
-                            }
-                            if matches!(lookahead.peek(), Some((_, '"'))) {
-                                valid = true;
-                            }
-                        }
-                    }
-                    if valid {
-                        if hashes == 0 {
-                            chars.next();
-                        } else {
-                            for _ in 0..hashes {
-                                chars.next();
-                            }
-                            chars.next();
-                        }
-                        raw_string_hashes = Some(hashes);
-                        raw_string_start = Some(Position::new(line_index, column));
-                        continue;
-                    }
-                }
-                '"' => {
-                    in_string = true;
-                    escaped = false;
-                    string_start = Some(Position::new(line_index, column));
-                }
-                '\'' => {
-                    in_char = true;
-                    escaped = false;
-                    char_start = Some(Position::new(line_index, column));
-                }
-                '{' | '(' | '[' => stack.push((ch, Position::new(line_index, column))),
-                '}' | ')' | ']' => {
-                    if let Some((open, position)) = stack.pop() {
-                        if !matches!((open, ch), ('{', '}') | ('(', ')') | ('[', ']')) {
-                            diagnostics.push(Diagnostic {
-                                line: line_index,
-                                column,
-                                message: format!(
-                                    "Fermeture inattendue '{ch}' (ouverture '{open}' ligne {}).",
-                                    position.line + 1
-                                ),
-                                severity: DiagnosticSeverity::Error,
-                            });
-                        }
-                    } else {
-                        diagnostics.push(Diagnostic {
-                            line: line_index,
-                            column,
-                            message: format!("Fermeture inattendue '{ch}'."),
-                            severity: DiagnosticSeverity::Error,
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    if raw_string_hashes.is_some() {
-        let position = raw_string_start.unwrap_or_else(|| Position::new(0, 0));
-        diagnostics.push(Diagnostic {
-            line: position.line,
-            column: position.column,
-            message: "Chaîne non terminée.".to_string(),
-            severity: DiagnosticSeverity::Warning,
-        });
-    }
-
-    if in_string {
-        let position = string_start.unwrap_or_else(|| Position::new(0, 0));
-        diagnostics.push(Diagnostic {
-            line: position.line,
-            column: position.column,
-            message: "Chaîne non terminée.".to_string(),
-            severity: DiagnosticSeverity::Warning,
-        });
-    }
-
-    if in_char {
-        let position = char_start.unwrap_or_else(|| Position::new(0, 0));
-        diagnostics.push(Diagnostic {
-            line: position.line,
-            column: position.column,
-            message: "Caractère non terminé.".to_string(),
-            severity: DiagnosticSeverity::Warning,
-        });
-    }
-
-    for (open, position) in stack {
-        diagnostics.push(Diagnostic {
-            line: position.line,
-            column: position.column,
-            message: format!("Ouverture '{open}' sans fermeture."),
-            severity: DiagnosticSeverity::Warning,
-        });
-    }
-
-    diagnostics
-}
-
-fn char_index_to_byte_index(line: &str, char_index: usize) -> usize {
-    if char_index == 0 {
-        return 0;
-    }
-    line.char_indices()
-        .nth(char_index)
-        .map(|(index, _)| index)
-        .unwrap_or(line.len())
-}
-
-fn byte_index_to_char_index(line: &str, byte_index: usize) -> usize {
-    let mut index = byte_index.min(line.len());
-    while index > 0 && !line.is_char_boundary(index) {
-        index -= 1;
-    }
-    line[..index].chars().count()
-}

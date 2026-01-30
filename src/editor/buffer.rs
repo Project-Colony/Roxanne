@@ -95,8 +95,8 @@ impl TextBuffer {
         self.bump_revision();
     }
 
-    pub fn text(&self) -> String {
-        self.text.clone()
+    pub fn text(&self) -> &str {
+        &self.text
     }
 
     pub fn line_count(&self) -> usize {
