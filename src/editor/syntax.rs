@@ -4,32 +4,66 @@ use std::ops::Range;
 use std::sync::LazyLock;
 use tree_sitter::{InputEdit, Parser, Point, Query, QueryCursor, Tree};
 
-static RUST_LANGUAGE: LazyLock<tree_sitter::Language> =
-    LazyLock::new(|| tree_sitter_rust::LANGUAGE.into());
+struct LangDef {
+    ts_language: tree_sitter::Language,
+    highlights_query: &'static str,
+}
 
-static RUST_QUERY: LazyLock<Result<Query, tree_sitter::QueryError>> = LazyLock::new(|| {
-    Query::new(&*RUST_LANGUAGE, tree_sitter_rust::HIGHLIGHTS_QUERY)
-});
+fn lang_def_for(language: Language) -> Option<&'static LangDef> {
+    static RUST: LazyLock<LangDef> = LazyLock::new(|| LangDef {
+        ts_language: tree_sitter_rust::LANGUAGE.into(),
+        highlights_query: tree_sitter_rust::HIGHLIGHTS_QUERY,
+    });
+    static JAVASCRIPT: LazyLock<LangDef> = LazyLock::new(|| LangDef {
+        ts_language: tree_sitter_javascript::LANGUAGE.into(),
+        highlights_query: tree_sitter_javascript::HIGHLIGHT_QUERY,
+    });
+    static PYTHON: LazyLock<LangDef> = LazyLock::new(|| LangDef {
+        ts_language: tree_sitter_python::LANGUAGE.into(),
+        highlights_query: tree_sitter_python::HIGHLIGHTS_QUERY,
+    });
+    static C: LazyLock<LangDef> = LazyLock::new(|| LangDef {
+        ts_language: tree_sitter_c::LANGUAGE.into(),
+        highlights_query: tree_sitter_c::HIGHLIGHT_QUERY,
+    });
+    static GO: LazyLock<LangDef> = LazyLock::new(|| LangDef {
+        ts_language: tree_sitter_go::LANGUAGE.into(),
+        highlights_query: tree_sitter_go::HIGHLIGHTS_QUERY,
+    });
+    static JSON: LazyLock<LangDef> = LazyLock::new(|| LangDef {
+        ts_language: tree_sitter_json::LANGUAGE.into(),
+        highlights_query: tree_sitter_json::HIGHLIGHTS_QUERY,
+    });
+    static TOML: LazyLock<LangDef> = LazyLock::new(|| LangDef {
+        ts_language: tree_sitter_toml_ng::LANGUAGE.into(),
+        highlights_query: tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
+    });
+    match language {
+        Language::Rust => Some(&RUST),
+        Language::JavaScript => Some(&JAVASCRIPT),
+        Language::Python => Some(&PYTHON),
+        Language::C => Some(&C),
+        Language::Go => Some(&GO),
+        Language::Json => Some(&JSON),
+        Language::Toml => Some(&TOML),
+        Language::Markdown | Language::Plain => None,
+    }
+}
 
 pub struct SyntaxHighlighter {
-    language: Language,
-    rust: Option<RustSyntaxHighlighter>,
+    inner: Option<GenericHighlighter>,
 }
 
 impl SyntaxHighlighter {
     pub fn new(language: Language, buffer_text: &str) -> Option<Self> {
-        let rust = match language {
-            Language::Rust => Some(RustSyntaxHighlighter::new(buffer_text)?),
-            Language::Plain => None,
-        };
-        Some(Self { language, rust })
+        let inner = lang_def_for(language)
+            .and_then(|def| GenericHighlighter::new(def, buffer_text));
+        Some(Self { inner })
     }
 
     pub fn update_text(&mut self, buffer_text: &str) {
-        if let Some(rust) = self.rust.as_mut() {
-            rust.update_text(buffer_text);
-        } else if self.language == Language::Rust {
-            self.rust = RustSyntaxHighlighter::new(buffer_text);
+        if let Some(inner) = self.inner.as_mut() {
+            inner.update_text(buffer_text);
         }
     }
 
@@ -37,36 +71,27 @@ impl SyntaxHighlighter {
         &mut self,
         line_range: Range<usize>,
     ) -> Option<Vec<(Range<usize>, HighlightToken)>> {
-        match self.language {
-            Language::Rust => self.rust.as_mut()?.highlight_range(line_range),
-            Language::Plain => None,
-        }
+        self.inner.as_mut()?.highlight_range(line_range)
     }
 
     pub fn line_byte_range(&self, line_index: usize) -> Option<Range<usize>> {
-        match self.language {
-            Language::Rust => self.rust.as_ref()?.line_byte_range(line_index),
-            Language::Plain => None,
-        }
+        self.inner.as_ref()?.line_byte_range(line_index)
     }
 }
 
-struct RustSyntaxHighlighter {
+struct GenericHighlighter {
     parser: Parser,
-    query: &'static Query,
+    query: Query,
     tree: Option<Tree>,
     text: String,
     line_offsets: Vec<usize>,
 }
 
-impl RustSyntaxHighlighter {
-    fn new(buffer_text: &str) -> Option<Self> {
-        let query = match &*RUST_QUERY {
-            Ok(query) => query,
-            Err(_) => return None,
-        };
+impl GenericHighlighter {
+    fn new(def: &LangDef, buffer_text: &str) -> Option<Self> {
+        let query = Query::new(&def.ts_language, def.highlights_query).ok()?;
         let mut parser = Parser::new();
-        parser.set_language(&*RUST_LANGUAGE).ok()?;
+        parser.set_language(&def.ts_language).ok()?;
         let tree = parser.parse(buffer_text, None);
         let text = buffer_text.to_string();
         let line_offsets = compute_line_offsets(&text);
@@ -124,13 +149,13 @@ impl RustSyntaxHighlighter {
             let capture_name = self.query.capture_names()[capture.index as usize];
             let token = if capture_name.starts_with("comment") {
                 HighlightToken::Comment
-            } else if capture_name == "string" {
+            } else if capture_name.starts_with("string") {
                 HighlightToken::String
-            } else if capture_name == "keyword" {
+            } else if capture_name.starts_with("keyword") {
                 HighlightToken::Keyword
             } else if capture_name.starts_with("type") {
                 HighlightToken::Type
-            } else if capture_name.starts_with("constant") {
+            } else if capture_name.starts_with("constant") || capture_name.starts_with("number") {
                 HighlightToken::Number
             } else {
                 continue;

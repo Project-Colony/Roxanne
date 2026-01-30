@@ -5,6 +5,7 @@ pub mod diagnostics;
 pub mod editor;
 pub mod file_ops;
 pub mod keymap;
+pub mod lsp;
 pub mod plugins;
 pub mod search;
 pub mod theme;

@@ -18,6 +18,12 @@ pub enum KeyAction {
     CompletionClose,
     EnterInsertMode,
     EnterNormalMode,
+    NewTab,
+    CloseTab,
+    NextTab,
+    PrevTab,
+    CommandPalette,
+    ToggleFileTree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +74,13 @@ impl Keymap {
             (KeyAction::Redo, "cmd+shift+z"),
             (KeyAction::Redo, "ctrl+shift+z"),
             (KeyAction::Redo, "ctrl+y"),
+            (KeyAction::NewTab, "cmd+n"),
+            (KeyAction::NewTab, "ctrl+n"),
+            (KeyAction::CloseTab, "cmd+w"),
+            (KeyAction::NextTab, "ctrl+tab"),
+            (KeyAction::PrevTab, "ctrl+shift+tab"),
+            (KeyAction::CommandPalette, "ctrl+shift+p"),
+            (KeyAction::ToggleFileTree, "ctrl+b"),
         ];
 
         for (action, combo) in default_bindings {
@@ -213,6 +226,12 @@ const KEYMAP_ACTIONS: &[(&str, KeyAction)] = &[
     ("completion_close", KeyAction::CompletionClose),
     ("enter_insert_mode", KeyAction::EnterInsertMode),
     ("enter_normal_mode", KeyAction::EnterNormalMode),
+    ("new_tab", KeyAction::NewTab),
+    ("close_tab", KeyAction::CloseTab),
+    ("next_tab", KeyAction::NextTab),
+    ("prev_tab", KeyAction::PrevTab),
+    ("command_palette", KeyAction::CommandPalette),
+    ("toggle_file_tree", KeyAction::ToggleFileTree),
 ];
 
 trait KeymapEntries {

@@ -205,6 +205,18 @@ fn merge_tables(target: &mut Value, source: Value) {
     }
 }
 
+/// Returns all config file paths that should be watched for hot reload.
+pub fn watch_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(p) = user_config_path() {
+        paths.push(p);
+    }
+    if let Some(p) = workspace_config_path() {
+        paths.push(p);
+    }
+    paths
+}
+
 fn user_config_path() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     Some(PathBuf::from(home).join(".config/roxanne/config.toml"))
