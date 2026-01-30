@@ -124,6 +124,7 @@ pub struct Tab {
     suppress_undo_snapshot: bool,
     search_matches: Vec<MatchPosition>,
     current_match_index: Option<usize>,
+    scroll_offset: i32,
 }
 
 impl Tab {
@@ -159,6 +160,7 @@ impl Tab {
             suppress_undo_snapshot: false,
             search_matches: Vec::new(),
             current_match_index: None,
+            scroll_offset: 0,
         }
     }
 
@@ -772,6 +774,12 @@ impl Application for RoxanneApp {
     fn update(&mut self, message: Message) -> Command<Message> {
         match message {
             Message::Edit(action) => {
+                // Track explicit scroll events
+                if let EditorAction::Scroll { lines } = &action {
+                    self.tab_mut().scroll_offset += lines;
+                    self.tab_mut().scroll_offset =
+                        self.tab_mut().scroll_offset.max(0);
+                }
                 if action.is_edit() {
                     self.record_undo_snapshot();
                 }
@@ -784,6 +792,10 @@ impl Application for RoxanneApp {
                     let text = self.tab().content.text();
                     self.tab_mut().buffer.replace(&text);
                 }
+                // Keep scroll_offset in sync when cursor moves beyond visible area.
+                // The iced text_editor auto-scrolls to keep the cursor visible;
+                // mirror that logic here.
+                self.clamp_scroll_to_cursor();
                 self.sync_highlight_buffer();
                 self.refresh_search_matches(true, true);
                 self.refresh_diagnostics();
@@ -1154,6 +1166,7 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                         tab.multi_cursors.clear();
                         tab.completion_items.clear();
                         tab.suppress_undo_snapshot = false;
+                        tab.scroll_offset = 0;
                         self.completion_panel_open = false;
                         self.sync_highlight_buffer();
                         self.refresh_search_matches(false, true);
@@ -1907,22 +1920,26 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         let gutter_digits = line_count.to_string().len();
         let gutter_width = (gutter_digits as f32 * (line_number_size as f32 * 0.6)) + 24.0;
 
-        // Build the entire gutter as a single multi-line text block so it
-        // stretches with the editor instead of being limited by the number
-        // of child widgets in a Column.
+        // Build gutter as a single multi-line text block showing only the
+        // lines currently visible, based on the tracked scroll offset.
+        let start = (self.tab().scroll_offset.max(0) as usize).min(line_count);
+        // Generate plenty of lines to fill the entire visible height
+        let gutter_row_count = self.viewport_height.max(1) * 2 + 20;
         let mut gutter_text = String::new();
-        for i in 1..=line_count {
-            if !gutter_text.is_empty() {
+        for i in 0..gutter_row_count {
+            let line_idx = start + i;
+            if i > 0 {
                 gutter_text.push('\n');
             }
-            gutter_text.push_str(&format!("{:>width$}", i, width = gutter_digits));
-        }
-        // Add tilde lines well past the document end so the gutter always
-        // reaches the bottom of the visible area regardless of window size.
-        let extra = 200usize;
-        for _ in 0..extra {
-            gutter_text.push('\n');
-            gutter_text.push_str(&format!("{:>width$}", "~", width = gutter_digits));
+            if line_idx < line_count {
+                gutter_text.push_str(&format!(
+                    "{:>width$}",
+                    line_idx + 1,
+                    width = gutter_digits
+                ));
+            } else {
+                gutter_text.push_str(&format!("{:>width$}", "~", width = gutter_digits));
+            }
         }
 
         let gutter_content = text(gutter_text)
@@ -3027,6 +3044,26 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         self.plugins.on_text_changed(&ct, &cf);
         self.refresh_viewport_cache();
         self.tab_mut().suppress_undo_snapshot = false;
+    }
+
+    /// Ensure scroll_offset keeps the cursor line visible, mirroring the
+    /// auto-scroll behaviour of the iced text_editor widget.
+    fn clamp_scroll_to_cursor(&mut self) {
+        let (cursor_line, _) = self.tab().content.cursor_position();
+        let vh = self.viewport_height.max(1) as i32;
+        let offset = self.tab().scroll_offset;
+        let cursor = cursor_line as i32;
+        // If cursor is above visible area, scroll up
+        if cursor < offset {
+            self.tab_mut().scroll_offset = cursor;
+        }
+        // If cursor is below visible area, scroll down
+        if cursor >= offset + vh {
+            self.tab_mut().scroll_offset = cursor - vh + 1;
+        }
+        // Clamp to valid range
+        let max_offset = (self.tab().buffer.line_count().max(1) as i32 - 1).max(0);
+        self.tab_mut().scroll_offset = self.tab().scroll_offset.clamp(0, max_offset);
     }
 
     fn sync_highlight_buffer(&mut self) {
