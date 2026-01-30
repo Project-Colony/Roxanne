@@ -100,138 +100,34 @@ impl ThemeConfig {
             }
         }
 
-        apply_color(
-            &mut warnings,
-            &self.palette.app_background,
-            &mut palette.app_background,
-            "app_background",
-        );
-        apply_color(
-            &mut warnings,
-            &self.palette.menu_bar,
-            &mut palette.menu_bar,
-            "menu_bar",
-        );
-        apply_color(
-            &mut warnings,
-            &self.palette.menu_button_active,
-            &mut palette.menu_button_active,
-            "menu_button_active",
-        );
-        apply_color(
-            &mut warnings,
-            &self.palette.menu_button_hover,
-            &mut palette.menu_button_hover,
-            "menu_button_hover",
-        );
-        apply_color(
-            &mut warnings,
-            &self.palette.submenu_bar,
-            &mut palette.submenu_bar,
-            "submenu_bar",
-        );
-        apply_color(
-            &mut warnings,
-            &self.palette.button_base,
-            &mut palette.button_base,
-            "button_base",
-        );
-        apply_color(
-            &mut warnings,
-            &self.palette.button_hover,
-            &mut palette.button_hover,
-            "button_hover",
-        );
-        apply_color(
-            &mut warnings,
-            &self.palette.toggle_active,
-            &mut palette.toggle_active,
-            "toggle_active",
-        );
-        apply_color(
-            &mut warnings,
-            &self.palette.toggle_inactive,
-            &mut palette.toggle_inactive,
-            "toggle_inactive",
-        );
-        apply_color(
-            &mut warnings,
-            &self.palette.tab_bar,
-            &mut palette.tab_bar,
-            "tab_bar",
-        );
-        apply_color(
-            &mut warnings,
-            &self.palette.tab_active,
-            &mut palette.tab_active,
-            "tab_active",
-        );
-        apply_color(
-            &mut warnings,
-            &self.palette.editor_background,
-            &mut palette.editor_background,
-            "editor_background",
-        );
-        apply_color(
-            &mut warnings,
-            &self.palette.status_bar,
-            &mut palette.status_bar,
-            "status_bar",
-        );
-        apply_color(
-            &mut warnings,
-            &self.palette.panel_background,
-            &mut palette.panel_background,
-            "panel_background",
-        );
-        apply_color(
-            &mut warnings,
-            &self.palette.panel_item_background,
-            &mut palette.panel_item_background,
-            "panel_item_background",
-        );
-        apply_color(
-            &mut warnings,
-            &self.palette.panel_item_hover,
-            &mut palette.panel_item_hover,
-            "panel_item_hover",
-        );
-        apply_color(
-            &mut warnings,
-            &self.syntax.keyword,
-            &mut palette.syntax.keyword,
-            "syntax.keyword",
-        );
-        apply_color(
-            &mut warnings,
-            &self.syntax.r#type,
-            &mut palette.syntax.r#type,
-            "syntax.type",
-        );
-        apply_color(
-            &mut warnings,
-            &self.syntax.string,
-            &mut palette.syntax.string,
-            "syntax.string",
-        );
-        apply_color(
-            &mut warnings,
-            &self.syntax.comment,
-            &mut palette.syntax.comment,
-            "syntax.comment",
-        );
-        apply_color(
-            &mut warnings,
-            &self.syntax.number,
-            &mut palette.syntax.number,
-            "syntax.number",
-        );
-        apply_color(
-            &mut warnings,
-            &self.syntax.search_match,
-            &mut palette.syntax.search_match,
-            "syntax.search_match",
-        );
+        macro_rules! apply {
+            ($src:expr, $dst:expr, $label:expr) => {
+                apply_color(&mut warnings, &$src, &mut $dst, $label);
+            };
+        }
+
+        apply!(self.palette.app_background, palette.app_background, "app_background");
+        apply!(self.palette.menu_bar, palette.menu_bar, "menu_bar");
+        apply!(self.palette.menu_button_active, palette.menu_button_active, "menu_button_active");
+        apply!(self.palette.menu_button_hover, palette.menu_button_hover, "menu_button_hover");
+        apply!(self.palette.submenu_bar, palette.submenu_bar, "submenu_bar");
+        apply!(self.palette.button_base, palette.button_base, "button_base");
+        apply!(self.palette.button_hover, palette.button_hover, "button_hover");
+        apply!(self.palette.toggle_active, palette.toggle_active, "toggle_active");
+        apply!(self.palette.toggle_inactive, palette.toggle_inactive, "toggle_inactive");
+        apply!(self.palette.tab_bar, palette.tab_bar, "tab_bar");
+        apply!(self.palette.tab_active, palette.tab_active, "tab_active");
+        apply!(self.palette.editor_background, palette.editor_background, "editor_background");
+        apply!(self.palette.status_bar, palette.status_bar, "status_bar");
+        apply!(self.palette.panel_background, palette.panel_background, "panel_background");
+        apply!(self.palette.panel_item_background, palette.panel_item_background, "panel_item_background");
+        apply!(self.palette.panel_item_hover, palette.panel_item_hover, "panel_item_hover");
+        apply!(self.syntax.keyword, palette.syntax.keyword, "syntax.keyword");
+        apply!(self.syntax.r#type, palette.syntax.r#type, "syntax.type");
+        apply!(self.syntax.string, palette.syntax.string, "syntax.string");
+        apply!(self.syntax.comment, palette.syntax.comment, "syntax.comment");
+        apply!(self.syntax.number, palette.syntax.number, "syntax.number");
+        apply!(self.syntax.search_match, palette.syntax.search_match, "syntax.search_match");
 
         warnings
     }

@@ -1,13 +1,17 @@
+use crate::completion::{self, CompletionItem};
 use crate::config;
+use crate::diagnostics::{self, Diagnostic, DiagnosticSeverity};
 use crate::editor::highlight::MatchPosition;
 use crate::editor::{Position, TextBuffer, ViewportCache, highlight};
+use crate::file_ops::{self, MAX_OPEN_FILE_SIZE};
 use crate::keymap::{KeyAction, Keymap, KeymapMode};
 use crate::plugins::PluginManager;
+use crate::search::{self, SearchOptions, SearchResult, SearchResultsSummary, SearchScope};
 use crate::theme::{ThemeConfig, ThemePalette};
+use crate::ui::styles;
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, overlay, renderer, widget};
 use iced::alignment::{Horizontal, Vertical};
 use iced::theme;
-use iced::widget::button;
 use iced::widget::text_editor::{
     Action as EditorAction, Content as EditorContent, Edit as EditorEdit, Motion,
 };
@@ -16,24 +20,85 @@ use iced::widget::{
     text_editor,
 };
 use iced::{
-    Alignment, Application, Background, Color, Command, Element, Font, Length, Point, Rectangle,
+    Alignment, Application, Color, Command, Element, Font, Length, Point, Rectangle,
     Renderer, Settings, Size, Subscription, Theme, Vector, clipboard, event, executor, keyboard,
-    mouse, window,
+    mouse, subscription, window,
 };
 use iced::widget::text::LineHeight;
-use regex::{Regex, RegexBuilder};
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::fs::OpenOptions;
-use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(test)]
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use walkdir::{DirEntry, WalkDir};
+use std::time::{Duration, Instant};
 
 const DEFAULT_VIEWPORT_HEIGHT: usize = 24;
+const FILE_TREE_MAX_DEPTH: usize = 8;
+const FILE_TREE_MAX_ENTRIES: usize = 500;
+
+#[derive(Debug, Clone)]
+pub struct FileTreeEntry {
+    name: String,
+    path: PathBuf,
+    is_dir: bool,
+    depth: usize,
+    expanded: bool,
+    children: Vec<FileTreeEntry>,
+}
+
+impl FileTreeEntry {
+    fn scan(path: &Path, depth: usize) -> Option<Self> {
+        let name = path.file_name()?.to_string_lossy().to_string();
+        if name.starts_with('.') {
+            return None;
+        }
+        let is_dir = path.is_dir();
+        let children = if is_dir && depth < FILE_TREE_MAX_DEPTH {
+            let mut entries: Vec<FileTreeEntry> = std::fs::read_dir(path)
+                .ok()?
+                .filter_map(|e| e.ok())
+                .filter_map(|e| Self::scan(&e.path(), depth + 1))
+                .collect();
+            entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            });
+            entries
+        } else {
+            Vec::new()
+        };
+        Some(Self {
+            name,
+            path: path.to_path_buf(),
+            is_dir,
+            depth,
+            expanded: depth == 0,
+            children,
+        })
+    }
+
+    fn toggle_dir(&mut self, target: &Path) -> bool {
+        if self.path == target {
+            self.expanded = !self.expanded;
+            return true;
+        }
+        for child in &mut self.children {
+            if child.toggle_dir(target) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn flatten_visible(&self) -> Vec<(usize, &FileTreeEntry)> {
+        let mut result = vec![(self.depth, self)];
+        if self.is_dir && self.expanded {
+            for child in &self.children {
+                result.extend(child.flatten_visible());
+            }
+        }
+        result
+    }
+}
 const EDITOR_CONTAINER_ID: &str = "roxanne-editor-area";
 const EDITOR_VERTICAL_PADDING: f32 = 24.0;
 const EDITOR_LINE_HEIGHT: f32 = 16.0;
@@ -43,16 +108,82 @@ fn editor_container_id() -> container::Id {
 }
 
 #[derive(Debug)]
-pub struct RoxanneApp {
+pub struct Tab {
     filename: String,
     content: EditorContent,
     buffer: TextBuffer,
     viewport_cache: ViewportCache,
-    viewport_height: usize,
     last_saved_text: String,
-    search_query: String,
+    highlight_settings: highlight::Settings,
+    multi_cursors: Vec<Position>,
+    diagnostics: Vec<Diagnostic>,
+    completion_items: Vec<CompletionItem>,
+    completion_prefix: String,
+    file_is_lossy: bool,
+    lossy_save_acknowledged: bool,
+    suppress_undo_snapshot: bool,
     search_matches: Vec<MatchPosition>,
     current_match_index: Option<usize>,
+    scroll_offset: i32,
+}
+
+impl Tab {
+    fn new(filename: &str, text: &str) -> Self {
+        let buffer = TextBuffer::from(text);
+        let diagnostics = diagnostics::analyze(&buffer);
+        let language = std::path::Path::new(filename)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(highlight::Language::from_extension)
+            .unwrap_or(highlight::Language::Plain);
+        Self {
+            filename: filename.to_string(),
+            content: EditorContent::with_text(text),
+            buffer,
+            viewport_cache: {
+                let mut vc = ViewportCache::new();
+                vc.update(&TextBuffer::from(text), 0, DEFAULT_VIEWPORT_HEIGHT);
+                vc
+            },
+            last_saved_text: text.to_string(),
+            highlight_settings: highlight::Settings {
+                language,
+                buffer_text: text.into(),
+                ..highlight::Settings::default()
+            },
+            multi_cursors: Vec::new(),
+            diagnostics,
+            completion_items: Vec::new(),
+            completion_prefix: String::new(),
+            file_is_lossy: false,
+            lossy_save_acknowledged: false,
+            suppress_undo_snapshot: false,
+            search_matches: Vec::new(),
+            current_match_index: None,
+            scroll_offset: 0,
+        }
+    }
+
+    fn is_modified(&self) -> bool {
+        self.content.text() != self.last_saved_text
+    }
+
+    fn display_name(&self) -> &str {
+        if self.filename.trim().is_empty() {
+            "untitled.txt"
+        } else {
+            &self.filename
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RoxanneApp {
+    tabs: Vec<Tab>,
+    active_tab: usize,
+    viewport_height: usize,
+    search_query: String,
+    replace_text: String,
     search_case_sensitive: bool,
     search_regex: bool,
     search_include_hidden: bool,
@@ -61,26 +192,32 @@ pub struct RoxanneApp {
     goto_panel_open: bool,
     search_scope: SearchScope,
     search_results: Vec<SearchResult>,
-    highlight_settings: highlight::Settings,
-    multi_cursors: Vec<Position>,
-    diagnostics: Vec<Diagnostic>,
     diagnostics_panel_open: bool,
-    completion_items: Vec<CompletionItem>,
-    completion_prefix: String,
     completion_panel_open: bool,
+    command_palette_open: bool,
+    command_palette_query: String,
+    file_tree_open: bool,
+    file_tree: Option<FileTreeEntry>,
     status_message: Option<String>,
-    file_is_lossy: bool,
-    lossy_save_acknowledged: bool,
     theme: ThemePalette,
     keymap: Keymap,
     mode: KeymapMode,
     plugins: PluginManager,
     active_menu: Option<Menu>,
-    suppress_undo_snapshot: bool,
     performance: PerformanceMetrics,
     perf_file_open_started: Option<Instant>,
     perf_file_save_started: Option<Instant>,
     perf_search_files_started: Option<Instant>,
+}
+
+impl RoxanneApp {
+    fn tab(&self) -> &Tab {
+        &self.tabs[self.active_tab]
+    }
+
+    fn tab_mut(&mut self) -> &mut Tab {
+        &mut self.tabs[self.active_tab]
+    }
 }
 
 #[derive(Debug, Default)]
@@ -164,6 +301,21 @@ pub enum Message {
     ThemeExported(Result<PathBuf, String>),
     ThemeImported(Result<ThemeConfig, String>),
     EditorBoundsChanged(Option<Rectangle>),
+    TabSelected(usize),
+    TabClosed(usize),
+    NewTab,
+    NextTab,
+    PrevTab,
+    ReplaceChanged(String),
+    ReplaceCurrent,
+    ReplaceAll,
+    CommandPaletteToggle,
+    CommandPaletteChanged(String),
+    CommandPaletteSelected(usize),
+    ConfigFileChanged,
+    FileTreeToggle,
+    FileTreeToggleDir(PathBuf),
+    FileTreeFileClicked(PathBuf),
 }
 
 #[derive(Debug, Clone)]
@@ -212,8 +364,8 @@ pub enum MenuAction {
     GoToLine,
     ReloadConfig,
     PerformanceReport,
+    ToggleFileTree,
     About,
-    Placeholder(&'static str),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -227,9 +379,6 @@ impl MenuEntry {
         Self::Action(label, action)
     }
 
-    fn placeholder(label: &'static str) -> Self {
-        Self::Action(label, MenuAction::Placeholder(label))
-    }
 }
 
 const MENU_BAR_PADDING_X: f32 = 16.0;
@@ -535,72 +684,7 @@ impl<'a, 'b> overlay::Overlay<Message, Theme, Renderer> for MenuOverlayLayer<'a,
         mouse::Interaction::Idle
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchScope {
-    CurrentFile,
-    Workspace,
-}
 
-impl SearchScope {
-    fn label(self) -> &'static str {
-        match self {
-            SearchScope::CurrentFile => "Fichier",
-            SearchScope::Workspace => "Workspace",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SearchResult {
-    path: PathBuf,
-    line: usize,
-    column: usize,
-    preview: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct SearchResultsSummary {
-    results: Vec<SearchResult>,
-    skipped_read_errors: usize,
-    skipped_too_large: usize,
-    skipped_invalid_utf8: usize,
-    truncated: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct Diagnostic {
-    line: usize,
-    column: usize,
-    message: String,
-    severity: DiagnosticSeverity,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum DiagnosticSeverity {
-    Error,
-    Warning,
-}
-
-#[derive(Debug, Clone)]
-pub struct CompletionItem {
-    label: String,
-    detail: String,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SearchOptions {
-    regex: bool,
-    case_sensitive: bool,
-    include_hidden: bool,
-}
-
-enum SearchMatcher {
-    Plain {
-        needle: String,
-        case_sensitive: bool,
-    },
-    Regex(Regex),
-}
 
 impl RoxanneApp {
     pub fn run_with_config(config: config::AppConfig) -> iced::Result {
@@ -627,10 +711,7 @@ impl Application for RoxanneApp {
             Objectif: MVP inspiré de Sublime Text\n\
             - Menu bar, tabs, status bar\n\
             - Zone d'édition monospace";
-        let buffer = TextBuffer::from(initial_text);
-        let mut viewport_cache = ViewportCache::new();
-        viewport_cache.update(&buffer, 0, DEFAULT_VIEWPORT_HEIGHT);
-        let diagnostics = analyze_diagnostics(&buffer);
+        let tab = Tab::new("untitled.txt", initial_text);
         let (mut plugins, plugin_warnings) = PluginManager::new(&flags.plugins);
         plugins.on_text_changed(initial_text, "untitled.txt");
         let mut warnings = flags.load_warnings.clone();
@@ -652,15 +733,11 @@ impl Application for RoxanneApp {
         highlight::set_syntax_palette(flags.theme.syntax);
         (
             Self {
-                filename: "untitled.txt".to_string(),
-                content: EditorContent::with_text(initial_text),
-                buffer,
-                viewport_cache,
+                tabs: vec![tab],
+                active_tab: 0,
                 viewport_height: DEFAULT_VIEWPORT_HEIGHT,
-                last_saved_text: initial_text.to_string(),
                 search_query: String::new(),
-                search_matches: Vec::new(),
-                current_match_index: None,
+                replace_text: String::new(),
                 search_case_sensitive: false,
                 search_regex: false,
                 search_include_hidden: false,
@@ -669,25 +746,18 @@ impl Application for RoxanneApp {
                 goto_panel_open: false,
                 search_scope: SearchScope::CurrentFile,
                 search_results: Vec::new(),
-                highlight_settings: highlight::Settings {
-                    buffer_text: initial_text.into(),
-                    ..highlight::Settings::default()
-                },
-                multi_cursors: Vec::new(),
-                diagnostics,
                 diagnostics_panel_open: false,
-                completion_items: Vec::new(),
-                completion_prefix: String::new(),
                 completion_panel_open: false,
+                command_palette_open: false,
+                command_palette_query: String::new(),
+                file_tree_open: false,
+                file_tree: None,
                 status_message,
-                file_is_lossy: false,
-                lossy_save_acknowledged: false,
                 theme: flags.theme,
                 keymap: flags.keymap,
                 mode: KeymapMode::Insert,
                 plugins,
                 active_menu: None,
-                suppress_undo_snapshot: false,
                 performance,
                 perf_file_open_started: None,
                 perf_file_save_started: None,
@@ -704,22 +774,34 @@ impl Application for RoxanneApp {
     fn update(&mut self, message: Message) -> Command<Message> {
         match message {
             Message::Edit(action) => {
+                // Track explicit scroll events
+                if let EditorAction::Scroll { lines } = &action {
+                    self.tab_mut().scroll_offset += lines;
+                    self.tab_mut().scroll_offset =
+                        self.tab_mut().scroll_offset.max(0);
+                }
                 if action.is_edit() {
                     self.record_undo_snapshot();
                 }
-                if action.is_edit() && !self.multi_cursors.is_empty() {
+                if action.is_edit() && !self.tab().multi_cursors.is_empty() {
                     if let EditorAction::Edit(edit) = action {
                         self.apply_multi_cursor_edit(&edit);
                     }
                 } else {
-                    self.content.perform(action);
-                    self.buffer.replace(&self.content.text());
+                    self.tab_mut().content.perform(action);
+                    let text = self.tab().content.text();
+                    self.tab_mut().buffer.replace(&text);
                 }
+                // Keep scroll_offset in sync when cursor moves beyond visible area.
+                // The iced text_editor auto-scrolls to keep the cursor visible;
+                // mirror that logic here.
+                self.clamp_scroll_to_cursor();
                 self.sync_highlight_buffer();
                 self.refresh_search_matches(true, true);
                 self.refresh_diagnostics();
-                self.plugins
-                    .on_text_changed(&self.content.text(), &self.filename);
+                let text = self.tab().content.text().to_string();
+                let filename = self.tab().filename.clone();
+                self.plugins.on_text_changed(&text, &filename);
                 self.refresh_viewport_cache();
                 Command::none()
             }
@@ -779,7 +861,7 @@ impl Application for RoxanneApp {
             }
             Message::CompletionRequested => {
                 self.refresh_completions();
-                self.completion_panel_open = !self.completion_items.is_empty();
+                self.completion_panel_open = !self.tab().completion_items.is_empty();
                 Self::editor_bounds_command()
             }
             Message::CompletionSelected(index) => {
@@ -788,7 +870,7 @@ impl Application for RoxanneApp {
             }
             Message::CompletionClosed => {
                 self.completion_panel_open = false;
-                self.completion_items.clear();
+                self.tab_mut().completion_items.clear();
                 Self::editor_bounds_command()
             }
             Message::EditorBoundsChanged(bounds) => {
@@ -803,10 +885,11 @@ impl Application for RoxanneApp {
                         return Command::none();
                     }
                     let insert = EditorEdit::Paste(std::sync::Arc::new(text));
-                    if self.multi_cursors.is_empty() {
+                    if self.tab().multi_cursors.is_empty() {
                         self.record_undo_snapshot();
-                        self.content.perform(EditorAction::Edit(insert));
-                        self.buffer.replace(&self.content.text());
+                        self.tab_mut().content.perform(EditorAction::Edit(insert));
+                        let t = self.tab().content.text();
+                        self.tab_mut().buffer.replace(&t);
                     } else {
                         self.record_undo_snapshot();
                         self.apply_multi_cursor_edit(&insert);
@@ -814,8 +897,9 @@ impl Application for RoxanneApp {
                     self.sync_highlight_buffer();
                     self.refresh_search_matches(true, true);
                     self.refresh_diagnostics();
-                    self.plugins
-                        .on_text_changed(&self.content.text(), &self.filename);
+                    let t = self.tab().content.text().to_string();
+                    let f = self.tab().filename.clone();
+                    self.plugins.on_text_changed(&t, &f);
                     self.refresh_viewport_cache();
                 }
                 Command::none()
@@ -915,22 +999,34 @@ impl Application for RoxanneApp {
                     Ok(load) => {
                         let nav = load.result;
                         let text = load.text;
-                        self.file_is_lossy = load.lossy;
-                        self.lossy_save_acknowledged = false;
-                        self.filename = nav.path.display().to_string();
-                        self.content = EditorContent::with_text(&text);
-                        self.buffer.replace(&text);
-                        self.buffer.clear_history();
-                        self.multi_cursors.clear();
+                        let path_str = nav.path.display().to_string();
+                        // Open in a new tab (or switch to existing)
+                        let existing = self.tabs.iter().position(|t| t.filename == path_str);
+                        if let Some(idx) = existing {
+                            self.active_tab = idx;
+                            // Reload content
+                            let tab = self.tab_mut();
+                            tab.content = EditorContent::with_text(&text);
+                            tab.buffer.replace(&text);
+                            tab.last_saved_text = text;
+                        } else {
+                            let mut new_tab = Tab::new(&path_str, &text);
+                            new_tab.file_is_lossy = load.lossy;
+                            new_tab.last_saved_text = text;
+                            self.tabs.push(new_tab);
+                            self.active_tab = self.tabs.len() - 1;
+                        }
+                        self.tab_mut().buffer.clear_history();
+                        self.tab_mut().multi_cursors.clear();
                         self.completion_panel_open = false;
-                        self.completion_items.clear();
-                        self.suppress_undo_snapshot = false;
-                        self.last_saved_text = text;
+                        self.tab_mut().completion_items.clear();
+                        self.tab_mut().suppress_undo_snapshot = false;
                         self.sync_highlight_buffer();
                         self.refresh_search_matches(false, true);
                         self.refresh_diagnostics();
-                        self.plugins
-                            .on_text_changed(&self.content.text(), &self.filename);
+                        let ct = self.tab().content.text().to_string();
+                        let cf = self.tab().filename.clone();
+                        self.plugins.on_text_changed(&ct, &cf);
                         self.refresh_viewport_cache();
                         self.jump_to_position(nav.line, nav.column);
                         let opened_message = format!(
@@ -960,7 +1056,7 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                 Command::none()
             }
             Message::FilenameChanged(value) => {
-                self.filename = value;
+                self.tab_mut().filename = value;
                 Command::none()
             }
             Message::OpenPressed => self.open_file(),
@@ -1008,7 +1104,7 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                         Command::none()
                     }
                     MenuAction::ClearMultiCursors => {
-                        self.multi_cursors.clear();
+                        self.tab_mut().multi_cursors.clear();
                         self.status_message =
                             Some("Multi-curseurs: positions effacées.".to_string());
                         Command::none()
@@ -1027,12 +1123,15 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                         Self::editor_bounds_command()
                     }
                     MenuAction::GoToLine => {
-                        let (line, _) = self.content.cursor_position();
+                        let (line, _) = self.tab().content.cursor_position();
                         self.goto_line_input = format!("{}", line + 1);
                         self.goto_panel_open = true;
                         Self::editor_bounds_command()
                     }
                     MenuAction::ReloadConfig => self.reload_config(),
+                    MenuAction::ToggleFileTree => {
+                        return self.update(Message::FileTreeToggle);
+                    }
                     MenuAction::PerformanceReport => {
                         self.status_message = Some(self.performance.summary());
                         Command::none()
@@ -1040,10 +1139,6 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                     MenuAction::About => {
                         self.status_message =
                             Some("Roxanne MVP: éditeur inspiré de Sublime Text.".to_string());
-                        Command::none()
-                    }
-                    MenuAction::Placeholder(label) => {
-                        self.status_message = Some(format!("Non implémenté : {label}."));
                         Command::none()
                     }
                 }
@@ -1055,23 +1150,31 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                 match result {
                     Ok(load) => {
                         let text = load.text;
-                        self.file_is_lossy = load.lossy;
-                        self.lossy_save_acknowledged = false;
-                        self.content = EditorContent::with_text(&text);
-                        self.buffer.replace(&text);
-                        self.last_saved_text = text;
-                        self.buffer.clear_history();
-                        self.multi_cursors.clear();
+                        let filename = self.tab().filename.clone();
+                        // Check if a tab already has this file open
+                        let existing = self.tabs.iter().position(|t| t.filename == filename);
+                        if let Some(idx) = existing {
+                            self.active_tab = idx;
+                        }
+                        let tab = self.tab_mut();
+                        tab.file_is_lossy = load.lossy;
+                        tab.lossy_save_acknowledged = false;
+                        tab.content = EditorContent::with_text(&text);
+                        tab.buffer.replace(&text);
+                        tab.last_saved_text = text;
+                        tab.buffer.clear_history();
+                        tab.multi_cursors.clear();
+                        tab.completion_items.clear();
+                        tab.suppress_undo_snapshot = false;
+                        tab.scroll_offset = 0;
                         self.completion_panel_open = false;
-                        self.completion_items.clear();
-                        self.suppress_undo_snapshot = false;
                         self.sync_highlight_buffer();
                         self.refresh_search_matches(false, true);
                         self.refresh_diagnostics();
-                        self.plugins
-                            .on_file_opened(&self.content.text(), &self.filename);
-                        self.plugins
-                            .on_text_changed(&self.content.text(), &self.filename);
+                        let ct = self.tab().content.text().to_string();
+                        let cf = self.tab().filename.clone();
+                        self.plugins.on_file_opened(&ct, &cf);
+                        self.plugins.on_text_changed(&ct, &cf);
                         self.refresh_viewport_cache();
                         let duration = self
                             .performance
@@ -1099,9 +1202,10 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                 }
                 match result {
                     Ok(()) => {
-                        self.last_saved_text = self.content.text().to_string();
-                        self.plugins
-                            .on_file_saved(&self.last_saved_text, &self.filename);
+                        let saved_text = self.tab().content.text().to_string();
+                        self.tab_mut().last_saved_text = saved_text.clone();
+                        let filename = self.tab().filename.clone();
+                        self.plugins.on_file_saved(&saved_text, &filename);
                         let duration = self
                             .performance
                             .last_file_save
@@ -1146,6 +1250,125 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                 }
                 Command::none()
             }
+            Message::TabSelected(index) => {
+                if index < self.tabs.len() {
+                    self.active_tab = index;
+                    self.refresh_search_matches(false, false);
+                    self.refresh_viewport_cache();
+                }
+                Command::none()
+            }
+            Message::TabClosed(index) => {
+                if index < self.tabs.len() {
+                    // Don't close the last tab — create a new empty one instead
+                    if self.tabs.len() == 1 {
+                        self.tabs[0] = Tab::new("untitled.txt", "");
+                        self.active_tab = 0;
+                    } else {
+                        self.tabs.remove(index);
+                        if self.active_tab >= self.tabs.len() {
+                            self.active_tab = self.tabs.len() - 1;
+                        } else if self.active_tab > index {
+                            self.active_tab -= 1;
+                        }
+                    }
+                    self.refresh_search_matches(false, false);
+                    self.refresh_viewport_cache();
+                }
+                Command::none()
+            }
+            Message::NewTab => {
+                let tab = Tab::new("untitled.txt", "");
+                self.tabs.push(tab);
+                self.active_tab = self.tabs.len() - 1;
+                self.refresh_viewport_cache();
+                Command::none()
+            }
+            Message::NextTab => {
+                if !self.tabs.is_empty() {
+                    self.active_tab = (self.active_tab + 1) % self.tabs.len();
+                    self.refresh_search_matches(false, false);
+                    self.refresh_viewport_cache();
+                }
+                Command::none()
+            }
+            Message::ConfigFileChanged => {
+                return self.reload_config();
+            }
+            Message::CommandPaletteToggle => {
+                self.command_palette_open = !self.command_palette_open;
+                self.command_palette_query.clear();
+                Command::none()
+            }
+            Message::CommandPaletteChanged(value) => {
+                self.command_palette_query = value;
+                Command::none()
+            }
+            Message::CommandPaletteSelected(index) => {
+                self.command_palette_open = false;
+                let commands = self.filtered_commands();
+                if let Some((_, action)) = commands.get(index) {
+                    let action = *action;
+                    return self.update(Message::MenuAction(action));
+                }
+                Command::none()
+            }
+            Message::ReplaceChanged(value) => {
+                self.replace_text = value;
+                Command::none()
+            }
+            Message::ReplaceCurrent => {
+                self.replace_current_match();
+                Command::none()
+            }
+            Message::ReplaceAll => {
+                self.replace_all_matches();
+                Command::none()
+            }
+            Message::FileTreeToggle => {
+                self.file_tree_open = !self.file_tree_open;
+                if self.file_tree_open && self.file_tree.is_none() {
+                    let root = self.resolve_workspace_root().ok()
+                        .or_else(|| std::env::current_dir().ok());
+                    if let Some(root) = root {
+                        self.file_tree = FileTreeEntry::scan(&root, 0);
+                    }
+                }
+                Command::none()
+            }
+            Message::FileTreeToggleDir(path) => {
+                if let Some(tree) = self.file_tree.as_mut() {
+                    tree.toggle_dir(&path);
+                }
+                Command::none()
+            }
+            Message::FileTreeFileClicked(path) => {
+                let path_str = path.display().to_string();
+                // Check if already open
+                if let Some(idx) = self.tabs.iter().position(|t| t.filename == path_str) {
+                    self.active_tab = idx;
+                    self.refresh_search_matches(false, false);
+                    self.refresh_viewport_cache();
+                    return Command::none();
+                }
+                // Open in new tab
+                self.tab_mut().filename = path_str;
+                self.perf_file_open_started = Some(Instant::now());
+                let filename = self.tab().filename.clone();
+                // Create a new tab and open the file
+                let new_tab = Tab::new(&filename, "");
+                self.tabs.push(new_tab);
+                self.active_tab = self.tabs.len() - 1;
+                self.open_file()
+            }
+            Message::PrevTab => {
+                if !self.tabs.is_empty() {
+                    self.active_tab = (self.active_tab + self.tabs.len() - 1) % self.tabs.len();
+                    self.refresh_search_matches(false, false);
+                    self.refresh_viewport_cache();
+                }
+                Command::none()
+            }
         }
     }
 
@@ -1159,7 +1382,16 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
         let editor = self.editor_area();
         let status_bar = self.status_bar();
 
+        let command_palette = self.command_palette();
+
         let mut content = column![menu_bar, tab_bar];
+        if let Some(palette) = command_palette {
+            content = content.push(
+                Container::new(palette)
+                    .width(Length::Fill)
+                    .center_x(),
+            );
+        }
         if let Some(panel) = search_panel {
             content = content.push(panel);
         }
@@ -1172,8 +1404,18 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
         if let Some(panel) = completion_panel {
             content = content.push(panel);
         }
+        let file_tree = self.file_tree_panel();
+        let editor_row: Element<'_, Message> = if let Some(tree_panel) = file_tree {
+            row![tree_panel, editor]
+                .spacing(0)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        } else {
+            editor
+        };
         let content = content
-            .push(editor)
+            .push(editor_row)
             .push(status_bar)
             .spacing(0)
             .width(Length::Fill)
@@ -1182,14 +1424,15 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
         Container::new(content)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(theme::Container::Custom(Box::new(AppBackground {
-                palette: self.theme,
-            })))
+            .style(theme::Container::Custom(styles::app_background(&self.theme)))
             .into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        event::listen().map(Message::Event)
+        Subscription::batch([
+            event::listen().map(Message::Event),
+            config_watcher_subscription(),
+        ])
     }
 }
 
@@ -1201,7 +1444,7 @@ impl RoxanneApp {
     fn update_viewport_height(&mut self, bounds: Rectangle) {
         let available_height = (bounds.height - EDITOR_VERTICAL_PADDING).max(0.0);
         let line_height = EDITOR_LINE_HEIGHT.max(1.0);
-        let visible_lines = (available_height / line_height).floor().max(1.0) as usize;
+        let visible_lines = (available_height / line_height).ceil().max(1.0) as usize;
         if visible_lines != self.viewport_height {
             self.viewport_height = visible_lines;
             self.refresh_viewport_cache();
@@ -1209,11 +1452,20 @@ impl RoxanneApp {
     }
 
     fn open_file(&mut self) -> Command<Message> {
-        if self.filename.trim().is_empty() {
+        let filename = self.tab().filename.clone();
+        if filename.trim().is_empty() {
             self.status_message = Some("Nom de fichier manquant.".to_string());
             return Command::none();
         }
-        let filename = self.filename.clone();
+        // If file is already open in another tab, just switch
+        if let Some(idx) = self.tabs.iter().position(|t| t.filename == filename) {
+            if idx != self.active_tab {
+                self.active_tab = idx;
+                self.refresh_search_matches(false, false);
+                self.refresh_viewport_cache();
+                return Command::none();
+            }
+        }
         self.perf_file_open_started = Some(Instant::now());
         Command::perform(
             async move {
@@ -1238,28 +1490,29 @@ impl RoxanneApp {
     }
 
     fn save_file(&mut self) -> Command<Message> {
-        if self.filename.trim().is_empty() {
+        if self.tab().filename.trim().is_empty() {
             self.status_message = Some("Nom de fichier manquant.".to_string());
             return Command::none();
         }
-        if self.file_is_lossy && !self.lossy_save_acknowledged {
-            self.lossy_save_acknowledged = true;
+        if self.tab().file_is_lossy && !self.tab().lossy_save_acknowledged {
+            self.tab_mut().lossy_save_acknowledged = true;
             self.status_message = Some(
                 "Sauvegarde bloquée: le fichier contient des caractères invalides remplacés. \
-Relancez “Enregistrer” pour confirmer l’écriture."
+Relancez «Enregistrer» pour confirmer l'écriture."
                     .to_string(),
             );
             return Command::none();
         }
-        if self.file_is_lossy {
-            self.lossy_save_acknowledged = false;
+        if self.tab().file_is_lossy {
+            self.tab_mut().lossy_save_acknowledged = false;
         }
-        let filename = self.filename.clone();
-        self.buffer.replace(&self.content.text());
-        let text = self.buffer.text();
+        let filename = self.tab().filename.clone();
+        let ct = self.tab().content.text();
+        self.tab_mut().buffer.replace(&ct);
+        let text = self.tab().buffer.text().to_string();
         self.perf_file_save_started = Some(Instant::now());
         Command::perform(
-            async move { atomic_write(&filename, &text).map_err(|err| err.to_string()) },
+            async move { file_ops::atomic_write(&filename, &text).map_err(|err| err.to_string()) },
             Message::FileSaved,
         )
     }
@@ -1321,15 +1574,15 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             KeyAction::FindNext => self.find_next_match(true),
             KeyAction::FindPrevious => self.find_next_match(false),
             KeyAction::SelectAll => {
-                self.content
+                self.tab_mut().content
                     .perform(EditorAction::Move(Motion::DocumentStart));
-                self.content
+                self.tab_mut().content
                     .perform(EditorAction::Select(Motion::DocumentEnd));
                 self.refresh_viewport_cache();
                 Command::none()
             }
             KeyAction::Copy => {
-                if let Some(selection) = self.content.selection() {
+                if let Some(selection) = self.tab().content.selection() {
                     if !selection.is_empty() {
                         return clipboard::write(selection);
                     }
@@ -1337,19 +1590,21 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                 Command::none()
             }
             KeyAction::Cut => {
-                if let Some(selection) = self.content.selection() {
+                if let Some(selection) = self.tab().content.selection() {
                     if selection.is_empty() {
                         return Command::none();
                     }
                     self.record_undo_snapshot();
-                    self.content
+                    self.tab_mut().content
                         .perform(EditorAction::Edit(EditorEdit::Backspace));
-                    self.buffer.replace(&self.content.text());
+                    let t = self.tab().content.text();
+                    self.tab_mut().buffer.replace(&t);
                     self.sync_highlight_buffer();
                     self.refresh_search_matches(true, true);
                     self.refresh_diagnostics();
-                    self.plugins
-                        .on_text_changed(&self.content.text(), &self.filename);
+                    let t = self.tab().content.text().to_string();
+                    let f = self.tab().filename.clone();
+                    self.plugins.on_text_changed(&t, &f);
                     self.refresh_viewport_cache();
                     return clipboard::write(selection);
                 }
@@ -1366,13 +1621,34 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             }
             KeyAction::Completion => {
                 self.refresh_completions();
-                self.completion_panel_open = !self.completion_items.is_empty();
+                self.completion_panel_open = !self.tab().completion_items.is_empty();
                 Command::none()
             }
             KeyAction::CompletionClose => {
                 self.completion_panel_open = false;
-                self.completion_items.clear();
+                self.tab_mut().completion_items.clear();
                 Command::none()
+            }
+            KeyAction::NewTab => {
+                self.update(Message::NewTab)
+            }
+            KeyAction::CloseTab => {
+                let idx = self.active_tab;
+                self.update(Message::TabClosed(idx))
+            }
+            KeyAction::NextTab => {
+                self.update(Message::NextTab)
+            }
+            KeyAction::PrevTab => {
+                self.update(Message::PrevTab)
+            }
+            KeyAction::CommandPalette => {
+                self.command_palette_open = !self.command_palette_open;
+                self.command_palette_query.clear();
+                Command::none()
+            }
+            KeyAction::ToggleFileTree => {
+                self.update(Message::FileTreeToggle)
             }
             KeyAction::EnterInsertMode => {
                 self.mode = KeymapMode::Insert;
@@ -1405,9 +1681,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         let top_row = Container::new(menu_items)
             .width(Length::Fill)
             .padding([6, 16])
-            .style(theme::Container::Custom(Box::new(MenuBarStyle {
-                palette: self.theme,
-            })));
+            .style(theme::Container::Custom(styles::menu_bar(&self.theme)));
 
         let dismiss_message = self.active_menu.map(Message::MenuSelected);
         let active_menu_index = self.active_menu.map(menu_index);
@@ -1423,10 +1697,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                 .font(Font::MONOSPACE),
         )
         .padding([2, MENU_BUTTON_PADDING_X])
-        .style(theme::Button::Custom(Box::new(MenuButtonStyle {
-            active: is_active,
-            palette: self.theme,
-        })))
+        .style(theme::Button::Custom(styles::menu_button(&self.theme, is_active)))
         .on_press(Message::MenuSelected(menu))
         .into()
     }
@@ -1436,51 +1707,25 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             Menu::File => (
                 "File",
                 vec![
-                    MenuEntry::placeholder("New File — Ctrl+N"),
-                    MenuEntry::placeholder("New Window — Ctrl+Shift+N"),
                     MenuEntry::action("Open File… — Ctrl+O", MenuAction::Open),
-                    MenuEntry::placeholder("Open Folder… — Ctrl+Shift+O"),
-                    MenuEntry::placeholder("Open Recent ▸"),
-                    MenuEntry::placeholder("Reopen Closed File — Ctrl+Shift+T"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Close File — Ctrl+W"),
-                    MenuEntry::placeholder("Close Window — Ctrl+Shift+W"),
                     MenuEntry::Separator,
                     MenuEntry::action("Save — Ctrl+S", MenuAction::Save),
-                    MenuEntry::placeholder("Save As… — Ctrl+Shift+S"),
-                    MenuEntry::placeholder("Save All — Ctrl+Alt+S"),
-                    MenuEntry::placeholder("Save with Encoding ▸"),
-                    MenuEntry::placeholder("Save with Line Endings ▸"),
                     MenuEntry::Separator,
                     MenuEntry::action("Export Theme", MenuAction::ExportTheme),
                     MenuEntry::action("Import Theme", MenuAction::ImportTheme),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Print… — Ctrl+P"),
-                    MenuEntry::placeholder("Exit — Ctrl+Q"),
                 ],
             ),
             Menu::Edit => (
                 "Edit",
                 vec![
-                    MenuEntry::placeholder("Undo — Ctrl+Z"),
-                    MenuEntry::placeholder("Redo — Ctrl+Y"),
-                    MenuEntry::placeholder("Undo Selection — Ctrl+U"),
-                    MenuEntry::placeholder("Soft Undo — Alt+Backspace"),
-                    MenuEntry::placeholder("Soft Redo — Alt+Shift+Backspace"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Cut — Ctrl+X"),
-                    MenuEntry::placeholder("Copy — Ctrl+C"),
-                    MenuEntry::placeholder("Copy as RTF"),
-                    MenuEntry::placeholder("Paste — Ctrl+V"),
-                    MenuEntry::placeholder("Paste and Indent — Ctrl+Shift+V"),
-                    MenuEntry::placeholder("Paste from History ▸"),
-                    MenuEntry::placeholder("Paste Special ▸"),
                     MenuEntry::Separator,
                     MenuEntry::action("Find — Ctrl+F", MenuAction::Find),
                     MenuEntry::action("Find Next — F3", MenuAction::FindNext),
                     MenuEntry::action("Find Previous — Shift+F3", MenuAction::FindPrevious),
                     MenuEntry::action("Find in Files… — Ctrl+Shift+F", MenuAction::FindInFiles),
-                    MenuEntry::placeholder("Replace… — Ctrl+H"),
                     MenuEntry::Separator,
                     MenuEntry::action("Search Panel", MenuAction::ToggleSearchPanel),
                     MenuEntry::action("Diagnostics Panel", MenuAction::ToggleDiagnosticsPanel),
@@ -1489,10 +1734,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             Menu::Selection => (
                 "Selection",
                 vec![
-                    MenuEntry::placeholder("Single Selection — Esc"),
                     MenuEntry::action("Select All — Ctrl+A", MenuAction::SelectAll),
-                    MenuEntry::placeholder("Expand Selection to Line — Ctrl+L"),
-                    MenuEntry::placeholder("Split Selection into Lines — Ctrl+Shift+L"),
                     MenuEntry::action(
                         "Add Cursor to Next Match — Ctrl+D",
                         MenuAction::AddCursorNextMatch,
@@ -1503,57 +1745,28 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                     ),
                     MenuEntry::action("Clear Cursors — Esc", MenuAction::ClearMultiCursors),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Expand Selection to Word — Ctrl+D"),
-                    MenuEntry::placeholder("Expand Selection to Paragraph — Ctrl+Shift+Space"),
-                    MenuEntry::placeholder("Expand Selection to Brackets — Ctrl+Shift+M"),
-                    MenuEntry::placeholder("Expand Selection to Tag — Ctrl+Shift+A"),
                 ],
             ),
             Menu::View => (
                 "View",
                 vec![
-                    MenuEntry::placeholder("Side Bar"),
-                    MenuEntry::placeholder("Show Minimap"),
-                    MenuEntry::placeholder("Show Tabs"),
                     MenuEntry::action("Show Status Bar", MenuAction::ToggleStatusBar),
-                    MenuEntry::placeholder("Show Menu"),
+                    MenuEntry::action("Toggle File Tree — Ctrl+B", MenuAction::ToggleFileTree),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Enter Full Screen — F11"),
-                    MenuEntry::placeholder("Distraction Free Mode — Shift+F11"),
-                    MenuEntry::Separator,
-                    MenuEntry::placeholder("Layout ▸"),
-                    MenuEntry::placeholder("Groups ▸"),
-                    MenuEntry::placeholder("Move File to Group ▸"),
-                    MenuEntry::placeholder("Focus Group ▸"),
                 ],
             ),
             Menu::Goto => (
                 "Goto",
                 vec![
-                    MenuEntry::placeholder("Goto Anything… — Ctrl+P"),
-                    MenuEntry::placeholder("Goto Symbol… — Ctrl+R"),
-                    MenuEntry::placeholder("Goto Symbol in Project… — Ctrl+Shift+R"),
-                    MenuEntry::placeholder("Goto Definition — F12"),
-                    MenuEntry::placeholder("Goto Reference — Shift+F12"),
                     MenuEntry::Separator,
                     MenuEntry::action("Go to Line… — Ctrl+G", MenuAction::GoToLine),
-                    MenuEntry::placeholder("Go to Word… — Ctrl+;"),
-                    MenuEntry::placeholder("Go to Section… — Ctrl+Shift+;"),
                 ],
             ),
             Menu::Tools => (
                 "Tools",
                 vec![
-                    MenuEntry::placeholder("Command Palette… — Ctrl+Shift+P"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Build — Ctrl+B"),
-                    MenuEntry::placeholder("Build With… — Ctrl+Shift+B"),
-                    MenuEntry::placeholder("Cancel Build"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Record Macro"),
-                    MenuEntry::placeholder("Stop Recording Macro"),
-                    MenuEntry::placeholder("Playback Macro — Ctrl+Shift+Q"),
-                    MenuEntry::placeholder("Save Macro…"),
                     MenuEntry::Separator,
                     MenuEntry::action("Reload Config", MenuAction::ReloadConfig),
                     MenuEntry::action("Performance Report", MenuAction::PerformanceReport),
@@ -1562,47 +1775,22 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             Menu::Project => (
                 "Project",
                 vec![
-                    MenuEntry::placeholder("Open Project…"),
-                    MenuEntry::placeholder("Switch Project ▸"),
-                    MenuEntry::placeholder("Quick Switch Project… — Ctrl+Alt+P"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Save Project As…"),
-                    MenuEntry::placeholder("Close Project"),
-                    MenuEntry::placeholder("Edit Project"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Add Folder to Project…"),
-                    MenuEntry::placeholder("Remove Folder from Project"),
                 ],
             ),
             Menu::Preferences => (
                 "Preferences",
                 vec![
-                    MenuEntry::placeholder("Browse Packages…"),
-                    MenuEntry::placeholder("Browse Cache…"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Settings"),
-                    MenuEntry::placeholder("Settings — Syntax Specific"),
-                    MenuEntry::placeholder("Settings — Distraction Free"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Key Bindings"),
-                    MenuEntry::placeholder("Mouse Bindings"),
-                    MenuEntry::placeholder("Menu"),
-                    MenuEntry::placeholder("Macros"),
-                    MenuEntry::placeholder("Commands"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("Package Settings ▸"),
-                    MenuEntry::placeholder("Select Color Scheme ▸"),
-                    MenuEntry::placeholder("Select Theme ▸"),
                 ],
             ),
             Menu::Help => (
                 "Help",
                 vec![
-                    MenuEntry::placeholder("Documentation"),
-                    MenuEntry::placeholder("Report a Bug"),
-                    MenuEntry::placeholder("Support Roxanne"),
                     MenuEntry::Separator,
-                    MenuEntry::placeholder("License"),
                     MenuEntry::action("About", MenuAction::About),
                 ],
             ),
@@ -1622,9 +1810,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                         )
                         .width(Length::Shrink)
                         .padding([2, 8])
-                        .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                            palette: self.theme,
-                        })))
+                        .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                         .on_press(Message::MenuAction(action))
                         .into(),
                         MenuEntry::Separator => self.submenu_separator(),
@@ -1641,9 +1827,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         Some(
             Container::new(row)
                 .width(Length::Shrink)
-                .style(theme::Container::Custom(Box::new(SubmenuStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Container::Custom(styles::submenu(&self.theme)))
                 .into(),
         )
     }
@@ -1651,50 +1835,80 @@ Relancez “Enregistrer” pour confirmer l’écriture."
     fn submenu_separator(&self) -> Element<'_, Message> {
         Container::new(Space::with_height(Length::Fixed(1.0)))
             .width(Length::Shrink)
-            .style(theme::Container::Custom(Box::new(SubmenuSeparatorStyle {
-                palette: self.theme,
-            })))
+            .style(theme::Container::Custom(styles::submenu_separator(&self.theme)))
             .into()
     }
 
     fn tab_bar(&self) -> Element<'_, Message> {
-        let is_modified = self.content.text() != self.last_saved_text;
-        let filename = if self.filename.trim().is_empty() {
-            "untitled.txt"
-        } else {
-            self.filename.as_str()
-        };
-        let tab = row![
-            text(filename)
-                .size(13)
-                .font(Font::MONOSPACE)
-                .style(Color::from_rgb8(230, 230, 230)),
-            text(if is_modified { "●" } else { "×" })
-                .size(12)
-                .font(Font::MONOSPACE)
-                .style(Color::from_rgb8(180, 180, 180)),
-        ]
-        .spacing(8)
-        .padding([6, 12])
-        .align_items(Alignment::Center);
+        let mut tabs_row = row![].spacing(2).padding([0, 8]).align_items(Alignment::Center);
 
-        let row = row![
-            Container::new(tab)
-                .style(theme::Container::Custom(Box::new(ActiveTabStyle {
-                    palette: self.theme,
-                })))
-                .height(Length::Fill)
-        ]
-        .spacing(4)
-        .padding([0, 8])
-        .align_items(Alignment::Center);
+        for (index, tab) in self.tabs.iter().enumerate() {
+            let is_active = index == self.active_tab;
+            let is_modified = tab.is_modified();
+            let name = tab.display_name();
 
-        Container::new(row)
+            let label = row![
+                text(name)
+                    .size(13)
+                    .font(Font::MONOSPACE)
+                    .style(if is_active {
+                        Color::from_rgb8(230, 230, 230)
+                    } else {
+                        Color::from_rgb8(160, 160, 160)
+                    }),
+                text(if is_modified { "●" } else { "" })
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .style(Color::from_rgb8(180, 180, 180)),
+            ]
+            .spacing(4)
+            .align_items(Alignment::Center);
+
+            let tab_content = row![
+                Button::new(label)
+                    .padding([6, 12])
+                    .style(if is_active {
+                        theme::Button::Custom(styles::menu_button(&self.theme, true))
+                    } else {
+                        theme::Button::Custom(styles::menu_button(&self.theme, false))
+                    })
+                    .on_press(Message::TabSelected(index)),
+                Button::new(
+                    text("×").size(12).font(Font::MONOSPACE)
+                        .style(Color::from_rgb8(150, 150, 150))
+                )
+                    .padding([4, 6])
+                    .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
+                    .on_press(Message::TabClosed(index)),
+            ]
+            .spacing(0)
+            .align_items(Alignment::Center);
+
+            let tab_style = if is_active {
+                theme::Container::Custom(styles::active_tab(&self.theme))
+            } else {
+                theme::Container::Transparent
+            };
+
+            tabs_row = tabs_row.push(
+                Container::new(tab_content)
+                    .style(tab_style)
+                    .height(Length::Fill),
+            );
+        }
+
+        // New tab button
+        tabs_row = tabs_row.push(
+            Button::new(text("+").size(14).font(Font::MONOSPACE).style(Color::from_rgb8(150, 150, 150)))
+                .padding([4, 8])
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
+                .on_press(Message::NewTab),
+        );
+
+        Container::new(tabs_row)
             .width(Length::Fill)
             .height(Length::Fixed(32.0))
-            .style(theme::Container::Custom(Box::new(TabBarStyle {
-                palette: self.theme,
-            })))
+            .style(theme::Container::Custom(styles::tab_bar(&self.theme)))
             .into()
     }
 
@@ -1702,46 +1916,54 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         let line_height = EDITOR_LINE_HEIGHT.max(1.0);
         let vertical_padding = 12.0;
         let line_number_size = 14;
-        let line_count = self.buffer.line_count().max(1);
+        let line_count = self.tab().buffer.line_count().max(1);
         let gutter_digits = line_count.to_string().len();
         let gutter_width = (gutter_digits as f32 * (line_number_size as f32 * 0.6)) + 24.0;
-        let (start_line, _) = self.viewport_cache.range().unwrap_or((0, 0));
-        let visible_lines = self.viewport_height.max(1);
-        let end_line = (start_line + visible_lines).min(line_count);
-        let mut gutter_children = (start_line..end_line)
-            .map(|line_index| {
-                text(format!("{:>width$}", line_index + 1, width = gutter_digits))
-                    .size(line_number_size)
-                    .font(Font::MONOSPACE)
-                    .style(Color::from_rgb8(140, 140, 140))
-                    .line_height(LineHeight::Absolute(line_height.into()))
-                    .horizontal_alignment(Horizontal::Right)
-                    .into()
-            })
-            .collect::<Vec<Element<Message>>>();
-        gutter_children.push(Space::with_height(Length::Fill).into());
 
-        let gutter_lines = Column::with_children(gutter_children)
-            .spacing(0)
-            .align_items(Alignment::End)
-            .height(Length::Fill);
+        // Build gutter as a single multi-line text block showing only the
+        // lines currently visible, based on the tracked scroll offset.
+        let start = (self.tab().scroll_offset.max(0) as usize).min(line_count);
+        // Generate plenty of lines to fill the entire visible height
+        let gutter_row_count = self.viewport_height.max(1) * 2 + 20;
+        let mut gutter_text = String::new();
+        for i in 0..gutter_row_count {
+            let line_idx = start + i;
+            if i > 0 {
+                gutter_text.push('\n');
+            }
+            if line_idx < line_count {
+                gutter_text.push_str(&format!(
+                    "{:>width$}",
+                    line_idx + 1,
+                    width = gutter_digits
+                ));
+            } else {
+                gutter_text.push_str(&format!("{:>width$}", "~", width = gutter_digits));
+            }
+        }
 
-        let gutter = Container::new(gutter_lines)
+        let gutter_content = text(gutter_text)
+            .size(line_number_size)
+            .font(Font::MONOSPACE)
+            .style(Color::from_rgb8(140, 140, 140))
+            .line_height(LineHeight::Absolute(line_height.into()))
+            .horizontal_alignment(Horizontal::Right);
+
+        let gutter = Container::new(gutter_content)
             .width(Length::Fixed(gutter_width))
             .height(Length::Fill)
             .padding([vertical_padding, 8.0])
-            .style(theme::Container::Custom(Box::new(GutterStyle {
-                palette: self.theme,
-            })));
+            .clip(true)
+            .style(theme::Container::Custom(styles::gutter(&self.theme)));
 
-        let editor = text_editor(&self.content)
+        let editor = text_editor(&self.tab().content)
             .on_action(Message::Edit)
             .font(Font::MONOSPACE)
             .line_height(LineHeight::Absolute(line_height.into()))
             .padding([vertical_padding, 16.0])
             .height(Length::Fill)
             .highlight::<highlight::RoxanneHighlighter>(
-                self.highlight_settings.clone(),
+                self.tab().highlight_settings.clone(),
                 highlight::highlight_format,
             );
 
@@ -1749,9 +1971,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             .width(Length::Fill)
             .height(Length::Fill)
             .id(editor_container_id())
-            .style(theme::Container::Custom(Box::new(EditorStyle {
-                palette: self.theme,
-            })));
+            .style(theme::Container::Custom(styles::editor(&self.theme)));
 
         row![gutter, editor].height(Length::Fill).into()
     }
@@ -1794,6 +2014,23 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         .spacing(8)
         .align_items(Alignment::Center);
 
+        let replace_row = row![
+            TextInput::new("Remplacer par…", &self.replace_text)
+                .on_input(Message::ReplaceChanged)
+                .padding([4, 8])
+                .size(12),
+            Button::new(text("Remplacer").size(12).font(Font::MONOSPACE))
+                .padding([4, 10])
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
+                .on_press(Message::ReplaceCurrent),
+            Button::new(text("Tout remplacer").size(12).font(Font::MONOSPACE))
+                .padding([4, 10])
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
+                .on_press(Message::ReplaceAll),
+        ]
+        .spacing(8)
+        .align_items(Alignment::Center);
+
         let scope_row = row![
             self.search_scope_button(SearchScope::CurrentFile),
             self.search_scope_button(SearchScope::Workspace),
@@ -1804,15 +2041,11 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         let action_row = row![
             Button::new(text("Rechercher fichiers").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::SearchInFiles),
             Button::new(text("Effacer résultats").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::SearchResultsCleared),
         ]
         .spacing(8)
@@ -1848,13 +2081,9 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                     Button::new(
                         Container::new(column![title, preview].spacing(2))
                             .padding([4, 12])
-                            .style(theme::Container::Custom(Box::new(SearchResultStyle {
-                                palette: self.theme,
-                            }))),
+                            .style(theme::Container::Custom(styles::panel_item(&self.theme))),
                     )
-                    .style(theme::Button::Custom(Box::new(SearchResultButtonStyle {
-                        palette: self.theme,
-                    })))
+                    .style(theme::Button::Custom(styles::search_result_button(&self.theme)))
                     .on_press(Message::SearchResultSelected(index))
                     .into()
                 })
@@ -1865,16 +2094,14 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                 .into()
         };
 
-        let panel = column![header, query_row, scope_row, action_row, results]
+        let panel = column![header, query_row, replace_row, scope_row, action_row, results]
             .spacing(10)
             .padding([8, 16]);
 
         Some(
             Container::new(panel)
                 .width(Length::Fill)
-                .style(theme::Container::Custom(Box::new(SearchPanelStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Container::Custom(styles::panel(&self.theme)))
                 .into(),
         )
     }
@@ -1906,15 +2133,11 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         let actions = row![
             Button::new(text("Aller").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::GotoLineSubmit),
             Button::new(text("Fermer").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::GotoLineClosed),
         ]
         .spacing(8)
@@ -1925,9 +2148,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         Some(
             Container::new(panel)
                 .width(Length::Fill)
-                .style(theme::Container::Custom(Box::new(SearchPanelStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Container::Custom(styles::panel(&self.theme)))
                 .into(),
         )
     }
@@ -1938,11 +2159,11 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         }
 
         let header = row![
-            text("Diagnostics LSP")
+            text("Diagnostics (brackets)")
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(220, 220, 220)),
-            text(format!("{} élément(s)", self.diagnostics.len()))
+            text(format!("{} élément(s)", self.tab().diagnostics.len()))
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(160, 160, 160)),
@@ -1950,7 +2171,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         .spacing(12)
         .align_items(Alignment::Center);
 
-        let content: Element<Message> = if self.diagnostics.is_empty() {
+        let content: Element<Message> = if self.tab().diagnostics.is_empty() {
             text("Aucun diagnostic.")
                 .size(12)
                 .font(Font::MONOSPACE)
@@ -1958,6 +2179,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                 .into()
         } else {
             let entries = self
+                .tab()
                 .diagnostics
                 .iter()
                 .map(|diagnostic| {
@@ -1977,9 +2199,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
 
                     Container::new(column![title, message].spacing(2))
                         .padding([4, 12])
-                        .style(theme::Container::Custom(Box::new(SearchResultStyle {
-                            palette: self.theme,
-                        })))
+                        .style(theme::Container::Custom(styles::panel_item(&self.theme)))
                         .into()
                 })
                 .collect::<Vec<Element<Message>>>();
@@ -1994,9 +2214,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         Some(
             Container::new(panel)
                 .width(Length::Fill)
-                .style(theme::Container::Custom(Box::new(SearchPanelStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Container::Custom(styles::panel(&self.theme)))
                 .into(),
         )
     }
@@ -2007,11 +2225,11 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         }
 
         let header = row![
-            text("Complétions LSP")
+            text("Complétions (mots-clés)")
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(220, 220, 220)),
-            text(format!("Préfixe: {}", self.completion_prefix))
+            text(format!("Préfixe: {}", self.tab().completion_prefix))
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(160, 160, 160)),
@@ -2019,7 +2237,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         .spacing(12)
         .align_items(Alignment::Center);
 
-        let list: Element<Message> = if self.completion_items.is_empty() {
+        let list: Element<Message> = if self.tab().completion_items.is_empty() {
             text("Aucune suggestion.")
                 .size(12)
                 .font(Font::MONOSPACE)
@@ -2027,6 +2245,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                 .into()
         } else {
             let entries = self
+                .tab()
                 .completion_items
                 .iter()
                 .enumerate()
@@ -2043,13 +2262,9 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                     Button::new(
                         Container::new(column![label, detail].spacing(2))
                             .padding([4, 12])
-                            .style(theme::Container::Custom(Box::new(SearchResultStyle {
-                                palette: self.theme,
-                            }))),
+                            .style(theme::Container::Custom(styles::panel_item(&self.theme))),
                     )
-                    .style(theme::Button::Custom(Box::new(SearchResultButtonStyle {
-                        palette: self.theme,
-                    })))
+                    .style(theme::Button::Custom(styles::search_result_button(&self.theme)))
                     .on_press(Message::CompletionSelected(index))
                     .into()
                 })
@@ -2065,23 +2280,22 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         Some(
             Container::new(panel)
                 .width(Length::Fill)
-                .style(theme::Container::Custom(Box::new(SearchPanelStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Container::Custom(styles::panel(&self.theme)))
                 .into(),
         )
     }
 
     fn status_bar(&self) -> Element<'_, Message> {
-        let is_modified = self.content.text() != self.last_saved_text;
-        let has_matches = !self.search_matches.is_empty();
-        let cursor_position = self.content.cursor_position();
-        let cursor_count = self.multi_cursors.len() + 1;
-        let diagnostics_count = self.diagnostics.len();
+        let tab = self.tab();
+        let is_modified = tab.is_modified();
+        let has_matches = !tab.search_matches.is_empty();
+        let cursor_position = tab.content.cursor_position();
+        let cursor_count = tab.multi_cursors.len() + 1;
+        let diagnostics_count = tab.diagnostics.len();
         let left = row![
             text(format!(
                 "{}{}",
-                self.filename,
+                tab.filename,
                 if is_modified { " ●" } else { "" }
             ))
             .size(12)
@@ -2099,17 +2313,13 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             self.toggle_button(".*", self.search_regex, Message::SearchToggleRegex),
             Button::new(text("◀").size(12).font(Font::MONOSPACE))
                 .padding([2, 6])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press_maybe(has_matches.then_some(Message::SearchPrevious)),
             Button::new(text("▶").size(12).font(Font::MONOSPACE))
                 .padding([2, 6])
-                .style(theme::Button::Custom(Box::new(SubmenuButtonStyle {
-                    palette: self.theme,
-                })))
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press_maybe(has_matches.then_some(Message::SearchNext)),
-            TextInput::new("fichier…", &self.filename)
+            TextInput::new("fichier…", &tab.filename)
                 .on_input(Message::FilenameChanged)
                 .padding([2, 8])
                 .size(12),
@@ -2117,7 +2327,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         .spacing(12)
         .align_items(Alignment::Center);
 
-        let matches = self.search_matches.len();
+        let matches = tab.search_matches.len();
         let status_text = self
             .status_message
             .clone()
@@ -2162,19 +2372,14 @@ Relancez “Enregistrer” pour confirmer l’écriture."
 
         Container::new(row)
             .width(Length::Fill)
-            .style(theme::Container::Custom(Box::new(StatusBarStyle {
-                palette: self.theme,
-            })))
+            .style(theme::Container::Custom(styles::status_bar(&self.theme)))
             .into()
     }
 
     fn toggle_button(&self, label: &str, active: bool, message: Message) -> Element<'_, Message> {
         Button::new(text(label).size(12).font(Font::MONOSPACE))
             .padding([2, 6])
-            .style(theme::Button::Custom(Box::new(ToggleButtonStyle {
-                active,
-                palette: self.theme,
-            })))
+            .style(theme::Button::Custom(styles::toggle_button(&self.theme, active)))
             .on_press(message)
             .into()
     }
@@ -2188,10 +2393,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                 .style(Color::from_rgb8(220, 220, 220)),
         )
         .padding([2, 8])
-        .style(theme::Button::Custom(Box::new(ToggleButtonStyle {
-            active,
-            palette: self.theme,
-        })))
+        .style(theme::Button::Custom(styles::toggle_button(&self.theme, active)))
         .on_press(Message::SearchScopeSelected(scope))
         .into()
     }
@@ -2205,7 +2407,9 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         highlight::set_syntax_palette(config.theme.syntax);
         self.theme = config.theme;
         self.keymap = config.keymap;
-        plugins.on_text_changed(&self.content.text(), &self.filename);
+        let ct = self.tab().content.text().to_string();
+        let cf = self.tab().filename.clone();
+        plugins.on_text_changed(&ct, &cf);
         self.plugins = plugins;
 
         self.status_message = Some(if warnings.is_empty() {
@@ -2226,7 +2430,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
     }
 
     fn resolve_workspace_root(&self) -> Result<PathBuf, String> {
-        if let Some(root) = Self::workspace_root_from_filename(&self.filename) {
+        if let Some(root) = Self::workspace_root_from_filename(&self.tab().filename) {
             return Ok(root);
         }
         std::env::current_dir().map_err(|err| err.to_string())
@@ -2274,7 +2478,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
                 .unwrap_or_else(|| "-".to_string());
             self.status_message = Some(format!(
                 "Recherche fichier: {} occurrence(s) ({duration}).",
-                self.search_matches.len(),
+                self.tab().search_matches.len(),
             ));
             return Command::none();
         }
@@ -2291,37 +2495,40 @@ Relancez “Enregistrer” pour confirmer l’écriture."
 
         self.perf_search_files_started = Some(Instant::now());
         Command::perform(
-            search_in_workspace(root, query, options),
+            search::search_in_workspace(root, query, options),
             Message::SearchResultsLoaded,
         )
     }
 
     fn refresh_search_matches(&mut self, preserve_index: bool, update_status: bool) {
         let options = self.search_options();
-        self.search_matches = match find_matches(&self.buffer, &self.search_query, options) {
-            Ok(matches) => matches,
+        let matches = search::find_matches(&self.tab().buffer, &self.search_query, options);
+        match matches {
+            Ok(m) => self.tab_mut().search_matches = m,
             Err(message) => {
-                self.current_match_index = None;
-                self.search_matches.clear();
-                self.highlight_settings.search_matches.clear();
+                self.tab_mut().current_match_index = None;
+                self.tab_mut().search_matches.clear();
+                self.tab_mut().highlight_settings.search_matches.clear();
                 if update_status && !self.search_query.is_empty() {
                     self.status_message = Some(format!("Recherche: {message}"));
                 }
                 return;
             }
         };
-        self.highlight_settings.search_matches = self.search_matches.clone();
-        if self.search_matches.is_empty() {
-            self.current_match_index = None;
+        let matches_clone = self.tab().search_matches.clone();
+        self.tab_mut().highlight_settings.search_matches = matches_clone;
+        if self.tab().search_matches.is_empty() {
+            self.tab_mut().current_match_index = None;
             if update_status && !self.search_query.is_empty() {
                 self.status_message = Some("Recherche: aucune occurrence.".to_string());
             }
             return;
         }
 
-        self.current_match_index = if preserve_index {
-            self.current_match_index
-                .filter(|index| *index < self.search_matches.len())
+        let len = self.tab().search_matches.len();
+        self.tab_mut().current_match_index = if preserve_index {
+            self.tab().current_match_index
+                .filter(|index| *index < len)
         } else {
             None
         };
@@ -2329,7 +2536,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         if update_status && !self.search_query.is_empty() {
             self.status_message = Some(format!(
                 "Recherche: {} occurrence(s).",
-                self.search_matches.len()
+                len
             ));
         }
     }
@@ -2340,13 +2547,13 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             return Command::none();
         }
 
-        if self.search_matches.is_empty() {
+        if self.tab().search_matches.is_empty() {
             self.status_message = Some("Recherche: aucune occurrence.".to_string());
             return Command::none();
         }
 
-        let total = self.search_matches.len();
-        let next_index = match self.current_match_index {
+        let total = self.tab().search_matches.len();
+        let next_index = match self.tab().current_match_index {
             Some(index) => {
                 if forward {
                     (index + 1) % total
@@ -2363,24 +2570,226 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             }
         };
 
-        self.current_match_index = Some(next_index);
+        self.tab_mut().current_match_index = Some(next_index);
         self.jump_to_match(next_index);
         Command::none()
     }
 
     fn jump_to_match(&mut self, index: usize) {
-        if let Some(match_position) = self.search_matches.get(index) {
+        if let Some(match_position) = self.tab().search_matches.get(index).copied() {
             let line = match_position.line;
             let column = match_position.column;
             self.jump_to_position(line, column);
             self.status_message = Some(format!(
                 "Recherche: {}/{} (ligne {}, colonne {}).",
                 index + 1,
-                self.search_matches.len(),
+                self.tab().search_matches.len(),
                 line + 1,
                 column + 1
             ));
         }
+    }
+
+    fn all_commands() -> Vec<(&'static str, MenuAction)> {
+        vec![
+            ("Open File — Ctrl+O", MenuAction::Open),
+            ("Save — Ctrl+S", MenuAction::Save),
+            ("Find — Ctrl+F", MenuAction::Find),
+            ("Find Next — F3", MenuAction::FindNext),
+            ("Find Previous — Shift+F3", MenuAction::FindPrevious),
+            ("Find in Files", MenuAction::FindInFiles),
+            ("Select All — Ctrl+A", MenuAction::SelectAll),
+            ("Add Cursor Next Match", MenuAction::AddCursorNextMatch),
+            ("Add Cursors All Matches", MenuAction::AddCursorsAllMatches),
+            ("Clear Multi Cursors", MenuAction::ClearMultiCursors),
+            ("Toggle Diagnostics", MenuAction::ToggleDiagnosticsPanel),
+            ("Toggle Search Panel", MenuAction::ToggleSearchPanel),
+            ("Go To Line — Ctrl+G", MenuAction::GoToLine),
+            ("Reload Config", MenuAction::ReloadConfig),
+            ("Export Theme", MenuAction::ExportTheme),
+            ("Import Theme", MenuAction::ImportTheme),
+            ("Performance Report", MenuAction::PerformanceReport),
+            ("Toggle File Tree — Ctrl+B", MenuAction::ToggleFileTree),
+            ("About", MenuAction::About),
+        ]
+    }
+
+    fn filtered_commands(&self) -> Vec<(&'static str, MenuAction)> {
+        let query = self.command_palette_query.to_lowercase();
+        if query.is_empty() {
+            return Self::all_commands();
+        }
+        Self::all_commands()
+            .into_iter()
+            .filter(|(label, _)| label.to_lowercase().contains(&query))
+            .collect()
+    }
+
+    fn command_palette(&self) -> Option<Element<'_, Message>> {
+        if !self.command_palette_open {
+            return None;
+        }
+
+        let commands = self.filtered_commands();
+
+        let input = TextInput::new("Commande…", &self.command_palette_query)
+            .on_input(Message::CommandPaletteChanged)
+            .padding([6, 12])
+            .size(14);
+
+        let entries: Vec<Element<Message>> = commands
+            .iter()
+            .enumerate()
+            .take(15)
+            .map(|(index, (label, _))| {
+                Button::new(
+                    text(*label)
+                        .size(13)
+                        .font(Font::MONOSPACE)
+                        .style(Color::from_rgb8(220, 220, 220)),
+                )
+                .width(Length::Fill)
+                .padding([6, 16])
+                .style(theme::Button::Custom(styles::search_result_button(&self.theme)))
+                .on_press(Message::CommandPaletteSelected(index))
+                .into()
+            })
+            .collect();
+
+        let list: Element<Message> = if entries.is_empty() {
+            text("Aucune commande.")
+                .size(12)
+                .font(Font::MONOSPACE)
+                .style(theme::Text::Color(Color::from_rgb8(150, 150, 150)))
+                .into()
+        } else {
+            Scrollable::new(column(entries).spacing(2))
+                .height(Length::Fixed(300.0))
+                .into()
+        };
+
+        let panel = column![input, list].spacing(8).padding([12, 16]);
+
+        Some(
+            Container::new(panel)
+                .width(Length::Fixed(500.0))
+                .style(theme::Container::Custom(styles::panel(&self.theme)))
+                .into(),
+        )
+    }
+
+    fn file_tree_panel(&self) -> Option<Element<'_, Message>> {
+        if !self.file_tree_open {
+            return None;
+        }
+        let tree = self.file_tree.as_ref()?;
+        let entries = tree.flatten_visible();
+
+        let mut items: Vec<Element<'_, Message>> = Vec::new();
+        for (depth, entry) in entries.iter().take(FILE_TREE_MAX_ENTRIES) {
+            let indent = "  ".repeat(*depth);
+            let icon = if entry.is_dir {
+                if entry.expanded { "v " } else { "> " }
+            } else {
+                "  "
+            };
+            let label = format!("{indent}{icon}{}", entry.name);
+            let btn = if entry.is_dir {
+                let p = entry.path.clone();
+                Button::new(
+                    text(label).size(12).font(Font::MONOSPACE),
+                )
+                .width(Length::Fill)
+                .padding([1, 4])
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
+                .on_press(Message::FileTreeToggleDir(p))
+            } else {
+                let p = entry.path.clone();
+                Button::new(
+                    text(label).size(12).font(Font::MONOSPACE),
+                )
+                .width(Length::Fill)
+                .padding([1, 4])
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
+                .on_press(Message::FileTreeFileClicked(p))
+            };
+            items.push(btn.into());
+        }
+
+        let tree_column = Column::with_children(items).spacing(0).width(Length::Fill);
+
+        Some(
+            Container::new(
+                Scrollable::new(tree_column)
+                    .height(Length::Fill)
+                    .width(Length::Fixed(220.0)),
+            )
+            .style(theme::Container::Custom(styles::submenu(&self.theme)))
+            .height(Length::Fill)
+            .width(Length::Fixed(220.0))
+            .into(),
+        )
+    }
+
+    fn replace_current_match(&mut self) {
+        let match_index = match self.tab().current_match_index {
+            Some(idx) => idx,
+            None => {
+                self.status_message = Some("Remplacement: aucune occurrence sélectionnée.".to_string());
+                return;
+            }
+        };
+        let Some(m) = self.tab().search_matches.get(match_index).copied() else {
+            return;
+        };
+        let start = Position::new(m.line, m.column);
+        let end_col = m.column + m.length;
+        let end = Position::new(m.line, end_col);
+        self.record_undo_snapshot();
+        let replace = self.replace_text.clone();
+        self.tab_mut().buffer.delete_range(start, end);
+        self.tab_mut().buffer.insert(start, &replace);
+        let text = self.tab().buffer.text().to_string();
+        self.tab_mut().content = EditorContent::with_text(&text);
+        self.sync_highlight_buffer();
+        self.refresh_search_matches(false, true);
+        self.refresh_diagnostics();
+        let ct = self.tab().content.text().to_string();
+        let cf = self.tab().filename.clone();
+        self.plugins.on_text_changed(&ct, &cf);
+        self.refresh_viewport_cache();
+        self.status_message = Some("Remplacement: 1 occurrence remplacée.".to_string());
+    }
+
+    fn replace_all_matches(&mut self) {
+        if self.tab().search_matches.is_empty() {
+            self.status_message = Some("Remplacement: aucune occurrence.".to_string());
+            return;
+        }
+        self.record_undo_snapshot();
+        // Replace in reverse order to preserve positions
+        let mut matches: Vec<_> = self.tab().search_matches.clone();
+        matches.sort_by(|a, b| {
+            b.line.cmp(&a.line).then(b.column.cmp(&a.column))
+        });
+        let replace = self.replace_text.clone();
+        let count = matches.len();
+        for m in &matches {
+            let start = Position::new(m.line, m.column);
+            let end = Position::new(m.line, m.column + m.length);
+            self.tab_mut().buffer.delete_range(start, end);
+            self.tab_mut().buffer.insert(start, &replace);
+        }
+        let text = self.tab().buffer.text().to_string();
+        self.tab_mut().content = EditorContent::with_text(&text);
+        self.sync_highlight_buffer();
+        self.refresh_search_matches(false, true);
+        self.refresh_diagnostics();
+        let ct = self.tab().content.text().to_string();
+        let cf = self.tab().filename.clone();
+        self.plugins.on_text_changed(&ct, &cf);
+        self.refresh_viewport_cache();
+        self.status_message = Some(format!("Remplacement: {} occurrence(s) remplacée(s).", count));
     }
 
     fn open_search_result(&mut self, index: usize) -> Command<Message> {
@@ -2413,9 +2822,10 @@ Relancez “Enregistrer” pour confirmer l’écriture."
     }
 
     fn jump_to_position(&mut self, line: usize, column: usize) {
-        let max_line = self.buffer.line_count().saturating_sub(1);
+        let max_line = self.tab().buffer.line_count().saturating_sub(1);
         let clamped_line = line.min(max_line);
         let clamped_column = self
+            .tab()
             .buffer
             .line(clamped_line)
             .map(|line| line.chars().count())
@@ -2425,14 +2835,28 @@ Relancez “Enregistrer” pour confirmer l’écriture."
     }
 
     fn move_cursor_to(&mut self, line: usize, column: usize) {
-        self.content
-            .perform(EditorAction::Move(Motion::DocumentStart));
-        for _ in 0..line {
-            self.content.perform(EditorAction::Move(Motion::Down));
+        let (cur_line, _cur_col) = self.tab().content.cursor_position();
+
+        if line != cur_line {
+            if line == 0 {
+                self.tab_mut().content
+                    .perform(EditorAction::Move(Motion::DocumentStart));
+            } else if line < cur_line {
+                for _ in 0..(cur_line - line) {
+                    self.tab_mut().content.perform(EditorAction::Move(Motion::Up));
+                }
+            } else {
+                for _ in 0..(line - cur_line) {
+                    self.tab_mut().content.perform(EditorAction::Move(Motion::Down));
+                }
+            }
         }
+
+        self.tab_mut().content.perform(EditorAction::Move(Motion::Home));
         for _ in 0..column {
-            self.content.perform(EditorAction::Move(Motion::Right));
+            self.tab_mut().content.perform(EditorAction::Move(Motion::Right));
         }
+
         self.refresh_viewport_cache();
     }
 
@@ -2460,59 +2884,64 @@ Relancez “Enregistrer” pour confirmer l’écriture."
     }
 
     fn add_cursor_next_match(&mut self) {
-        if self.search_matches.is_empty() {
+        if self.tab().search_matches.is_empty() {
             self.status_message = Some("Multi-curseurs: aucune occurrence.".to_string());
             return;
         }
 
-        let (line, column) = self.content.cursor_position();
+        let (line, column) = self.tab().content.cursor_position();
         let next_match = self
+            .tab()
             .search_matches
             .iter()
             .find(|match_position| {
                 match_position.line > line
                     || (match_position.line == line && match_position.column > column)
             })
-            .or_else(|| self.search_matches.first());
+            .or_else(|| self.tab().search_matches.first())
+            .copied();
 
         if let Some(match_position) = next_match {
             let position = Position::new(match_position.line, match_position.column);
-            if !self.multi_cursors.contains(&position) {
-                self.multi_cursors.push(position);
+            if !self.tab().multi_cursors.contains(&position) {
+                self.tab_mut().multi_cursors.push(position);
             }
             self.status_message = Some("Multi-curseurs: ajout d'une position.".to_string());
         }
     }
 
     fn add_cursors_all_matches(&mut self) {
-        if self.search_matches.is_empty() {
+        if self.tab().search_matches.is_empty() {
             self.status_message = Some("Multi-curseurs: aucune occurrence.".to_string());
             return;
         }
-        let (line, column) = self.content.cursor_position();
+        let (line, column) = self.tab().content.cursor_position();
         let primary = Position::new(line, column);
-        self.multi_cursors = self
+        let cursors: Vec<Position> = self
+            .tab()
             .search_matches
             .iter()
             .map(|match_position| Position::new(match_position.line, match_position.column))
             .filter(|position| *position != primary)
             .collect();
+        let count = cursors.len();
+        self.tab_mut().multi_cursors = cursors;
         self.status_message = Some(format!(
             "Multi-curseurs: {} position(s).",
-            self.multi_cursors.len()
+            count
         ));
     }
 
     fn apply_multi_cursor_edit(&mut self, edit: &EditorEdit) {
-        let (line, column) = self.content.cursor_position();
-        let mut cursor_positions = Vec::with_capacity(self.multi_cursors.len() + 1);
+        let (line, column) = self.tab().content.cursor_position();
+        let mut cursor_positions = Vec::with_capacity(self.tab().multi_cursors.len() + 1);
         cursor_positions.push(Position::new(line, column));
-        cursor_positions.extend(self.multi_cursors.iter().copied());
+        cursor_positions.extend(self.tab().multi_cursors.iter().copied());
 
         let mut seen_indices = HashSet::new();
         let mut cursor_slots = Vec::new();
         for (id, position) in cursor_positions.iter().copied().enumerate() {
-            let index = self.buffer.index_from_position(position);
+            let index = self.tab().buffer.index_from_position(position);
             if seen_indices.insert(index) {
                 cursor_slots.push(CursorSlot {
                     id,
@@ -2523,7 +2952,7 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         }
 
         cursor_slots.sort_by_key(|slot| slot.index);
-        let text = self.buffer.text();
+        let text = self.tab().buffer.text().to_string();
 
         let mut operations = Vec::new();
         for slot in &cursor_slots {
@@ -2548,8 +2977,9 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         }
 
         let new_text = apply_operations(&text, &filtered);
-        self.buffer.replace(&new_text);
-        self.content = EditorContent::with_text(&self.buffer.text());
+        self.tab_mut().buffer.replace(&new_text);
+        let bt = self.tab().buffer.text().to_string();
+        self.tab_mut().content = EditorContent::with_text(&bt);
         self.sync_highlight_buffer();
 
         let new_indices = compute_new_indices(&cursor_slots, &filtered);
@@ -2558,15 +2988,15 @@ Relancez “Enregistrer” pour confirmer l’écriture."
             let new_index = new_indices
                 .get(&index)
                 .copied()
-                .unwrap_or_else(|| self.buffer.index_from_position(*position));
-            new_positions.push(self.buffer.position_from_index(new_index));
+                .unwrap_or_else(|| self.tab().buffer.index_from_position(*position));
+            new_positions.push(self.tab().buffer.position_from_index(new_index));
         }
 
         if let Some(primary) = new_positions.first() {
             self.move_cursor_to(primary.line, primary.column);
         }
-        self.multi_cursors = new_positions.into_iter().skip(1).collect();
-        let applied_cursors = self.multi_cursors.len() + 1;
+        self.tab_mut().multi_cursors = new_positions.into_iter().skip(1).collect();
+        let applied_cursors = self.tab().multi_cursors.len() + 1;
         if ignored_operations > 0 {
             self.status_message = Some(format!(
                 "Multi-curseurs: édition sur {applied_cursors} curseur(s). \
@@ -2580,100 +3010,129 @@ Relancez “Enregistrer” pour confirmer l’écriture."
     }
 
     fn record_undo_snapshot(&mut self) {
-        if self.suppress_undo_snapshot {
+        if self.tab().suppress_undo_snapshot {
             return;
         }
-        self.buffer.record_snapshot();
+        self.tab_mut().buffer.record_snapshot();
     }
 
     fn apply_undo(&mut self) {
-        if !self.buffer.undo() {
+        if !self.tab_mut().buffer.undo() {
             return;
         };
-        let text = self.buffer.text();
-        self.apply_snapshot(text);
+        let text = self.tab().buffer.text().to_string();
+        self.apply_snapshot(&text);
     }
 
     fn apply_redo(&mut self) {
-        if !self.buffer.redo() {
+        if !self.tab_mut().buffer.redo() {
             return;
         };
-        let text = self.buffer.text();
-        self.apply_snapshot(text);
+        let text = self.tab().buffer.text().to_string();
+        self.apply_snapshot(&text);
     }
 
-    fn apply_snapshot(&mut self, text: String) {
-        self.suppress_undo_snapshot = true;
-        self.content = EditorContent::with_text(&text);
-        self.buffer.replace(&text);
+    fn apply_snapshot(&mut self, text: &str) {
+        self.tab_mut().suppress_undo_snapshot = true;
+        self.tab_mut().content = EditorContent::with_text(text);
+        self.tab_mut().buffer.replace(text);
         self.sync_highlight_buffer();
         self.refresh_search_matches(true, true);
         self.refresh_diagnostics();
-        self.plugins
-            .on_text_changed(&self.content.text(), &self.filename);
+        let ct = self.tab().content.text().to_string();
+        let cf = self.tab().filename.clone();
+        self.plugins.on_text_changed(&ct, &cf);
         self.refresh_viewport_cache();
-        self.suppress_undo_snapshot = false;
+        self.tab_mut().suppress_undo_snapshot = false;
+    }
+
+    /// Ensure scroll_offset keeps the cursor line visible, mirroring the
+    /// auto-scroll behaviour of the iced text_editor widget.
+    fn clamp_scroll_to_cursor(&mut self) {
+        let (cursor_line, _) = self.tab().content.cursor_position();
+        let vh = self.viewport_height.max(1) as i32;
+        let offset = self.tab().scroll_offset;
+        let cursor = cursor_line as i32;
+        // If cursor is above visible area, scroll up
+        if cursor < offset {
+            self.tab_mut().scroll_offset = cursor;
+        }
+        // If cursor is below visible area, scroll down
+        if cursor >= offset + vh {
+            self.tab_mut().scroll_offset = cursor - vh + 1;
+        }
+        // Clamp to valid range
+        let max_offset = (self.tab().buffer.line_count().max(1) as i32 - 1).max(0);
+        self.tab_mut().scroll_offset = self.tab().scroll_offset.clamp(0, max_offset);
     }
 
     fn sync_highlight_buffer(&mut self) {
-        self.highlight_settings.buffer_text = self.content.text().into();
+        let text: std::sync::Arc<str> = self.tab().content.text().into();
+        self.tab_mut().highlight_settings.buffer_text = text;
     }
 
     fn refresh_viewport_cache(&mut self) {
-        let (line, _) = self.content.cursor_position();
+        let (line, _) = self.tab().content.cursor_position();
         let start_line = line.saturating_sub(self.viewport_height / 2);
         let started = Instant::now();
-        self.viewport_cache
-            .update(&self.buffer, start_line, self.viewport_height);
+        let vh = self.viewport_height;
+        let tab = self.tab_mut();
+        tab.viewport_cache.update(&tab.buffer, start_line, vh);
         self.performance.last_viewport_refresh = Some(started.elapsed());
     }
 
     fn viewport_label(&self) -> String {
-        match self.viewport_cache.range() {
+        match self.tab().viewport_cache.range() {
             Some((start, end)) => format!("Viewport: {}-{}", start + 1, end),
             None => "Viewport: -".to_string(),
         }
     }
 
     fn refresh_diagnostics(&mut self) {
-        self.diagnostics = analyze_diagnostics(&self.buffer);
+        let diags = diagnostics::analyze(&self.tab().buffer);
+        self.tab_mut().diagnostics = diags;
     }
 
     fn refresh_completions(&mut self) {
-        let (line, column) = self.content.cursor_position();
-        let line_text = self.buffer.line(line).unwrap_or("");
+        let (line, column) = self.tab().content.cursor_position();
+        let line_text = self.tab().buffer.line(line).unwrap_or("").to_string();
         let column = column.min(line_text.chars().count());
-        let prefix = extract_prefix(line_text, column);
-        self.completion_prefix = prefix.clone();
-        self.completion_items = build_completion_items(&prefix);
-        if self.completion_items.is_empty() {
+        let prefix = completion::extract_prefix(&line_text, column);
+        let items = completion::build_items(&prefix);
+        let count = items.len();
+        let tab = self.tab_mut();
+        tab.completion_prefix = prefix;
+        tab.completion_items = items;
+        if count == 0 {
             self.status_message = Some("Complétions: aucune suggestion.".to_string());
         } else {
             self.status_message = Some(format!(
                 "Complétions: {} suggestion(s).",
-                self.completion_items.len()
+                count
             ));
         }
     }
 
     fn apply_completion(&mut self, index: usize) {
-        let Some(item) = self.completion_items.get(index) else {
+        let Some(item) = self.tab().completion_items.get(index).cloned() else {
             return;
         };
 
         let remainder = item
             .label
-            .strip_prefix(&self.completion_prefix)
-            .unwrap_or(&item.label);
+            .strip_prefix(&self.tab().completion_prefix)
+            .unwrap_or(&item.label)
+            .to_string();
         if remainder.is_empty() {
             return;
         }
 
-        let insert = EditorEdit::Paste(std::sync::Arc::new(remainder.to_string()));
-        if self.multi_cursors.is_empty() {
+        let insert = EditorEdit::Paste(std::sync::Arc::new(remainder));
+        if self.tab().multi_cursors.is_empty() {
             self.record_undo_snapshot();
-            self.content.perform(EditorAction::Edit(insert.clone()));
-            self.buffer.replace(&self.content.text());
+            self.tab_mut().content.perform(EditorAction::Edit(insert.clone()));
+            let t = self.tab().content.text();
+            self.tab_mut().buffer.replace(&t);
         } else {
             self.record_undo_snapshot();
             self.apply_multi_cursor_edit(&insert);
@@ -2681,818 +3140,100 @@ Relancez “Enregistrer” pour confirmer l’écriture."
         self.sync_highlight_buffer();
         self.refresh_search_matches(true, true);
         self.refresh_diagnostics();
-        self.plugins
-            .on_text_changed(&self.content.text(), &self.filename);
+        let ct = self.tab().content.text().to_string();
+        let cf = self.tab().filename.clone();
+        self.plugins.on_text_changed(&ct, &cf);
         self.refresh_viewport_cache();
         self.completion_panel_open = false;
-        self.completion_items.clear();
+        self.tab_mut().completion_items.clear();
     }
 }
 
-struct AppBackground {
-    palette: ThemePalette,
-}
+fn config_watcher_subscription() -> Subscription<Message> {
+    use std::sync::{Arc, Mutex};
 
-impl container::StyleSheet for AppBackground {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.app_background)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct MenuBarStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for MenuBarStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.menu_bar)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct MenuButtonStyle {
-    active: bool,
-    palette: ThemePalette,
-}
-
-impl button::StyleSheet for MenuButtonStyle {
-    type Style = Theme;
-
-    fn active(&self, _style: &Self::Style) -> button::Appearance {
-        button::Appearance {
-            background: self
-                .active
-                .then(|| Background::Color(self.palette.menu_button_active)),
-            text_color: Color::from_rgb8(220, 220, 220),
-            border: Default::default(),
-            shadow_offset: Default::default(),
-            shadow: Default::default(),
-        }
+    struct WatcherState {
+        changed: Arc<Mutex<bool>>,
+        _watcher: Option<notify::RecommendedWatcher>,
     }
 
-    fn hovered(&self, style: &Self::Style) -> button::Appearance {
-        let mut appearance = self.active(style);
-        appearance.background = Some(Background::Color(self.palette.menu_button_hover));
-        appearance
-    }
-}
+    subscription::channel(
+        std::any::TypeId::of::<ConfigWatcherId>(),
+        16,
+        |mut output| async move {
+            use iced::futures::SinkExt;
+            use notify::{RecursiveMode, Watcher};
 
-struct SubmenuStyle {
-    palette: ThemePalette,
-}
+            let changed = Arc::new(Mutex::new(false));
+            let changed_clone = changed.clone();
 
-impl container::StyleSheet for SubmenuStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.submenu_bar)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct SubmenuSeparatorStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for SubmenuSeparatorStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.menu_button_hover)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct SubmenuButtonStyle {
-    palette: ThemePalette,
-}
-
-impl button::StyleSheet for SubmenuButtonStyle {
-    type Style = Theme;
-
-    fn active(&self, _style: &Self::Style) -> button::Appearance {
-        button::Appearance {
-            background: None,
-            text_color: Color::from_rgb8(230, 230, 230),
-            border: Default::default(),
-            shadow_offset: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-
-    fn hovered(&self, style: &Self::Style) -> button::Appearance {
-        let mut appearance = self.active(style);
-        appearance.background = Some(Background::Color(self.palette.button_hover));
-        appearance
-    }
-}
-
-struct ToggleButtonStyle {
-    active: bool,
-    palette: ThemePalette,
-}
-
-impl button::StyleSheet for ToggleButtonStyle {
-    type Style = Theme;
-
-    fn active(&self, _style: &Self::Style) -> button::Appearance {
-        let background = if self.active {
-            Background::Color(self.palette.toggle_active)
-        } else {
-            Background::Color(self.palette.toggle_inactive)
-        };
-
-        button::Appearance {
-            background: Some(background),
-            text_color: Color::from_rgb8(230, 230, 230),
-            border: Default::default(),
-            shadow_offset: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-
-    fn hovered(&self, style: &Self::Style) -> button::Appearance {
-        let mut appearance = self.active(style);
-        appearance.background = Some(Background::Color(self.palette.button_hover));
-        appearance
-    }
-}
-
-struct TabBarStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for TabBarStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.tab_bar)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct ActiveTabStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for ActiveTabStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.tab_active)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct EditorStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for EditorStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.editor_background)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct GutterStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for GutterStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.panel_background)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct StatusBarStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for StatusBarStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.status_bar)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct SearchPanelStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for SearchPanelStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.panel_background)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct SearchResultStyle {
-    palette: ThemePalette,
-}
-
-impl container::StyleSheet for SearchResultStyle {
-    type Style = Theme;
-
-    fn appearance(&self, _style: &Self::Style) -> container::Appearance {
-        container::Appearance {
-            background: Some(Background::Color(self.palette.panel_item_background)),
-            text_color: None,
-            border: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-}
-
-struct SearchResultButtonStyle {
-    palette: ThemePalette,
-}
-
-impl button::StyleSheet for SearchResultButtonStyle {
-    type Style = Theme;
-
-    fn active(&self, _style: &Self::Style) -> button::Appearance {
-        button::Appearance {
-            background: None,
-            text_color: Color::WHITE,
-            border: Default::default(),
-            shadow_offset: Default::default(),
-            shadow: Default::default(),
-        }
-    }
-
-    fn hovered(&self, style: &Self::Style) -> button::Appearance {
-        let mut appearance = self.active(style);
-        appearance.background = Some(Background::Color(self.palette.panel_item_hover));
-        appearance
-    }
-}
-
-fn find_matches(
-    buffer: &TextBuffer,
-    needle: &str,
-    options: SearchOptions,
-) -> Result<Vec<MatchPosition>, String> {
-    if needle.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let matcher = build_matcher(needle, options)?;
-    let mut matches = Vec::new();
-    for (line_index, line) in buffer.lines().enumerate() {
-        for (column, length) in find_matches_in_line(line, &matcher) {
-            matches.push(MatchPosition {
-                line: line_index,
-                column,
-                length,
-            });
-        }
-    }
-
-    Ok(matches)
-}
-
-const MAX_OPEN_FILE_SIZE: u64 = 5 * 1024 * 1024;
-
-async fn search_in_workspace(
-    root: PathBuf,
-    query: String,
-    options: SearchOptions,
-) -> Result<SearchResultsSummary, String> {
-    if query.trim().is_empty() {
-        return Ok(SearchResultsSummary {
-            results: Vec::new(),
-            skipped_read_errors: 0,
-            skipped_too_large: 0,
-            skipped_invalid_utf8: 0,
-            truncated: false,
-        });
-    }
-
-    let matcher = build_matcher(&query, options)?;
-    let mut results = Vec::new();
-    let mut collected = 0usize;
-    let max_results = 500usize;
-    let mut skipped_read_errors = 0usize;
-    let mut skipped_too_large = 0usize;
-    let mut skipped_invalid_utf8 = 0usize;
-    let mut truncated = false;
-
-    for entry in WalkDir::new(&root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| !should_skip_entry(entry, options.include_hidden))
-    {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => {
-                skipped_read_errors += 1;
-                continue;
-            }
-        };
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        if should_skip_file(entry.path(), options.include_hidden) {
-            continue;
-        }
-
-        let metadata = match entry.metadata() {
-            Ok(metadata) => metadata,
-            Err(_) => {
-                skipped_read_errors += 1;
-                continue;
-            }
-        };
-        if metadata.len() > MAX_OPEN_FILE_SIZE {
-            skipped_too_large += 1;
-            continue;
-        }
-
-        let contents = match std::fs::read_to_string(entry.path()) {
-            Ok(contents) => contents,
-            Err(err) => {
-                if err.kind() == std::io::ErrorKind::InvalidData {
-                    skipped_invalid_utf8 += 1;
-                } else {
-                    skipped_read_errors += 1;
-                }
-                continue;
-            }
-        };
-
-        for line_match in find_matches_in_text(&contents, &matcher) {
-            results.push(SearchResult {
-                path: entry.path().to_path_buf(),
-                line: line_match.line,
-                column: line_match.column,
-                preview: line_match.preview,
-            });
-            collected += 1;
-            if collected >= max_results {
-                truncated = true;
-                return Ok(SearchResultsSummary {
-                    results,
-                    skipped_read_errors,
-                    skipped_too_large,
-                    skipped_invalid_utf8,
-                    truncated,
-                });
-            }
-        }
-    }
-
-    Ok(SearchResultsSummary {
-        results,
-        skipped_read_errors,
-        skipped_too_large,
-        skipped_invalid_utf8,
-        truncated,
-    })
-}
-
-fn build_matcher(needle: &str, options: SearchOptions) -> Result<SearchMatcher, String> {
-    if options.regex {
-        RegexBuilder::new(needle)
-            .case_insensitive(!options.case_sensitive)
-            .build()
-            .map(SearchMatcher::Regex)
-            .map_err(|err| format!("regex invalide ({err})"))
-    } else {
-        Ok(SearchMatcher::Plain {
-            needle: needle.to_string(),
-            case_sensitive: options.case_sensitive,
-        })
-    }
-}
-
-fn normalize_casefolded(text: &str) -> String {
-    text.chars().flat_map(|ch| ch.to_lowercase()).collect()
-}
-
-fn normalize_casefolded_with_mapping(text: &str) -> (String, Vec<usize>) {
-    let mut normalized = String::new();
-    let mut mapping = Vec::new();
-    for (index, ch) in text.chars().enumerate() {
-        for folded in ch.to_lowercase() {
-            normalized.push(folded);
-            mapping.push(index);
-        }
-    }
-    (normalized, mapping)
-}
-
-fn find_matches_in_line(line: &str, matcher: &SearchMatcher) -> Vec<(usize, usize)> {
-    match matcher {
-        SearchMatcher::Regex(regex) => regex
-            .find_iter(line)
-            .map(|found| {
-                let start = byte_index_to_char_index(line, found.start());
-                let length = line[found.start()..found.end()].chars().count();
-                (start, length)
-            })
-            .collect(),
-        SearchMatcher::Plain {
-            needle,
-            case_sensitive,
-        } => {
-            if needle.is_empty() {
-                return Vec::new();
-            }
-
-            if !case_sensitive {
-                let normalized_needle = normalize_casefolded(needle);
-                if normalized_needle.is_empty() {
-                    return Vec::new();
-                }
-                let (normalized_line, mapping) = normalize_casefolded_with_mapping(line);
-                let mut matches = Vec::new();
-                let mut search_start = 0;
-                while let Some(found) = normalized_line[search_start..].find(&normalized_needle) {
-                    let start_byte = search_start + found;
-                    let end_byte = start_byte + normalized_needle.len();
-                    let start_index = byte_index_to_char_index(&normalized_line, start_byte);
-                    let end_index = byte_index_to_char_index(&normalized_line, end_byte);
-                    if end_index == 0 {
-                        break;
+            let watcher = notify::recommended_watcher(
+                move |event: Result<notify::Event, notify::Error>| {
+                    if let Ok(event) = event {
+                        if matches!(
+                            event.kind,
+                            notify::EventKind::Modify(_) | notify::EventKind::Create(_)
+                        ) {
+                            if let Ok(mut flag) = changed_clone.lock() {
+                                *flag = true;
+                            }
+                        }
                     }
-                    let start_original = mapping.get(start_index).copied().unwrap_or_default();
-                    let end_original = mapping
-                        .get(end_index.saturating_sub(1))
-                        .copied()
-                        .map(|index| index + 1)
-                        .unwrap_or(start_original);
-                    let length = end_original.saturating_sub(start_original);
-                    matches.push((start_original, length));
-                    search_start = end_byte;
+                },
+            )
+            .ok()
+            .map(|mut w| {
+                for path in config::watch_paths() {
+                    let _ = w.watch(&path, RecursiveMode::NonRecursive);
                 }
-                return matches;
-            }
-
-            let mut matches = Vec::new();
-            let needle_len = needle.len();
-            let needle_chars = needle.chars().count();
-            let mut search_start = 0;
-            while let Some(found) = line[search_start..].find(needle) {
-                let byte_index = search_start + found;
-                let column = byte_index_to_char_index(line, byte_index);
-                matches.push((column, needle_chars));
-                search_start = byte_index + needle_len;
-            }
-
-            matches
-        }
-    }
-}
-
-fn find_matches_in_text(text: &str, matcher: &SearchMatcher) -> Vec<SearchResultLine> {
-    let mut matches = Vec::new();
-    for (line_index, line) in text.lines().enumerate() {
-        for (column, length) in find_matches_in_line(line, matcher) {
-            matches.push(SearchResultLine {
-                line: line_index,
-                column,
-                _length: length,
-                preview: line.to_string(),
+                w
             });
-        }
-    }
 
-    matches
-}
-
-fn should_skip_entry(entry: &DirEntry, include_hidden: bool) -> bool {
-    if entry.depth() == 0 {
-        return false;
-    }
-    let name = entry.file_name().to_string_lossy();
-    let skip_dirs = [".git", "target", "node_modules", "dist", "build", "out"];
-    if entry.file_type().is_dir() && skip_dirs.contains(&name.as_ref()) {
-        return true;
-    }
-    if include_hidden {
-        return false;
-    }
-    name.starts_with('.')
-}
-
-fn should_skip_file(path: &Path, include_hidden: bool) -> bool {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
-    if file_name.starts_with('.') && !include_hidden {
-        return true;
-    }
-
-    let skip_extensions = [
-        "png", "jpg", "jpeg", "gif", "svg", "ico", "zip", "tar", "gz", "pdf", "mp4", "mp3",
-    ];
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| skip_extensions.contains(&ext))
-        .unwrap_or(false)
-}
-
-#[cfg(test)]
-fn rename_failure_state() -> &'static Mutex<Option<PathBuf>> {
-    static RENAME_FAILURE_TARGET: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
-    RENAME_FAILURE_TARGET.get_or_init(|| Mutex::new(None))
-}
-
-#[cfg(test)]
-fn set_rename_failure_target(path: Option<PathBuf>) {
-    let mut guard = rename_failure_state().lock().expect("rename failure lock");
-    *guard = path;
-}
-
-fn rename_file(from: &Path, to: &Path) -> Result<(), std::io::Error> {
-    #[cfg(test)]
-    {
-        let mut guard = rename_failure_state().lock().expect("rename failure lock");
-        if let Some(target) = guard.as_ref() {
-            if target.as_path() == to {
-                *guard = None;
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
-                    "simulated rename failure",
-                ));
-            }
-        }
-    }
-
-    std::fs::rename(from, to)
-}
-
-fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
-    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    let path = Path::new(path);
-    let parent = path.parent().unwrap_or(Path::new(""));
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("roxanne");
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|err| err.to_string())?
-        .as_millis();
-    let base_name = format!(".{file_name}.{stamp}");
-    let mut attempts = 0_u32;
-    let (temp_path, mut temp_file) = loop {
-        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let temp_name = format!("{base_name}.{counter}.tmp");
-        let temp_path = if parent.as_os_str().is_empty() {
-            PathBuf::from(&temp_name)
-        } else {
-            parent.join(&temp_name)
-        };
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
-            Ok(file) => break (temp_path, file),
-            Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-                attempts += 1;
-                if attempts > 1000 {
-                    return Err("impossible de créer un fichier temporaire unique".to_string());
-                }
-            }
-            Err(err) => return Err(err.to_string()),
-        }
-    };
-    temp_file
-        .write_all(contents.as_bytes())
-        .and_then(|_| temp_file.sync_all())
-        .map_err(|err| err.to_string())?;
-    drop(temp_file);
-
-    let backup_path = if path.exists() {
-        let mut attempts = 0_u32;
-        loop {
-            let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let backup_name = format!("{base_name}.{counter}.bak");
-            let candidate = if parent.as_os_str().is_empty() {
-                PathBuf::from(&backup_name)
-            } else {
-                parent.join(&backup_name)
+            let _state = WatcherState {
+                changed: changed.clone(),
+                _watcher: watcher,
             };
-            if !candidate.exists() {
-                break Some(candidate);
-            }
-            attempts += 1;
-            if attempts > 1000 {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err("impossible de créer un fichier de sauvegarde unique".to_string());
-            }
-        }
-    } else {
-        None
-    };
 
-    if let Some(backup_path) = backup_path.as_ref() {
-        if let Err(err) = rename_file(path, backup_path) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(err.to_string());
-        }
-    }
+            loop {
+                // Use iced's time subscription internally would be ideal,
+                // but in a channel we poll with a blocking sleep on a thread.
+                let changed_ref = changed.clone();
+                let did_change = iced::futures::future::poll_fn(|_cx| {
+                    if let Ok(mut flag) = changed_ref.lock() {
+                        if *flag {
+                            *flag = false;
+                            return std::task::Poll::Ready(true);
+                        }
+                    }
+                    // Use a waker to re-poll after a delay
+                    let waker = _cx.waker().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        waker.wake();
+                    });
+                    std::task::Poll::Pending
+                })
+                .await;
 
-    match rename_file(&temp_path, path) {
-        Ok(()) => {
-            if let Some(backup_path) = backup_path {
-                if let Err(err) = std::fs::remove_file(&backup_path) {
-                    return Err(format!("suppression sauvegarde échouée: {err}"));
+                if did_change {
+                    let _ = output.send(Message::ConfigFileChanged).await;
                 }
             }
-            Ok(())
-        }
-        Err(err) => {
-            let _ = std::fs::remove_file(&temp_path);
-            if let Some(backup_path) = backup_path {
-                if let Err(restore_err) = rename_file(&backup_path, path) {
-                    let _ = std::fs::remove_file(&backup_path);
-                    return Err(format!(
-                        "{err} (restauration échouée: {restore_err})"
-                    ));
-                }
-            }
-            Err(err.to_string())
-        }
-    }
+        },
+    )
 }
+
+struct ConfigWatcherId;
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        RoxanneApp, SearchOptions, analyze_diagnostics, atomic_write, find_matches,
-        set_rename_failure_target, should_skip_entry, should_skip_file,
-    };
+    use super::RoxanneApp;
+    use crate::diagnostics;
     use crate::editor::TextBuffer;
+    use crate::search::{self, SearchOptions};
     use std::fs;
     use tempfile::tempdir;
 
-    fn build_text(lines: usize, line_len: usize) -> String {
-        let line = "a".repeat(line_len);
-        std::iter::repeat(line)
-            .take(lines)
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    #[test]
-    fn atomic_write_writes_contents_without_temp_leftover() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("note.txt");
-        atomic_write(path.to_str().expect("path"), "hello").expect("atomic write");
-
-        let contents = fs::read_to_string(&path).expect("read file");
-        assert_eq!(contents, "hello");
-
-        let leftovers: Vec<_> = fs::read_dir(dir.path())
-            .expect("read dir")
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .map(|name| name.ends_with(".tmp"))
-                    .unwrap_or(false)
-            })
-            .collect();
-        assert!(
-            leftovers.is_empty(),
-            "temporary files were not cleaned up: {leftovers:?}"
-        );
-    }
-
-    #[test]
-    fn atomic_write_handles_large_payloads() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("large.txt");
-        let payload = build_text(50_000, 80);
-
-        atomic_write(path.to_str().expect("path"), &payload).expect("atomic write");
-        let contents = fs::read_to_string(&path).expect("read file");
-
-        assert_eq!(contents.len(), payload.len());
-        assert_eq!(contents, payload);
-    }
-
-    #[test]
-    fn atomic_write_preserves_original_on_rename_failure() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("note.txt");
-        fs::write(&path, "original").expect("write original");
-
-        set_rename_failure_target(Some(path.clone()));
-        let result = atomic_write(path.to_str().expect("path"), "updated");
-        assert!(result.is_err(), "atomic write should fail");
-
-        let contents = fs::read_to_string(&path).expect("read original");
-        assert_eq!(contents, "original");
-
-        let leftovers: Vec<_> = fs::read_dir(dir.path())
-            .expect("read dir")
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .map(|name| name.ends_with(".tmp") || name.ends_with(".bak"))
-                    .unwrap_or(false)
-            })
-            .collect();
-        assert!(
-            leftovers.is_empty(),
-            "temporary files were not cleaned up: {leftovers:?}"
-        );
-    }
-
-    #[test]
-    fn atomic_write_restores_backup_after_failed_rename() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("report.txt");
-        fs::write(&path, "baseline").expect("write original");
-
-        set_rename_failure_target(Some(path.clone()));
-        let result = atomic_write(path.to_str().expect("path"), "replacement");
-        assert!(result.is_err(), "atomic write should fail");
-
-        let contents = fs::read_to_string(&path).expect("read original");
-        assert_eq!(contents, "baseline");
-
-        let leftovers: Vec<_> = fs::read_dir(dir.path())
-            .expect("read dir")
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .map(|name| name.ends_with(".tmp") || name.ends_with(".bak"))
-                    .unwrap_or(false)
-            })
-            .collect();
-        assert!(
-            leftovers.is_empty(),
-            "temporary files were not cleaned up: {leftovers:?}"
-        );
-    }
 
     #[test]
     fn search_and_diagnostics_use_character_columns() {
@@ -3504,13 +3245,13 @@ mod tests {
             include_hidden: false,
         };
 
-        let matches = find_matches(&buffer, "👍", options).expect("matches");
+        let matches = search::find_matches(&buffer, "👍", options).expect("matches");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].line, 0);
         assert_eq!(matches[0].column, 2);
         assert_eq!(matches[0].length, 1);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         let diagnostic = diagnostics
             .iter()
             .find(|item| item.message.contains("Fermeture inattendue"))
@@ -3529,7 +3270,7 @@ mod tests {
             include_hidden: false,
         };
 
-        let matches = find_matches(&buffer, "a", options).expect("matches");
+        let matches = search::find_matches(&buffer, "a", options).expect("matches");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].column, 1);
         assert_eq!(matches[0].length, 1);
@@ -3549,10 +3290,10 @@ mod tests {
             .find(|entry| entry.file_name() == ".secret.txt")
             .expect("hidden entry");
 
-        assert!(should_skip_entry(&hidden_entry, false));
-        assert!(!should_skip_entry(&hidden_entry, true));
-        assert!(should_skip_file(&hidden_path, false));
-        assert!(!should_skip_file(&hidden_path, true));
+        assert!(search::should_skip_entry(&hidden_entry, false));
+        assert!(!search::should_skip_entry(&hidden_entry, true));
+        assert!(search::should_skip_file(&hidden_path, false));
+        assert!(!search::should_skip_file(&hidden_path, true));
     }
 
     #[test]
@@ -3560,7 +3301,7 @@ mod tests {
         let text = r#"let value = "hello\"world";"#;
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics
                 .iter()
@@ -3577,7 +3318,7 @@ mod tests {
 }"#;
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics.is_empty(),
             "string/comment delimiters should be ignored: {diagnostics:?}"
@@ -3589,7 +3330,7 @@ mod tests {
         let text = "fn main() { // }\n    let value = \"{\";\n}";
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics.is_empty(),
             "comment delimiters should be ignored: {diagnostics:?}"
@@ -3601,7 +3342,7 @@ mod tests {
         let text = "fn main() {\n    /* { [ ( */\n    let value = 1;\n}\n";
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics.is_empty(),
             "block comment delimiters should be ignored: {diagnostics:?}"
@@ -3613,7 +3354,7 @@ mod tests {
         let text = "fn main() {\n    /* outer { [ /* inner ( ) */ still ] } */\n}\n";
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics.is_empty(),
             "nested block comment delimiters should be ignored: {diagnostics:?}"
@@ -3625,7 +3366,7 @@ mod tests {
         let text = "fn main() {\n    let value = \"multi\nline\";\n}\n";
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics
                 .iter()
@@ -3639,7 +3380,7 @@ mod tests {
         let text = "fn main() { let left = '{'; let right = '}'; }";
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics.is_empty(),
             "char literal braces should be ignored: {diagnostics:?}"
@@ -3651,7 +3392,7 @@ mod tests {
         let text = r##"fn main() { let value = r#"{ "quoted" }"#; }"##;
         let buffer = TextBuffer::from(text);
 
-        let diagnostics = analyze_diagnostics(&buffer);
+        let diagnostics = diagnostics::analyze(&buffer);
         assert!(
             diagnostics.is_empty(),
             "raw string braces/quotes should be ignored: {diagnostics:?}"
@@ -3676,12 +3417,6 @@ mod tests {
     }
 }
 
-struct SearchResultLine {
-    line: usize,
-    column: usize,
-    _length: usize,
-    preview: String,
-}
 
 #[derive(Debug, Clone)]
 struct CursorSlot {
@@ -3842,286 +3577,3 @@ fn parse_goto_input(input: &str) -> Result<(usize, usize), String> {
     Ok((line - 1, column - 1))
 }
 
-fn extract_prefix(line: &str, column: usize) -> String {
-    let byte_column = char_index_to_byte_index(line, column);
-    let mut start = byte_column;
-    for (index, ch) in line.char_indices() {
-        if index >= byte_column {
-            break;
-        }
-        if !is_word_char(ch) {
-            start = index + ch.len_utf8();
-        }
-    }
-    line[start..byte_column].to_string()
-}
-
-fn is_word_char(ch: char) -> bool {
-    ch.is_alphanumeric() || ch == '_'
-}
-
-fn build_completion_items(prefix: &str) -> Vec<CompletionItem> {
-    if prefix.is_empty() {
-        return Vec::new();
-    }
-    let keywords = [
-        "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn",
-        "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
-        "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe",
-        "use", "where", "while",
-    ];
-    let types = [
-        "bool", "char", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64",
-        "u128", "usize", "f32", "f64", "str", "String", "Option", "Result", "Vec",
-    ];
-    let mut items = Vec::new();
-    let mut seen = HashSet::new();
-    for keyword in keywords.iter().chain(types.iter()) {
-        if keyword.starts_with(prefix) && seen.insert(*keyword) {
-            let detail = if types.contains(keyword) {
-                "Type"
-            } else {
-                "Keyword"
-            };
-            items.push(CompletionItem {
-                label: (*keyword).to_string(),
-                detail: detail.to_string(),
-            });
-        }
-    }
-    items.sort_by(|a, b| a.label.cmp(&b.label));
-    items
-}
-
-fn analyze_diagnostics(buffer: &TextBuffer) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-    let mut stack: Vec<(char, Position)> = Vec::new();
-    let mut in_string = false;
-    let mut in_char = false;
-    let mut raw_string_hashes: Option<usize> = None;
-    let mut block_comment_depth = 0usize;
-    let mut escaped = false;
-    let mut string_start: Option<Position> = None;
-    let mut raw_string_start: Option<Position> = None;
-    let mut char_start: Option<Position> = None;
-
-    for (line_index, line) in buffer.lines().enumerate() {
-        if in_string || in_char {
-            escaped = false;
-        }
-        let mut chars = line.chars().enumerate().peekable();
-        while let Some((column, ch)) = chars.next() {
-            if block_comment_depth > 0 {
-                if ch == '/' && matches!(chars.peek(), Some((_, '*'))) {
-                    chars.next();
-                    block_comment_depth += 1;
-                } else if ch == '*' && matches!(chars.peek(), Some((_, '/'))) {
-                    chars.next();
-                    block_comment_depth = block_comment_depth.saturating_sub(1);
-                }
-                continue;
-            }
-
-            if let Some(hashes) = raw_string_hashes {
-                if ch == '"' {
-                    if hashes == 0 {
-                        raw_string_hashes = None;
-                        raw_string_start = None;
-                    } else {
-                        let mut lookahead = chars.clone();
-                        let mut matched = 0;
-                        while matched < hashes {
-                            if matches!(lookahead.peek(), Some((_, '#'))) {
-                                matched += 1;
-                                lookahead.next();
-                            } else {
-                                break;
-                            }
-                        }
-                        if matched == hashes {
-                            for _ in 0..hashes {
-                                chars.next();
-                            }
-                            raw_string_hashes = None;
-                            raw_string_start = None;
-                        }
-                    }
-                }
-                continue;
-            }
-
-            if in_string {
-                if escaped {
-                    escaped = false;
-                    continue;
-                }
-                match ch {
-                    '\\' => {
-                        escaped = true;
-                    }
-                    '"' => {
-                        in_string = false;
-                        string_start = None;
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            if in_char {
-                if escaped {
-                    escaped = false;
-                    continue;
-                }
-                match ch {
-                    '\\' => {
-                        escaped = true;
-                    }
-                    '\'' => {
-                        in_char = false;
-                        char_start = None;
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            if ch == '/' && matches!(chars.peek(), Some((_, '*'))) {
-                chars.next();
-                block_comment_depth += 1;
-                continue;
-            }
-
-            if ch == '/' && matches!(chars.peek(), Some((_, '/'))) {
-                break;
-            }
-
-            match ch {
-                'r' => {
-                    let mut lookahead = chars.clone();
-                    let mut hashes = 0;
-                    let mut valid = false;
-                    if let Some((_, next)) = lookahead.peek() {
-                        if *next == '"' {
-                            valid = true;
-                        } else if *next == '#' {
-                            while let Some((_, '#')) = lookahead.peek() {
-                                hashes += 1;
-                                lookahead.next();
-                            }
-                            if matches!(lookahead.peek(), Some((_, '"'))) {
-                                valid = true;
-                            }
-                        }
-                    }
-                    if valid {
-                        if hashes == 0 {
-                            chars.next();
-                        } else {
-                            for _ in 0..hashes {
-                                chars.next();
-                            }
-                            chars.next();
-                        }
-                        raw_string_hashes = Some(hashes);
-                        raw_string_start = Some(Position::new(line_index, column));
-                        continue;
-                    }
-                }
-                '"' => {
-                    in_string = true;
-                    escaped = false;
-                    string_start = Some(Position::new(line_index, column));
-                }
-                '\'' => {
-                    in_char = true;
-                    escaped = false;
-                    char_start = Some(Position::new(line_index, column));
-                }
-                '{' | '(' | '[' => stack.push((ch, Position::new(line_index, column))),
-                '}' | ')' | ']' => {
-                    if let Some((open, position)) = stack.pop() {
-                        if !matches!((open, ch), ('{', '}') | ('(', ')') | ('[', ']')) {
-                            diagnostics.push(Diagnostic {
-                                line: line_index,
-                                column,
-                                message: format!(
-                                    "Fermeture inattendue '{ch}' (ouverture '{open}' ligne {}).",
-                                    position.line + 1
-                                ),
-                                severity: DiagnosticSeverity::Error,
-                            });
-                        }
-                    } else {
-                        diagnostics.push(Diagnostic {
-                            line: line_index,
-                            column,
-                            message: format!("Fermeture inattendue '{ch}'."),
-                            severity: DiagnosticSeverity::Error,
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    if raw_string_hashes.is_some() {
-        let position = raw_string_start.unwrap_or_else(|| Position::new(0, 0));
-        diagnostics.push(Diagnostic {
-            line: position.line,
-            column: position.column,
-            message: "Chaîne non terminée.".to_string(),
-            severity: DiagnosticSeverity::Warning,
-        });
-    }
-
-    if in_string {
-        let position = string_start.unwrap_or_else(|| Position::new(0, 0));
-        diagnostics.push(Diagnostic {
-            line: position.line,
-            column: position.column,
-            message: "Chaîne non terminée.".to_string(),
-            severity: DiagnosticSeverity::Warning,
-        });
-    }
-
-    if in_char {
-        let position = char_start.unwrap_or_else(|| Position::new(0, 0));
-        diagnostics.push(Diagnostic {
-            line: position.line,
-            column: position.column,
-            message: "Caractère non terminé.".to_string(),
-            severity: DiagnosticSeverity::Warning,
-        });
-    }
-
-    for (open, position) in stack {
-        diagnostics.push(Diagnostic {
-            line: position.line,
-            column: position.column,
-            message: format!("Ouverture '{open}' sans fermeture."),
-            severity: DiagnosticSeverity::Warning,
-        });
-    }
-
-    diagnostics
-}
-
-fn char_index_to_byte_index(line: &str, char_index: usize) -> usize {
-    if char_index == 0 {
-        return 0;
-    }
-    line.char_indices()
-        .nth(char_index)
-        .map(|(index, _)| index)
-        .unwrap_or(line.len())
-}
-
-fn byte_index_to_char_index(line: &str, byte_index: usize) -> usize {
-    let mut index = byte_index.min(line.len());
-    while index > 0 && !line.is_char_boundary(index) {
-        index -= 1;
-    }
-    line[..index].chars().count()
-}

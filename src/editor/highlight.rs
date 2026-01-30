@@ -10,6 +10,29 @@ use std::sync::{Arc, LazyLock, RwLock};
 pub enum Language {
     Plain,
     Rust,
+    JavaScript,
+    Python,
+    C,
+    Go,
+    Json,
+    Toml,
+    Markdown,
+}
+
+impl Language {
+    pub fn from_extension(ext: &str) -> Self {
+        match ext {
+            "rs" => Language::Rust,
+            "js" | "jsx" | "mjs" | "cjs" => Language::JavaScript,
+            "py" | "pyi" => Language::Python,
+            "c" | "h" => Language::C,
+            "go" => Language::Go,
+            "json" => Language::Json,
+            "toml" => Language::Toml,
+            "md" | "markdown" => Language::Markdown,
+            _ => Language::Plain,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,7 +118,7 @@ impl Highlighter for RoxanneHighlighter {
 
         let mut highlights = match self.settings.language {
             Language::Plain => Vec::new(),
-            Language::Rust => {
+            _ => {
                 if let Some(highlighter) = self.syntax_highlighter.as_mut() {
                     if let Some(line_range) = highlighter.line_byte_range(line_index) {
                         let line_start = line_range.start;
@@ -118,8 +141,10 @@ impl Highlighter for RoxanneHighlighter {
                     } else {
                         Vec::new()
                     }
-                } else {
+                } else if self.settings.language == Language::Rust {
                     highlight_rust_line(line)
+                } else {
+                    Vec::new()
                 }
             }
         };

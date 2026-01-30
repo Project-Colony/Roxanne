@@ -1,6 +1,12 @@
 pub mod app;
+pub mod completion;
 pub mod config;
+pub mod diagnostics;
 pub mod editor;
+pub mod file_ops;
 pub mod keymap;
+pub mod lsp;
 pub mod plugins;
+pub mod search;
 pub mod theme;
+pub mod ui;
