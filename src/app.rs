@@ -1906,46 +1906,37 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         let line_count = self.tab().buffer.line_count().max(1);
         let gutter_digits = line_count.to_string().len();
         let gutter_width = (gutter_digits as f32 * (line_number_size as f32 * 0.6)) + 24.0;
-        let (start_line, _) = self.tab().viewport_cache.range().unwrap_or((0, 0));
-        let visible_lines = self.viewport_height.max(1);
-        // Over-generate gutter lines to guarantee we fill the entire visible area.
-        // The gutter Column is clipped by its container, so extra lines are harmless.
-        let gutter_lines_count = (visible_lines * 2).max(100);
-        let end_line = (start_line + visible_lines).min(line_count);
-        let mut gutter_children = (start_line..end_line)
-            .map(|line_index| {
-                text(format!("{:>width$}", line_index + 1, width = gutter_digits))
-                    .size(line_number_size)
-                    .font(Font::MONOSPACE)
-                    .style(Color::from_rgb8(140, 140, 140))
-                    .line_height(LineHeight::Absolute(line_height.into()))
-                    .horizontal_alignment(Horizontal::Right)
-                    .into()
-            })
-            .collect::<Vec<Element<Message>>>();
-        // Fill remaining visible rows with tilde markers so the gutter extends to the bottom
-        for _ in end_line..(start_line + gutter_lines_count) {
-            gutter_children.push(
-                text(format!("{:>width$}", "~", width = gutter_digits))
-                    .size(line_number_size)
-                    .font(Font::MONOSPACE)
-                    .style(Color::from_rgb8(80, 80, 80))
-                    .line_height(LineHeight::Absolute(line_height.into()))
-                    .horizontal_alignment(Horizontal::Right)
-                    .into(),
-            );
+
+        // Build the entire gutter as a single multi-line text block so it
+        // stretches with the editor instead of being limited by the number
+        // of child widgets in a Column.
+        let mut gutter_text = String::new();
+        for i in 1..=line_count {
+            if !gutter_text.is_empty() {
+                gutter_text.push('\n');
+            }
+            gutter_text.push_str(&format!("{:>width$}", i, width = gutter_digits));
         }
-        gutter_children.push(Space::with_height(Length::Fill).into());
+        // Add tilde lines well past the document end so the gutter always
+        // reaches the bottom of the visible area regardless of window size.
+        let extra = 200usize;
+        for _ in 0..extra {
+            gutter_text.push('\n');
+            gutter_text.push_str(&format!("{:>width$}", "~", width = gutter_digits));
+        }
 
-        let gutter_lines = Column::with_children(gutter_children)
-            .spacing(0)
-            .align_items(Alignment::End)
-            .height(Length::Fill);
+        let gutter_content = text(gutter_text)
+            .size(line_number_size)
+            .font(Font::MONOSPACE)
+            .style(Color::from_rgb8(140, 140, 140))
+            .line_height(LineHeight::Absolute(line_height.into()))
+            .horizontal_alignment(Horizontal::Right);
 
-        let gutter = Container::new(gutter_lines)
+        let gutter = Container::new(gutter_content)
             .width(Length::Fixed(gutter_width))
             .height(Length::Fill)
             .padding([vertical_padding, 8.0])
+            .clip(true)
             .style(theme::Container::Custom(styles::gutter(&self.theme)));
 
         let editor = text_editor(&self.tab().content)
