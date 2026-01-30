@@ -1431,7 +1431,7 @@ impl RoxanneApp {
     fn update_viewport_height(&mut self, bounds: Rectangle) {
         let available_height = (bounds.height - EDITOR_VERTICAL_PADDING).max(0.0);
         let line_height = EDITOR_LINE_HEIGHT.max(1.0);
-        let visible_lines = (available_height / line_height).floor().max(1.0) as usize;
+        let visible_lines = (available_height / line_height).ceil().max(1.0) as usize;
         if visible_lines != self.viewport_height {
             self.viewport_height = visible_lines;
             self.refresh_viewport_cache();
@@ -1909,6 +1909,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         let (start_line, _) = self.tab().viewport_cache.range().unwrap_or((0, 0));
         let visible_lines = self.viewport_height.max(1);
         let end_line = (start_line + visible_lines).min(line_count);
+        let blank_label = " ".repeat(gutter_digits);
         let mut gutter_children = (start_line..end_line)
             .map(|line_index| {
                 text(format!("{:>width$}", line_index + 1, width = gutter_digits))
@@ -1920,6 +1921,18 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                     .into()
             })
             .collect::<Vec<Element<Message>>>();
+        // Fill remaining visible rows with tilde markers so the gutter extends to the bottom
+        for _ in end_line..(start_line + visible_lines) {
+            gutter_children.push(
+                text(format!("{:>width$}", "~", width = gutter_digits))
+                    .size(line_number_size)
+                    .font(Font::MONOSPACE)
+                    .style(Color::from_rgb8(80, 80, 80))
+                    .line_height(LineHeight::Absolute(line_height.into()))
+                    .horizontal_alignment(Horizontal::Right)
+                    .into(),
+            );
+        }
         gutter_children.push(Space::with_height(Length::Fill).into());
 
         let gutter_lines = Column::with_children(gutter_children)
