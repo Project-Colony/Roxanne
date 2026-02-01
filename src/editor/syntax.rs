@@ -38,6 +38,10 @@ fn lang_def_for(language: Language) -> Option<&'static LangDef> {
         ts_language: tree_sitter_toml_ng::LANGUAGE.into(),
         highlights_query: tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
     });
+    static MARKDOWN: LazyLock<LangDef> = LazyLock::new(|| LangDef {
+        ts_language: tree_sitter_md::LANGUAGE.into(),
+        highlights_query: tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+    });
     match language {
         Language::Rust => Some(&RUST),
         Language::JavaScript => Some(&JAVASCRIPT),
@@ -46,7 +50,8 @@ fn lang_def_for(language: Language) -> Option<&'static LangDef> {
         Language::Go => Some(&GO),
         Language::Json => Some(&JSON),
         Language::Toml => Some(&TOML),
-        Language::Markdown | Language::Plain => None,
+        Language::Markdown => Some(&MARKDOWN),
+        Language::Plain => None,
     }
 }
 

@@ -228,3 +228,28 @@ pub fn analyze(buffer: &TextBuffer) -> Vec<Diagnostic> {
 
     diagnostics
 }
+
+/// Merge local diagnostics with LSP diagnostics from an external source.
+pub fn merge_with_lsp(
+    local: Vec<Diagnostic>,
+    lsp_diagnostics: &[crate::lsp::LspDiagnostic],
+) -> Vec<Diagnostic> {
+    let mut merged = local;
+    for lsp_diag in lsp_diagnostics {
+        let severity = match lsp_diag.severity {
+            crate::lsp::LspDiagnosticSeverity::Error => DiagnosticSeverity::Error,
+            crate::lsp::LspDiagnosticSeverity::Warning => DiagnosticSeverity::Warning,
+            crate::lsp::LspDiagnosticSeverity::Info | crate::lsp::LspDiagnosticSeverity::Hint => {
+                DiagnosticSeverity::Warning
+            }
+        };
+        merged.push(Diagnostic {
+            line: lsp_diag.line,
+            column: lsp_diag.column,
+            message: format!("[LSP] {}", lsp_diag.message),
+            severity,
+        });
+    }
+    merged.sort_by_key(|d| (d.line, d.column));
+    merged
+}

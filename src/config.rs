@@ -14,7 +14,42 @@ pub struct AppConfig {
     pub theme: ThemePalette,
     pub keymap: Keymap,
     pub plugins: PluginConfig,
+    pub editor: EditorConfig,
     pub load_warnings: Vec<String>,
+}
+
+/// Editor-level settings configurable via TOML.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditorConfig {
+    #[serde(default = "default_tab_size")]
+    pub tab_size: usize,
+    #[serde(default = "default_true")]
+    pub use_spaces: bool,
+    #[serde(default = "default_line_ending")]
+    pub line_ending: String,
+    #[serde(default)]
+    pub word_wrap: bool,
+    #[serde(default)]
+    pub minimap: bool,
+    #[serde(default)]
+    pub line_numbers: bool,
+}
+
+fn default_tab_size() -> usize { 4 }
+fn default_true() -> bool { true }
+fn default_line_ending() -> String { "lf".to_string() }
+
+impl Default for EditorConfig {
+    fn default() -> Self {
+        Self {
+            tab_size: 4,
+            use_spaces: true,
+            line_ending: "lf".to_string(),
+            word_wrap: false,
+            minimap: false,
+            line_numbers: true,
+        }
+    }
 }
 
 impl AppConfig {
@@ -94,6 +129,9 @@ impl AppConfig {
             self.plugins = plugins.clone();
             warnings.extend(plugins.warnings());
         }
+        if let Some(editor) = &file.editor {
+            self.editor = editor.clone();
+        }
     }
 }
 
@@ -103,6 +141,7 @@ impl Default for AppConfig {
             theme: ThemePalette::default(),
             keymap: Keymap::default(),
             plugins: PluginConfig::default(),
+            editor: EditorConfig::default(),
             load_warnings: Vec::new(),
         }
     }
@@ -118,6 +157,7 @@ struct ConfigFile {
     pub keymap_profile: Option<String>,
     pub keymap_profiles: Option<HashMap<String, KeymapConfig>>,
     pub plugins: Option<PluginConfig>,
+    pub editor: Option<EditorConfig>,
 }
 
 fn load_file(path: &Path, warnings: &mut Vec<String>) -> Option<ConfigFile> {

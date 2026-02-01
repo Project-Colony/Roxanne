@@ -332,3 +332,33 @@ fn byte_index_to_char_index(line: &str, byte_index: usize) -> usize {
     }
     line[..index].chars().count()
 }
+
+/// Replace text using regex capture groups ($0, $1, $2, etc.).
+/// If `is_regex` is false, performs a literal replacement.
+pub fn replace_with_captures(
+    text: &str,
+    pattern: &str,
+    replacement: &str,
+    is_regex: bool,
+    case_sensitive: bool,
+) -> Result<String, String> {
+    if !is_regex {
+        // Literal replacement
+        if case_sensitive {
+            Ok(text.replace(pattern, replacement))
+        } else {
+            let re = RegexBuilder::new(&regex::escape(pattern))
+                .case_insensitive(true)
+                .build()
+                .map_err(|e| format!("regex: {e}"))?;
+            Ok(re.replace_all(text, replacement).to_string())
+        }
+    } else {
+        let re = RegexBuilder::new(pattern)
+            .case_insensitive(!case_sensitive)
+            .build()
+            .map_err(|e| format!("regex invalide: {e}"))?;
+        // The regex crate supports $1, $2, ${name} in replacement strings
+        Ok(re.replace_all(text, replacement).to_string())
+    }
+}

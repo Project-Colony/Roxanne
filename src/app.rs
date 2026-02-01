@@ -1,4 +1,5 @@
 use crate::completion::{self, CompletionItem};
+use crate::lsp;
 use crate::config;
 use crate::diagnostics::{self, Diagnostic, DiagnosticSeverity};
 use crate::editor::highlight::MatchPosition;
@@ -31,8 +32,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const DEFAULT_VIEWPORT_HEIGHT: usize = 24;
-const FILE_TREE_MAX_DEPTH: usize = 8;
-const FILE_TREE_MAX_ENTRIES: usize = 500;
+const FILE_TREE_MAX_DEPTH: usize = 16;
+const FILE_TREE_MAX_ENTRIES: usize = 5000;
 
 #[derive(Debug, Clone)]
 pub struct FileTreeEntry {
@@ -44,18 +45,57 @@ pub struct FileTreeEntry {
     children: Vec<FileTreeEntry>,
 }
 
+/// Load .gitignore patterns from a directory, returning simple name patterns.
+fn load_gitignore_patterns(dir: &Path) -> Vec<String> {
+    let gitignore = dir.join(".gitignore");
+    if let Ok(contents) = std::fs::read_to_string(&gitignore) {
+        contents
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.trim_end_matches('/').to_string())
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+fn is_gitignored(name: &str, patterns: &[String]) -> bool {
+    for pattern in patterns {
+        if pattern == name {
+            return true;
+        }
+        // Simple wildcard: *.ext
+        if let Some(ext) = pattern.strip_prefix("*.") {
+            if name.ends_with(&format!(".{ext}")) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 impl FileTreeEntry {
     fn scan(path: &Path, depth: usize) -> Option<Self> {
+        Self::scan_with_ignore(path, depth, &[])
+    }
+
+    fn scan_with_ignore(path: &Path, depth: usize, parent_ignores: &[String]) -> Option<Self> {
         let name = path.file_name()?.to_string_lossy().to_string();
         if name.starts_with('.') {
             return None;
         }
+        if is_gitignored(&name, parent_ignores) {
+            return None;
+        }
         let is_dir = path.is_dir();
         let children = if is_dir && depth < FILE_TREE_MAX_DEPTH {
+            let mut ignores = parent_ignores.to_vec();
+            ignores.extend(load_gitignore_patterns(path));
             let mut entries: Vec<FileTreeEntry> = std::fs::read_dir(path)
                 .ok()?
                 .filter_map(|e| e.ok())
-                .filter_map(|e| Self::scan(&e.path(), depth + 1))
+                .filter_map(|e| Self::scan_with_ignore(&e.path(), depth + 1, &ignores))
                 .collect();
             entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
                 (true, false) => std::cmp::Ordering::Less,
@@ -198,6 +238,7 @@ pub struct RoxanneApp {
     command_palette_query: String,
     file_tree_open: bool,
     file_tree: Option<FileTreeEntry>,
+    file_tree_filter: String,
     status_message: Option<String>,
     theme: ThemePalette,
     keymap: Keymap,
@@ -208,6 +249,13 @@ pub struct RoxanneApp {
     perf_file_open_started: Option<Instant>,
     perf_file_save_started: Option<Instant>,
     perf_search_files_started: Option<Instant>,
+    save_as_open: bool,
+    save_as_input: String,
+    recent_files: Vec<String>,
+    line_wrap_enabled: bool,
+    minimap_enabled: bool,
+    file_changed_externally: Option<String>,
+    undo_group_timer: Option<Instant>,
 }
 
 impl RoxanneApp {
@@ -316,6 +364,16 @@ pub enum Message {
     FileTreeToggle,
     FileTreeToggleDir(PathBuf),
     FileTreeFileClicked(PathBuf),
+    FileTreeFilterChanged(String),
+    SaveAsChanged(String),
+    SaveAsSubmit,
+    SaveAsClosed,
+    RecentFileSelected(String),
+    FileChangedExternally(String),
+    FileChangedReload,
+    FileChangedIgnore,
+    ToggleLineWrap,
+    ToggleMinimap,
 }
 
 #[derive(Debug, Clone)]
@@ -348,12 +406,18 @@ pub enum Menu {
 pub enum MenuAction {
     Open,
     Save,
+    SaveAs,
     ExportTheme,
     ImportTheme,
     Find,
     FindNext,
     FindPrevious,
     FindInFiles,
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
     SelectAll,
     AddCursorNextMatch,
     AddCursorsAllMatches,
@@ -361,11 +425,18 @@ pub enum MenuAction {
     ToggleDiagnosticsPanel,
     ToggleStatusBar,
     ToggleSearchPanel,
+    ToggleLineWrap,
+    ToggleMinimap,
     GoToLine,
+    GoToSymbol,
     ReloadConfig,
     PerformanceReport,
     ToggleFileTree,
+    NewFile,
+    CloseFile,
     About,
+    LspHover,
+    LspGotoDefinition,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -752,6 +823,7 @@ impl Application for RoxanneApp {
                 command_palette_query: String::new(),
                 file_tree_open: false,
                 file_tree: None,
+                file_tree_filter: String::new(),
                 status_message,
                 theme: flags.theme,
                 keymap: flags.keymap,
@@ -762,6 +834,13 @@ impl Application for RoxanneApp {
                 perf_file_open_started: None,
                 perf_file_save_started: None,
                 perf_search_files_started: None,
+                save_as_open: false,
+                save_as_input: String::new(),
+                recent_files: Vec::new(),
+                line_wrap_enabled: false,
+                minimap_enabled: false,
+                file_changed_externally: None,
+                undo_group_timer: None,
             },
             Self::editor_bounds_command(),
         )
@@ -1136,6 +1215,53 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                         self.status_message = Some(self.performance.summary());
                         Command::none()
                     }
+                    MenuAction::SaveAs => {
+                        self.save_as_input = self.tab().filename.clone();
+                        self.save_as_open = true;
+                        Command::none()
+                    }
+                    MenuAction::Undo => {
+                        self.apply_undo();
+                        Command::none()
+                    }
+                    MenuAction::Redo => {
+                        self.apply_redo();
+                        Command::none()
+                    }
+                    MenuAction::Cut => {
+                        return self.update(Message::KeyAction(KeyAction::Cut));
+                    }
+                    MenuAction::Copy => {
+                        return self.update(Message::KeyAction(KeyAction::Copy));
+                    }
+                    MenuAction::Paste => {
+                        return self.update(Message::KeyAction(KeyAction::Paste));
+                    }
+                    MenuAction::NewFile => {
+                        return self.update(Message::NewTab);
+                    }
+                    MenuAction::CloseFile => {
+                        let idx = self.active_tab;
+                        return self.update(Message::TabClosed(idx));
+                    }
+                    MenuAction::ToggleLineWrap => {
+                        return self.update(Message::ToggleLineWrap);
+                    }
+                    MenuAction::ToggleMinimap => {
+                        return self.update(Message::ToggleMinimap);
+                    }
+                    MenuAction::GoToSymbol => {
+                        self.status_message = Some("Symboles: fonctionnalité en cours d'implémentation.".to_string());
+                        Command::none()
+                    }
+                    MenuAction::LspHover => {
+                        self.perform_lsp_hover();
+                        Command::none()
+                    }
+                    MenuAction::LspGotoDefinition => {
+                        self.perform_lsp_goto_definition();
+                        Command::none()
+                    }
                     MenuAction::About => {
                         self.status_message =
                             Some("Roxanne MVP: éditeur inspiré de Sublime Text.".to_string());
@@ -1151,6 +1277,7 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                     Ok(load) => {
                         let text = load.text;
                         let filename = self.tab().filename.clone();
+                        self.track_recent_file(&filename);
                         // Check if a tab already has this file open
                         let existing = self.tabs.iter().position(|t| t.filename == filename);
                         if let Some(idx) = existing {
@@ -1369,6 +1496,71 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                 }
                 Command::none()
             }
+            Message::FileTreeFilterChanged(value) => {
+                self.file_tree_filter = value;
+                Command::none()
+            }
+            Message::SaveAsChanged(value) => {
+                self.save_as_input = value;
+                Command::none()
+            }
+            Message::SaveAsSubmit => {
+                let new_name = self.save_as_input.trim().to_string();
+                if new_name.is_empty() {
+                    self.status_message = Some("Enregistrer sous: nom de fichier manquant.".to_string());
+                    return Command::none();
+                }
+                self.tab_mut().filename = new_name;
+                self.save_as_open = false;
+                self.save_file()
+            }
+            Message::SaveAsClosed => {
+                self.save_as_open = false;
+                Command::none()
+            }
+            Message::RecentFileSelected(path) => {
+                let existing = self.tabs.iter().position(|t| t.filename == path);
+                if let Some(idx) = existing {
+                    self.active_tab = idx;
+                    self.refresh_search_matches(false, false);
+                    self.refresh_viewport_cache();
+                    return Command::none();
+                }
+                let new_tab = Tab::new(&path, "");
+                self.tabs.push(new_tab);
+                self.active_tab = self.tabs.len() - 1;
+                self.open_file()
+            }
+            Message::FileChangedExternally(path) => {
+                self.file_changed_externally = Some(path);
+                self.status_message = Some("Fichier modifié par un programme externe. Recharger?".to_string());
+                Command::none()
+            }
+            Message::FileChangedReload => {
+                self.file_changed_externally = None;
+                self.open_file()
+            }
+            Message::FileChangedIgnore => {
+                self.file_changed_externally = None;
+                self.status_message = Some("Modification externe ignorée.".to_string());
+                Command::none()
+            }
+            Message::ToggleLineWrap => {
+                self.line_wrap_enabled = !self.line_wrap_enabled;
+                self.status_message = Some(format!(
+                    "Retour à la ligne: {}.",
+                    if self.line_wrap_enabled { "activé" } else { "désactivé" }
+                ));
+                Command::none()
+            }
+            Message::ToggleMinimap => {
+                self.minimap_enabled = !self.minimap_enabled;
+                self.status_message = Some(format!(
+                    "Minimap: {}.",
+                    if self.minimap_enabled { "activée" } else { "désactivée" }
+                ));
+                Command::none()
+            }
         }
     }
 
@@ -1404,15 +1596,22 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
         if let Some(panel) = completion_panel {
             content = content.push(panel);
         }
+        let save_as_panel = self.save_as_panel();
+        if let Some(panel) = save_as_panel {
+            content = content.push(panel);
+        }
         let file_tree = self.file_tree_panel();
-        let editor_row: Element<'_, Message> = if let Some(tree_panel) = file_tree {
-            row![tree_panel, editor]
-                .spacing(0)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
-        } else {
-            editor
+        let minimap = self.minimap_panel();
+        let editor_row: Element<'_, Message> = {
+            let mut parts = row![].spacing(0).width(Length::Fill).height(Length::Fill);
+            if let Some(tree_panel) = file_tree {
+                parts = parts.push(tree_panel);
+            }
+            parts = parts.push(editor);
+            if let Some(mm) = minimap {
+                parts = parts.push(mm);
+            }
+            parts.into()
         };
         let content = content
             .push(editor_row)
@@ -1429,10 +1628,21 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::batch([
+        let mut subscriptions = vec![
             event::listen().map(Message::Event),
             config_watcher_subscription(),
-        ])
+        ];
+        // Watch open files for external changes
+        let file_paths: Vec<String> = self
+            .tabs
+            .iter()
+            .filter(|t| !t.filename.trim().is_empty() && t.filename != "untitled.txt")
+            .map(|t| t.filename.clone())
+            .collect();
+        if !file_paths.is_empty() {
+            subscriptions.push(file_watcher_subscription(file_paths));
+        }
+        Subscription::batch(subscriptions)
     }
 }
 
@@ -1507,6 +1717,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             self.tab_mut().lossy_save_acknowledged = false;
         }
         let filename = self.tab().filename.clone();
+        self.track_recent_file(&filename);
         let ct = self.tab().content.text();
         self.tab_mut().buffer.replace(&ct);
         let text = self.tab().buffer.text().to_string();
@@ -1660,6 +1871,109 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                 self.status_message = Some("Mode normal.".to_string());
                 Command::none()
             }
+            KeyAction::MoveLeft => {
+                self.tab_mut().content.perform(EditorAction::Move(Motion::Left));
+                self.clamp_scroll_to_cursor();
+                Command::none()
+            }
+            KeyAction::MoveDown => {
+                self.tab_mut().content.perform(EditorAction::Move(Motion::Down));
+                self.clamp_scroll_to_cursor();
+                Command::none()
+            }
+            KeyAction::MoveUp => {
+                self.tab_mut().content.perform(EditorAction::Move(Motion::Up));
+                self.clamp_scroll_to_cursor();
+                Command::none()
+            }
+            KeyAction::MoveRight => {
+                self.tab_mut().content.perform(EditorAction::Move(Motion::Right));
+                self.clamp_scroll_to_cursor();
+                Command::none()
+            }
+            KeyAction::MoveWordForward => {
+                self.tab_mut().content.perform(EditorAction::Move(Motion::WordRight));
+                self.clamp_scroll_to_cursor();
+                Command::none()
+            }
+            KeyAction::MoveWordBackward => {
+                self.tab_mut().content.perform(EditorAction::Move(Motion::WordLeft));
+                self.clamp_scroll_to_cursor();
+                Command::none()
+            }
+            KeyAction::MoveLineStart => {
+                self.tab_mut().content.perform(EditorAction::Move(Motion::Home));
+                self.clamp_scroll_to_cursor();
+                Command::none()
+            }
+            KeyAction::MoveLineEnd => {
+                self.tab_mut().content.perform(EditorAction::Move(Motion::End));
+                self.clamp_scroll_to_cursor();
+                Command::none()
+            }
+            KeyAction::MoveFileTop => {
+                self.jump_to_position(0, 0);
+                Command::none()
+            }
+            KeyAction::MoveFileBottom => {
+                let last_line = self.tab().buffer.line_count().saturating_sub(1);
+                self.jump_to_position(last_line, 0);
+                Command::none()
+            }
+            KeyAction::DeleteChar => {
+                self.record_undo_snapshot();
+                self.tab_mut().content.perform(EditorAction::Edit(EditorEdit::Delete));
+                let t = self.tab().content.text();
+                self.tab_mut().buffer.replace(&t);
+                self.sync_highlight_buffer();
+                self.refresh_diagnostics();
+                self.refresh_viewport_cache();
+                Command::none()
+            }
+            KeyAction::DeleteLine => {
+                self.record_undo_snapshot();
+                // Select entire current line then delete
+                self.tab_mut().content.perform(EditorAction::Move(Motion::Home));
+                self.tab_mut().content.perform(EditorAction::Select(Motion::Down));
+                self.tab_mut().content.perform(EditorAction::Edit(EditorEdit::Delete));
+                let t = self.tab().content.text();
+                self.tab_mut().buffer.replace(&t);
+                self.sync_highlight_buffer();
+                self.refresh_diagnostics();
+                self.refresh_viewport_cache();
+                Command::none()
+            }
+            KeyAction::InsertAfter => {
+                self.tab_mut().content.perform(EditorAction::Move(Motion::Right));
+                self.mode = KeymapMode::Insert;
+                self.status_message = Some("Mode insertion (après).".to_string());
+                Command::none()
+            }
+            KeyAction::InsertLineBelow => {
+                self.tab_mut().content.perform(EditorAction::Move(Motion::End));
+                self.record_undo_snapshot();
+                self.tab_mut().content.perform(EditorAction::Edit(EditorEdit::Enter));
+                let t = self.tab().content.text();
+                self.tab_mut().buffer.replace(&t);
+                self.sync_highlight_buffer();
+                self.mode = KeymapMode::Insert;
+                self.status_message = Some("Mode insertion (nouvelle ligne).".to_string());
+                self.refresh_viewport_cache();
+                Command::none()
+            }
+            KeyAction::InsertLineAbove => {
+                self.tab_mut().content.perform(EditorAction::Move(Motion::Home));
+                self.record_undo_snapshot();
+                self.tab_mut().content.perform(EditorAction::Edit(EditorEdit::Enter));
+                self.tab_mut().content.perform(EditorAction::Move(Motion::Up));
+                let t = self.tab().content.text();
+                self.tab_mut().buffer.replace(&t);
+                self.sync_highlight_buffer();
+                self.mode = KeymapMode::Insert;
+                self.status_message = Some("Mode insertion (ligne au-dessus).".to_string());
+                self.refresh_viewport_cache();
+                Command::none()
+            }
         }
     }
 
@@ -1707,20 +2021,26 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             Menu::File => (
                 "File",
                 vec![
+                    MenuEntry::action("New File — Ctrl+N", MenuAction::NewFile),
                     MenuEntry::action("Open File… — Ctrl+O", MenuAction::Open),
                     MenuEntry::Separator,
-                    MenuEntry::Separator,
                     MenuEntry::action("Save — Ctrl+S", MenuAction::Save),
+                    MenuEntry::action("Save As… — Ctrl+Shift+S", MenuAction::SaveAs),
+                    MenuEntry::action("Close File — Ctrl+W", MenuAction::CloseFile),
                     MenuEntry::Separator,
                     MenuEntry::action("Export Theme", MenuAction::ExportTheme),
                     MenuEntry::action("Import Theme", MenuAction::ImportTheme),
-                    MenuEntry::Separator,
                 ],
             ),
             Menu::Edit => (
                 "Edit",
                 vec![
+                    MenuEntry::action("Undo — Ctrl+Z", MenuAction::Undo),
+                    MenuEntry::action("Redo — Ctrl+Shift+Z", MenuAction::Redo),
                     MenuEntry::Separator,
+                    MenuEntry::action("Cut — Ctrl+X", MenuAction::Cut),
+                    MenuEntry::action("Copy — Ctrl+C", MenuAction::Copy),
+                    MenuEntry::action("Paste — Ctrl+V", MenuAction::Paste),
                     MenuEntry::Separator,
                     MenuEntry::action("Find — Ctrl+F", MenuAction::Find),
                     MenuEntry::action("Find Next — F3", MenuAction::FindNext),
@@ -1750,23 +2070,24 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             Menu::View => (
                 "View",
                 vec![
-                    MenuEntry::action("Show Status Bar", MenuAction::ToggleStatusBar),
+                    MenuEntry::action("Toggle Status Bar", MenuAction::ToggleStatusBar),
                     MenuEntry::action("Toggle File Tree — Ctrl+B", MenuAction::ToggleFileTree),
-                    MenuEntry::Separator,
+                    MenuEntry::action("Toggle Line Wrap", MenuAction::ToggleLineWrap),
+                    MenuEntry::action("Toggle Minimap", MenuAction::ToggleMinimap),
                 ],
             ),
             Menu::Goto => (
                 "Goto",
                 vec![
-                    MenuEntry::Separator,
                     MenuEntry::action("Go to Line… — Ctrl+G", MenuAction::GoToLine),
+                    MenuEntry::action("Go to Symbol…", MenuAction::GoToSymbol),
                 ],
             ),
             Menu::Tools => (
                 "Tools",
                 vec![
-                    MenuEntry::Separator,
-                    MenuEntry::Separator,
+                    MenuEntry::action("LSP Hover Info", MenuAction::LspHover),
+                    MenuEntry::action("LSP Go to Definition", MenuAction::LspGotoDefinition),
                     MenuEntry::Separator,
                     MenuEntry::action("Reload Config", MenuAction::ReloadConfig),
                     MenuEntry::action("Performance Report", MenuAction::PerformanceReport),
@@ -1775,16 +2096,16 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             Menu::Project => (
                 "Project",
                 vec![
-                    MenuEntry::Separator,
-                    MenuEntry::Separator,
+                    MenuEntry::action("Find in Files… — Ctrl+Shift+F", MenuAction::FindInFiles),
+                    MenuEntry::action("Toggle File Tree — Ctrl+B", MenuAction::ToggleFileTree),
                 ],
             ),
             Menu::Preferences => (
                 "Preferences",
                 vec![
-                    MenuEntry::Separator,
-                    MenuEntry::Separator,
-                    MenuEntry::Separator,
+                    MenuEntry::action("Reload Config", MenuAction::ReloadConfig),
+                    MenuEntry::action("Export Theme", MenuAction::ExportTheme),
+                    MenuEntry::action("Import Theme", MenuAction::ImportTheme),
                 ],
             ),
             Menu::Help => (
@@ -2346,15 +2667,25 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         };
         let viewport_label = self.viewport_label();
 
+        let total_lines = tab.buffer.line_count();
+        let wrap_indicator = if self.line_wrap_enabled { "Wrap" } else { "NoWrap" };
+        let minimap_indicator = if self.minimap_enabled { "Map" } else { "" };
+        let lang_label = format!("{:?}", tab.highlight_settings.language);
+
         let right = text(format!(
-            "{}   Mode: {}   Occurrences: {}   Cursors: {}   Diagnostics: {}   Ln {}, Col {}   UTF-8   LF   {}{}",
+            "{}   {}   Mode: {}   Occ: {}   Cur: {}   Diag: {}   Ln {}/{}, Col {}   UTF-8   LF   {}   {}{}   {}{}",
             viewport_label,
+            lang_label,
             self.mode.label(),
             matches,
             cursor_count,
             diagnostics_count,
             cursor_position.0 + 1,
+            total_lines,
             cursor_position.1 + 1,
+            wrap_indicator,
+            if minimap_indicator.is_empty() { "" } else { minimap_indicator },
+            if minimap_indicator.is_empty() { "" } else { "   " },
             status_text,
             plugin_segment
         ))
@@ -2592,8 +2923,16 @@ Relancez «Enregistrer» pour confirmer l'écriture."
 
     fn all_commands() -> Vec<(&'static str, MenuAction)> {
         vec![
+            ("New File — Ctrl+N", MenuAction::NewFile),
             ("Open File — Ctrl+O", MenuAction::Open),
             ("Save — Ctrl+S", MenuAction::Save),
+            ("Save As — Ctrl+Shift+S", MenuAction::SaveAs),
+            ("Close File — Ctrl+W", MenuAction::CloseFile),
+            ("Undo — Ctrl+Z", MenuAction::Undo),
+            ("Redo — Ctrl+Shift+Z", MenuAction::Redo),
+            ("Cut — Ctrl+X", MenuAction::Cut),
+            ("Copy — Ctrl+C", MenuAction::Copy),
+            ("Paste — Ctrl+V", MenuAction::Paste),
             ("Find — Ctrl+F", MenuAction::Find),
             ("Find Next — F3", MenuAction::FindNext),
             ("Find Previous — Shift+F3", MenuAction::FindPrevious),
@@ -2604,7 +2943,12 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             ("Clear Multi Cursors", MenuAction::ClearMultiCursors),
             ("Toggle Diagnostics", MenuAction::ToggleDiagnosticsPanel),
             ("Toggle Search Panel", MenuAction::ToggleSearchPanel),
+            ("Toggle Line Wrap", MenuAction::ToggleLineWrap),
+            ("Toggle Minimap", MenuAction::ToggleMinimap),
             ("Go To Line — Ctrl+G", MenuAction::GoToLine),
+            ("Go To Symbol", MenuAction::GoToSymbol),
+            ("LSP Hover Info", MenuAction::LspHover),
+            ("LSP Go to Definition", MenuAction::LspGotoDefinition),
             ("Reload Config", MenuAction::ReloadConfig),
             ("Export Theme", MenuAction::ExportTheme),
             ("Import Theme", MenuAction::ImportTheme),
@@ -2614,6 +2958,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         ]
     }
 
+    /// Fuzzy filter: each query character must appear in order in the label.
     fn filtered_commands(&self) -> Vec<(&'static str, MenuAction)> {
         let query = self.command_palette_query.to_lowercase();
         if query.is_empty() {
@@ -2621,7 +2966,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         }
         Self::all_commands()
             .into_iter()
-            .filter(|(label, _)| label.to_lowercase().contains(&query))
+            .filter(|(label, _)| fuzzy_match(&label.to_lowercase(), &query))
             .collect()
     }
 
@@ -2684,9 +3029,27 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         }
         let tree = self.file_tree.as_ref()?;
         let entries = tree.flatten_visible();
+        let filter = self.file_tree_filter.to_lowercase();
 
         let mut items: Vec<Element<'_, Message>> = Vec::new();
+
+        // Filter bar
+        let filter_input = TextInput::new("Filtrer…", &self.file_tree_filter)
+            .on_input(Message::FileTreeFilterChanged)
+            .padding([2, 6])
+            .size(11);
+        items.push(
+            Container::new(filter_input)
+                .width(Length::Fill)
+                .padding([2, 4])
+                .into(),
+        );
+
         for (depth, entry) in entries.iter().take(FILE_TREE_MAX_ENTRIES) {
+            // Apply filter
+            if !filter.is_empty() && !entry.name.to_lowercase().contains(&filter) && !entry.is_dir {
+                continue;
+            }
             let indent = "  ".repeat(*depth);
             let icon = if entry.is_dir {
                 if entry.expanded { "v " } else { "> " }
@@ -2758,7 +3121,21 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         let cf = self.tab().filename.clone();
         self.plugins.on_text_changed(&ct, &cf);
         self.refresh_viewport_cache();
-        self.status_message = Some("Remplacement: 1 occurrence remplacée.".to_string());
+        // Auto-advance to next match
+        if !self.tab().search_matches.is_empty() {
+            let next_idx = self.tab().current_match_index
+                .map(|i| i.min(self.tab().search_matches.len().saturating_sub(1)))
+                .unwrap_or(0);
+            self.tab_mut().current_match_index = Some(next_idx);
+            self.jump_to_match(next_idx);
+            self.status_message = Some(format!(
+                "Remplacement: 1 occurrence remplacée. Suivant: {}/{}.",
+                next_idx + 1,
+                self.tab().search_matches.len()
+            ));
+        } else {
+            self.status_message = Some("Remplacement: dernière occurrence remplacée.".to_string());
+        }
     }
 
     fn replace_all_matches(&mut self) {
@@ -2767,21 +3144,46 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             return;
         }
         self.record_undo_snapshot();
-        // Replace in reverse order to preserve positions
-        let mut matches: Vec<_> = self.tab().search_matches.clone();
-        matches.sort_by(|a, b| {
-            b.line.cmp(&a.line).then(b.column.cmp(&a.column))
-        });
-        let replace = self.replace_text.clone();
-        let count = matches.len();
-        for m in &matches {
-            let start = Position::new(m.line, m.column);
-            let end = Position::new(m.line, m.column + m.length);
-            self.tab_mut().buffer.delete_range(start, end);
-            self.tab_mut().buffer.insert(start, &replace);
+        let count = self.tab().search_matches.len();
+
+        // Use regex-aware replacement to support capture groups ($1, $2, etc.)
+        if self.search_regex {
+            let text = self.tab().buffer.text().to_string();
+            let replace = self.replace_text.clone();
+            let query = self.search_query.clone();
+            match search::replace_with_captures(
+                &text,
+                &query,
+                &replace,
+                true,
+                self.search_case_sensitive,
+            ) {
+                Ok(new_text) => {
+                    self.tab_mut().buffer.replace(&new_text);
+                    self.tab_mut().content = EditorContent::with_text(&new_text);
+                }
+                Err(e) => {
+                    self.status_message = Some(format!("Remplacement erreur: {e}"));
+                    return;
+                }
+            }
+        } else {
+            // Replace in reverse order to preserve positions
+            let mut matches: Vec<_> = self.tab().search_matches.clone();
+            matches.sort_by(|a, b| {
+                b.line.cmp(&a.line).then(b.column.cmp(&a.column))
+            });
+            let replace = self.replace_text.clone();
+            for m in &matches {
+                let start = Position::new(m.line, m.column);
+                let end = Position::new(m.line, m.column + m.length);
+                self.tab_mut().buffer.delete_range(start, end);
+                self.tab_mut().buffer.insert(start, &replace);
+            }
+            let text = self.tab().buffer.text().to_string();
+            self.tab_mut().content = EditorContent::with_text(&text);
         }
-        let text = self.tab().buffer.text().to_string();
-        self.tab_mut().content = EditorContent::with_text(&text);
+
         self.sync_highlight_buffer();
         self.refresh_search_matches(false, true);
         self.refresh_diagnostics();
@@ -3000,7 +3402,8 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         if ignored_operations > 0 {
             self.status_message = Some(format!(
                 "Multi-curseurs: édition sur {applied_cursors} curseur(s). \
-{ignored_operations} curseur(s) ignoré(s) car leurs edits se chevauchent."
+{ignored_operations} curseur(s) fusionné(s) (positions trop proches). \
+Astuce: espacez les curseurs pour éviter les chevauchements."
             ));
         } else {
             self.status_message = Some(format!(
@@ -3013,6 +3416,15 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         if self.tab().suppress_undo_snapshot {
             return;
         }
+        // Transaction grouping: skip snapshot if last edit was within 500ms
+        let now = Instant::now();
+        if let Some(last) = self.undo_group_timer {
+            if now.duration_since(last) < Duration::from_millis(500) {
+                self.undo_group_timer = Some(now);
+                return;
+            }
+        }
+        self.undo_group_timer = Some(now);
         self.tab_mut().buffer.record_snapshot();
     }
 
@@ -3098,7 +3510,8 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         let line_text = self.tab().buffer.line(line).unwrap_or("").to_string();
         let column = column.min(line_text.chars().count());
         let prefix = completion::extract_prefix(&line_text, column);
-        let items = completion::build_items(&prefix);
+        let buffer_text = self.tab().buffer.text().to_string();
+        let items = completion::build_items_with_buffer(&prefix, Some(&buffer_text));
         let count = items.len();
         let tab = self.tab_mut();
         tab.completion_prefix = prefix;
@@ -3111,6 +3524,167 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                 count
             ));
         }
+    }
+
+    fn perform_lsp_hover(&mut self) {
+        let (line, col) = self.tab().content.cursor_position();
+        let filename = self.tab().filename.clone();
+        match lsp::LspClient::new() {
+            Ok(mut client) => {
+                match client.hover_str(&filename, line as u32, col as u32) {
+                    Ok(Some(info)) => {
+                        self.status_message = Some(format!("LSP Hover: {}", info));
+                    }
+                    Ok(None) => {
+                        self.status_message = Some("LSP Hover: aucune information.".to_string());
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("LSP Hover erreur: {e}"));
+                    }
+                }
+            }
+            Err(e) => {
+                self.status_message = Some(format!("LSP non disponible: {e}"));
+            }
+        }
+    }
+
+    fn perform_lsp_goto_definition(&mut self) {
+        let (line, col) = self.tab().content.cursor_position();
+        let filename = self.tab().filename.clone();
+        match lsp::LspClient::new() {
+            Ok(mut client) => {
+                match client.goto_definition_str(&filename, line as u32, col as u32) {
+                    Ok(Some((file, target_line, target_col))) => {
+                        if file == filename {
+                            self.jump_to_position(target_line as usize, target_col as usize);
+                            self.status_message = Some(format!(
+                                "LSP: définition à ligne {}, colonne {}.",
+                                target_line + 1,
+                                target_col + 1
+                            ));
+                        } else {
+                            let existing = self.tabs.iter().position(|t| t.filename == file);
+                            if let Some(idx) = existing {
+                                self.active_tab = idx;
+                            } else {
+                                let new_tab = Tab::new(&file, "");
+                                self.tabs.push(new_tab);
+                                self.active_tab = self.tabs.len() - 1;
+                                self.tab_mut().filename = file;
+                            }
+                            self.status_message = Some(format!(
+                                "LSP: définition dans {} à ligne {}.",
+                                self.tab().filename,
+                                target_line + 1
+                            ));
+                        }
+                    }
+                    Ok(None) => {
+                        self.status_message = Some("LSP: aucune définition trouvée.".to_string());
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("LSP GoTo erreur: {e}"));
+                    }
+                }
+            }
+            Err(e) => {
+                self.status_message = Some(format!("LSP non disponible: {e}"));
+            }
+        }
+    }
+
+    fn track_recent_file(&mut self, path: &str) {
+        if path.trim().is_empty() || path == "untitled.txt" {
+            return;
+        }
+        self.recent_files.retain(|p| p != path);
+        self.recent_files.insert(0, path.to_string());
+        if self.recent_files.len() > 20 {
+            self.recent_files.truncate(20);
+        }
+    }
+
+    fn save_as_panel(&self) -> Option<Element<'_, Message>> {
+        if !self.save_as_open {
+            return None;
+        }
+
+        let header = text("Enregistrer sous")
+            .size(12)
+            .font(Font::MONOSPACE)
+            .style(Color::from_rgb8(220, 220, 220));
+
+        let input = TextInput::new("Nom du fichier…", &self.save_as_input)
+            .on_input(Message::SaveAsChanged)
+            .on_submit(Message::SaveAsSubmit)
+            .padding([4, 8])
+            .size(12);
+
+        let actions = row![
+            Button::new(text("Enregistrer").size(12).font(Font::MONOSPACE))
+                .padding([4, 10])
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
+                .on_press(Message::SaveAsSubmit),
+            Button::new(text("Annuler").size(12).font(Font::MONOSPACE))
+                .padding([4, 10])
+                .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
+                .on_press(Message::SaveAsClosed),
+        ]
+        .spacing(8)
+        .align_items(Alignment::Center);
+
+        let panel = column![header, input, actions].spacing(10).padding([8, 16]);
+
+        Some(
+            Container::new(panel)
+                .width(Length::Fill)
+                .style(theme::Container::Custom(styles::panel(&self.theme)))
+                .into(),
+        )
+    }
+
+    fn minimap_panel(&self) -> Option<Element<'_, Message>> {
+        if !self.minimap_enabled {
+            return None;
+        }
+        let tab = self.tab();
+        let total_lines = tab.buffer.line_count().max(1);
+        let (cursor_line, _) = tab.content.cursor_position();
+        let _visible_lines = self.viewport_height.max(1);
+
+        // Build a condensed view of the file (1 char per line)
+        let minimap_lines: usize = 60.min(total_lines);
+        let step = (total_lines as f64 / minimap_lines as f64).max(1.0);
+        let mut minimap_text = String::new();
+        for i in 0..minimap_lines {
+            let line_idx = (i as f64 * step) as usize;
+            let line = tab.buffer.line(line_idx).unwrap_or("");
+            let trimmed = line.trim();
+            let density = if trimmed.is_empty() { ' ' } else if trimmed.len() < 10 { '░' } else if trimmed.len() < 30 { '▒' } else { '▓' };
+            // Mark cursor position
+            if line_idx == cursor_line || (line_idx <= cursor_line && cursor_line < (((i + 1) as f64 * step) as usize)) {
+                minimap_text.push('█');
+            } else {
+                minimap_text.push(density);
+            }
+            minimap_text.push('\n');
+        }
+
+        let info = format!("{}/{} lignes", cursor_line + 1, total_lines);
+        let content = column![
+            text("Minimap").size(10).font(Font::MONOSPACE).style(Color::from_rgb8(140, 140, 140)),
+            text(minimap_text).size(6).font(Font::MONOSPACE).style(Color::from_rgb8(100, 160, 100)),
+            text(info).size(10).font(Font::MONOSPACE).style(Color::from_rgb8(140, 140, 140)),
+        ].spacing(2).padding([4, 4]);
+
+        Some(
+            Container::new(content)
+                .width(Length::Fixed(60.0))
+                .height(Length::Fill)
+                .style(theme::Container::Custom(styles::panel(&self.theme)))
+                .into(),
+        )
     }
 
     fn apply_completion(&mut self, index: usize) {
@@ -3153,7 +3727,7 @@ fn config_watcher_subscription() -> Subscription<Message> {
     use std::sync::{Arc, Mutex};
 
     struct WatcherState {
-        changed: Arc<Mutex<bool>>,
+        _changed: Arc<Mutex<bool>>,
         _watcher: Option<notify::RecommendedWatcher>,
     }
 
@@ -3190,7 +3764,7 @@ fn config_watcher_subscription() -> Subscription<Message> {
             });
 
             let _state = WatcherState {
-                changed: changed.clone(),
+                _changed: changed.clone(),
                 _watcher: watcher,
             };
 
@@ -3224,6 +3798,81 @@ fn config_watcher_subscription() -> Subscription<Message> {
 }
 
 struct ConfigWatcherId;
+
+fn file_watcher_subscription(paths: Vec<String>) -> Subscription<Message> {
+    use std::sync::{Arc, Mutex};
+
+    struct FileWatcherState {
+        _changed_path: Arc<Mutex<Option<String>>>,
+        _watcher: Option<notify::RecommendedWatcher>,
+    }
+
+    struct FileWatcherId;
+
+    subscription::channel(
+        std::any::TypeId::of::<FileWatcherId>(),
+        16,
+        |mut output| async move {
+            use iced::futures::SinkExt;
+            use notify::{RecursiveMode, Watcher};
+
+            let changed_path: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+            let changed_clone = changed_path.clone();
+
+            let watcher = notify::recommended_watcher(
+                move |event: Result<notify::Event, notify::Error>| {
+                    if let Ok(event) = event {
+                        if matches!(
+                            event.kind,
+                            notify::EventKind::Modify(_)
+                        ) {
+                            if let Some(path) = event.paths.first() {
+                                if let Ok(mut flag) = changed_clone.lock() {
+                                    *flag = Some(path.display().to_string());
+                                }
+                            }
+                        }
+                    }
+                },
+            )
+            .ok()
+            .map(|mut w| {
+                for path_str in &paths {
+                    let path = Path::new(path_str);
+                    if path.exists() {
+                        let _ = w.watch(path, RecursiveMode::NonRecursive);
+                    }
+                }
+                w
+            });
+
+            let _state = FileWatcherState {
+                _changed_path: changed_path.clone(),
+                _watcher: watcher,
+            };
+
+            loop {
+                let changed_ref = changed_path.clone();
+                let result = iced::futures::future::poll_fn(|_cx| {
+                    if let Ok(mut flag) = changed_ref.lock() {
+                        if let Some(path) = flag.take() {
+                            return std::task::Poll::Ready(path);
+                        }
+                    }
+                    let waker = _cx.waker().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        waker.wake();
+                    });
+                    std::task::Poll::Pending
+                })
+                .await;
+
+                let _ = output.send(Message::FileChangedExternally(result)).await;
+            }
+        },
+    )
+}
 
 #[cfg(test)]
 mod tests {
@@ -3400,6 +4049,65 @@ mod tests {
     }
 
     #[test]
+    fn fuzzy_match_basic() {
+        assert!(super::fuzzy_match("open file", "opfl"));
+        assert!(super::fuzzy_match("toggle file tree", "tft"));
+        assert!(!super::fuzzy_match("save", "x"));
+        assert!(super::fuzzy_match("save", ""));
+        assert!(super::fuzzy_match("save", "s"));
+        assert!(super::fuzzy_match("save", "save"));
+        assert!(!super::fuzzy_match("", "a"));
+    }
+
+    #[test]
+    fn replace_with_captures_literal() {
+        let result = search::replace_with_captures("hello world", "world", "rust", false, true).unwrap();
+        assert_eq!(result, "hello rust");
+    }
+
+    #[test]
+    fn replace_with_captures_regex() {
+        let result = search::replace_with_captures(
+            "foo123bar456",
+            r"(\d+)",
+            "[$1]",
+            true,
+            true,
+        ).unwrap();
+        assert_eq!(result, "foo[123]bar[456]");
+    }
+
+    #[test]
+    fn replace_with_captures_case_insensitive() {
+        let result = search::replace_with_captures("Hello hello HELLO", "hello", "Hi", false, false).unwrap();
+        assert_eq!(result, "Hi Hi Hi");
+    }
+
+    #[test]
+    fn buffer_word_completions() {
+        let items = crate::completion::build_items_with_buffer("my", Some("let my_variable = myFunction();"));
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"my_variable"));
+        assert!(labels.contains(&"myFunction"));
+    }
+
+    #[test]
+    fn buffer_word_completions_no_short_words() {
+        let items = crate::completion::build_items_with_buffer("a", Some("a ab abc"));
+        // "a" and "ab" are too short (< 3 chars), only "abc" should appear
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"abc"));
+        assert!(!labels.contains(&"ab"));
+    }
+
+    #[test]
+    fn gitignore_patterns_basic() {
+        assert!(super::is_gitignored("target", &["target".to_string()]));
+        assert!(super::is_gitignored("foo.log", &["*.log".to_string()]));
+        assert!(!super::is_gitignored("src", &["target".to_string()]));
+    }
+
+    #[test]
     fn workspace_root_from_filename_uses_parent_for_missing_file() {
         let dir = tempdir().expect("tempdir");
         let root_marker = dir.path().join(".roxanne.toml");
@@ -3545,6 +4253,21 @@ fn next_char_boundary(text: &str, index: usize) -> Option<usize> {
         .next()
         .map(|ch| index + ch.len_utf8())?;
     Some(next.min(text.len()))
+}
+
+/// Fuzzy match: each character of `query` must appear in order in `text`.
+fn fuzzy_match(text: &str, query: &str) -> bool {
+    let mut text_chars = text.chars();
+    for q in query.chars() {
+        loop {
+            match text_chars.next() {
+                Some(c) if c == q => break,
+                Some(_) => continue,
+                None => return false,
+            }
+        }
+    }
+    true
 }
 
 fn parse_goto_input(input: &str) -> Result<(usize, usize), String> {

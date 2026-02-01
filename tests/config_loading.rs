@@ -102,3 +102,48 @@ save = "alt+s"
         .match_event(&key, ctrl_shift, KeymapMode::Insert);
     assert_ne!(old_action, Some(KeyAction::Save));
 }
+
+#[test]
+fn loads_editor_config_from_workspace() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    let _guard = EnvGuard::new(&home, &workspace);
+
+    let workspace_config = workspace.join(".roxanne.toml");
+    write_file(
+        &workspace_config,
+        r#"
+[editor]
+tab_size = 2
+use_spaces = false
+line_ending = "crlf"
+word_wrap = true
+minimap = true
+"#,
+    );
+
+    let config = AppConfig::load();
+    assert_eq!(config.editor.tab_size, 2);
+    assert!(!config.editor.use_spaces);
+    assert_eq!(config.editor.line_ending, "crlf");
+    assert!(config.editor.word_wrap);
+    assert!(config.editor.minimap);
+}
+
+#[test]
+fn editor_config_defaults() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    let _guard = EnvGuard::new(&home, &workspace);
+
+    let config = AppConfig::load();
+    assert_eq!(config.editor.tab_size, 4);
+    assert!(config.editor.use_spaces);
+    assert_eq!(config.editor.line_ending, "lf");
+    assert!(!config.editor.word_wrap);
+    assert!(!config.editor.minimap);
+}

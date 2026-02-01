@@ -24,6 +24,22 @@ pub enum KeyAction {
     PrevTab,
     CommandPalette,
     ToggleFileTree,
+    // Normal mode vim-like motions
+    MoveLeft,
+    MoveDown,
+    MoveUp,
+    MoveRight,
+    MoveWordForward,
+    MoveWordBackward,
+    MoveLineStart,
+    MoveLineEnd,
+    MoveFileTop,
+    MoveFileBottom,
+    DeleteChar,
+    DeleteLine,
+    InsertAfter,
+    InsertLineBelow,
+    InsertLineAbove,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,11 +121,32 @@ impl Keymap {
             KeyCombo::parse("ctrl+[").unwrap(),
         );
 
-        keymap.add_binding(
-            KeymapMode::Normal,
-            KeyAction::EnterInsertMode,
-            KeyCombo::parse("i").unwrap(),
-        );
+        // Normal mode: vim-like bindings
+        let normal_bindings = [
+            (KeyAction::EnterInsertMode, "i"),
+            (KeyAction::InsertAfter, "a"),
+            (KeyAction::InsertLineBelow, "o"),
+            (KeyAction::InsertLineAbove, "shift+o"),
+            (KeyAction::MoveLeft, "h"),
+            (KeyAction::MoveDown, "j"),
+            (KeyAction::MoveUp, "k"),
+            (KeyAction::MoveRight, "l"),
+            (KeyAction::MoveWordForward, "w"),
+            (KeyAction::MoveWordBackward, "b"),
+            (KeyAction::MoveLineStart, "0"),
+            (KeyAction::MoveLineEnd, "shift+4"),
+            (KeyAction::MoveFileTop, "g"),
+            (KeyAction::MoveFileBottom, "shift+g"),
+            (KeyAction::DeleteChar, "x"),
+            (KeyAction::DeleteLine, "d"),
+        ];
+        for (action, combo) in normal_bindings {
+            keymap.add_binding(
+                KeymapMode::Normal,
+                action,
+                KeyCombo::parse(combo).unwrap(),
+            );
+        }
 
         keymap
     }
@@ -232,6 +269,21 @@ const KEYMAP_ACTIONS: &[(&str, KeyAction)] = &[
     ("prev_tab", KeyAction::PrevTab),
     ("command_palette", KeyAction::CommandPalette),
     ("toggle_file_tree", KeyAction::ToggleFileTree),
+    ("move_left", KeyAction::MoveLeft),
+    ("move_down", KeyAction::MoveDown),
+    ("move_up", KeyAction::MoveUp),
+    ("move_right", KeyAction::MoveRight),
+    ("move_word_forward", KeyAction::MoveWordForward),
+    ("move_word_backward", KeyAction::MoveWordBackward),
+    ("move_line_start", KeyAction::MoveLineStart),
+    ("move_line_end", KeyAction::MoveLineEnd),
+    ("move_file_top", KeyAction::MoveFileTop),
+    ("move_file_bottom", KeyAction::MoveFileBottom),
+    ("delete_char", KeyAction::DeleteChar),
+    ("delete_line", KeyAction::DeleteLine),
+    ("insert_after", KeyAction::InsertAfter),
+    ("insert_line_below", KeyAction::InsertLineBelow),
+    ("insert_line_above", KeyAction::InsertLineAbove),
 ];
 
 trait KeymapEntries {
