@@ -876,7 +876,7 @@ impl Application for RoxanneApp {
                 // state becomes stale.  Rebuild Content to force a reset.
                 let lines_after = self.tab().buffer.line_count() as i32;
                 if lines_after != lines_before {
-                    self.rebuild_content();
+                    self.resync_widget_scroll();
                 }
                 self.clamp_scroll_to_cursor();
                 self.sync_highlight_buffer();
@@ -1932,7 +1932,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                 self.tab_mut().buffer.replace(&t);
                 let lines_after = self.tab().buffer.line_count() as i32;
                 if lines_after != lines_before {
-                    self.rebuild_content();
+                    self.resync_widget_scroll();
                 }
                 self.clamp_scroll_to_cursor();
                 self.sync_highlight_buffer();
@@ -1948,7 +1948,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                 self.tab_mut().content.perform(EditorAction::Edit(EditorEdit::Delete));
                 let t = self.tab().content.text();
                 self.tab_mut().buffer.replace(&t);
-                self.rebuild_content();
+                self.resync_widget_scroll();
                 self.clamp_scroll_to_cursor();
                 self.sync_highlight_buffer();
                 self.refresh_diagnostics();
@@ -3490,28 +3490,21 @@ Astuce: espacez les curseurs pour éviter les chevauchements."
         self.tab_mut().suppress_undo_snapshot = false;
     }
 
-    /// Rebuild the iced EditorContent from the current buffer text and
-    /// reposition the cursor.  This forces the iced text_editor widget to
-    /// drop its stale internal scroll state so the cursor stays visible
-    /// after lines are added or removed.
-    fn rebuild_content(&mut self) {
+    /// Force the iced text_editor widget to re-sync its internal scroll
+    /// with the current cursor position.  We do this by moving to
+    /// DocumentStart (which resets the widget scroll to the top) then
+    /// navigating back to the original position, which triggers the
+    /// widget's auto-scroll logic on the way back.
+    fn resync_widget_scroll(&mut self) {
         let (cursor_line, cursor_col) = self.tab().content.cursor_position();
-        let text = self.tab().content.text().to_string();
-        let line_count = self.tab().buffer.line_count();
-        let clamped_line = cursor_line.min(line_count.saturating_sub(1));
-        let clamped_col = self
-            .tab()
-            .buffer
-            .line(clamped_line)
-            .map(|l| l.chars().count())
-            .unwrap_or(0)
-            .min(cursor_col);
 
-        // Replace content – the widget will create fresh state on next render.
-        self.tab_mut().content = EditorContent::with_text(&text);
+        // Jump to top – this resets widget scroll to 0.
+        self.tab_mut()
+            .content
+            .perform(EditorAction::Move(Motion::DocumentStart));
 
-        // Reposition cursor: go to target line, then target column.
-        for _ in 0..clamped_line {
+        // Navigate back to the original position.
+        for _ in 0..cursor_line {
             self.tab_mut()
                 .content
                 .perform(EditorAction::Move(Motion::Down));
@@ -3519,7 +3512,7 @@ Astuce: espacez les curseurs pour éviter les chevauchements."
         self.tab_mut()
             .content
             .perform(EditorAction::Move(Motion::Home));
-        for _ in 0..clamped_col {
+        for _ in 0..cursor_col {
             self.tab_mut()
                 .content
                 .perform(EditorAction::Move(Motion::Right));
