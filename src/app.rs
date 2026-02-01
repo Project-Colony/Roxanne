@@ -859,6 +859,7 @@ impl Application for RoxanneApp {
                     self.tab_mut().scroll_offset =
                         self.tab_mut().scroll_offset.max(0);
                 }
+                let lines_before = self.tab().buffer.line_count() as i32;
                 if action.is_edit() {
                     self.record_undo_snapshot();
                 }
@@ -870,6 +871,17 @@ impl Application for RoxanneApp {
                     self.tab_mut().content.perform(action);
                     let text = self.tab().content.text();
                     self.tab_mut().buffer.replace(&text);
+                }
+                // When lines are deleted, the iced text_editor's internal scroll
+                // position can become stale, leaving the cursor below the visible
+                // content. Force the widget to scroll up by the number of removed
+                // lines so it re-syncs with the actual cursor position.
+                let lines_after = self.tab().buffer.line_count() as i32;
+                let removed = lines_before - lines_after;
+                if removed > 0 {
+                    self.tab_mut()
+                        .content
+                        .perform(EditorAction::Scroll { lines: -removed });
                 }
                 // Keep scroll_offset in sync when cursor moves beyond visible area.
                 // The iced text_editor auto-scrolls to keep the cursor visible;
@@ -1922,9 +1934,18 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             }
             KeyAction::DeleteChar => {
                 self.record_undo_snapshot();
+                let lines_before = self.tab().buffer.line_count() as i32;
                 self.tab_mut().content.perform(EditorAction::Edit(EditorEdit::Delete));
                 let t = self.tab().content.text();
                 self.tab_mut().buffer.replace(&t);
+                let lines_after = self.tab().buffer.line_count() as i32;
+                let removed = lines_before - lines_after;
+                if removed > 0 {
+                    self.tab_mut()
+                        .content
+                        .perform(EditorAction::Scroll { lines: -removed });
+                }
+                self.clamp_scroll_to_cursor();
                 self.sync_highlight_buffer();
                 self.refresh_diagnostics();
                 self.refresh_viewport_cache();
@@ -1932,12 +1953,21 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             }
             KeyAction::DeleteLine => {
                 self.record_undo_snapshot();
+                let lines_before = self.tab().buffer.line_count() as i32;
                 // Select entire current line then delete
                 self.tab_mut().content.perform(EditorAction::Move(Motion::Home));
                 self.tab_mut().content.perform(EditorAction::Select(Motion::Down));
                 self.tab_mut().content.perform(EditorAction::Edit(EditorEdit::Delete));
                 let t = self.tab().content.text();
                 self.tab_mut().buffer.replace(&t);
+                let lines_after = self.tab().buffer.line_count() as i32;
+                let removed = lines_before - lines_after;
+                if removed > 0 {
+                    self.tab_mut()
+                        .content
+                        .perform(EditorAction::Scroll { lines: -removed });
+                }
+                self.clamp_scroll_to_cursor();
                 self.sync_highlight_buffer();
                 self.refresh_diagnostics();
                 self.refresh_viewport_cache();
