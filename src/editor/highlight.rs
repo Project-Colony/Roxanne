@@ -141,10 +141,8 @@ impl Highlighter for RoxanneHighlighter {
                     } else {
                         Vec::new()
                     }
-                } else if self.settings.language == Language::Rust {
-                    highlight_rust_line(line)
                 } else {
-                    Vec::new()
+                    highlight_generic_line(line, self.settings.language)
                 }
             }
         };
@@ -319,6 +317,131 @@ fn highlight_rust_line(line: &str) -> Vec<(Range<usize>, HighlightToken)> {
     highlights
 }
 
+/// Generic fallback highlighter that works for any language.
+/// Highlights strings, comments (// and #), and numbers.
+/// For Rust, also highlights Rust keywords and types.
+fn highlight_generic_line(line: &str, language: Language) -> Vec<(Range<usize>, HighlightToken)> {
+    if language == Language::Rust {
+        return highlight_rust_line(line);
+    }
+
+    let mut highlights = Vec::new();
+    let mut protected_ranges = Vec::new();
+    let bytes = line.as_bytes();
+    let mut string_start = None;
+    let mut string_delimiter = b'"';
+    let mut escaped = false;
+
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+
+        if let Some(start) = string_start {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == string_delimiter {
+                let end = index + 1;
+                highlights.push((start..end, HighlightToken::String));
+                protected_ranges.push(start..end);
+                string_start = None;
+            }
+            index += 1;
+            continue;
+        }
+
+        // String start
+        if byte == b'"' || byte == b'\'' {
+            string_start = Some(index);
+            string_delimiter = byte;
+            index += 1;
+            continue;
+        }
+
+        // Line comment: // or #
+        if byte == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
+            highlights.push((index..line.len(), HighlightToken::Comment));
+            protected_ranges.push(index..line.len());
+            break;
+        }
+        if byte == b'#' && (language == Language::Python) {
+            highlights.push((index..line.len(), HighlightToken::Comment));
+            protected_ranges.push(index..line.len());
+            break;
+        }
+
+        index += 1;
+    }
+
+    // Unclosed string
+    if let Some(start) = string_start {
+        highlights.push((start..line.len(), HighlightToken::String));
+        protected_ranges.push(start..line.len());
+    }
+
+    // Keywords per language
+    let keywords: &[&str] = match language {
+        Language::JavaScript => &[
+            "var", "let", "const", "function", "return", "if", "else", "for", "while", "do",
+            "switch", "case", "break", "continue", "new", "this", "class", "extends", "import",
+            "export", "default", "from", "async", "await", "try", "catch", "finally", "throw",
+            "typeof", "instanceof", "in", "of", "true", "false", "null", "undefined", "yield",
+        ],
+        Language::Python => &[
+            "def", "class", "return", "if", "elif", "else", "for", "while", "break", "continue",
+            "import", "from", "as", "try", "except", "finally", "raise", "with", "yield",
+            "lambda", "pass", "True", "False", "None", "and", "or", "not", "in", "is", "global",
+            "nonlocal", "assert", "del", "async", "await",
+        ],
+        Language::C => &[
+            "auto", "break", "case", "char", "const", "continue", "default", "do", "double",
+            "else", "enum", "extern", "float", "for", "goto", "if", "int", "long", "register",
+            "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef",
+            "union", "unsigned", "void", "volatile", "while", "inline", "restrict",
+        ],
+        Language::Go => &[
+            "break", "case", "chan", "const", "continue", "default", "defer", "else",
+            "fallthrough", "for", "func", "go", "goto", "if", "import", "interface", "map",
+            "package", "range", "return", "select", "struct", "switch", "type", "var",
+            "true", "false", "nil",
+        ],
+        _ => &[],
+    };
+
+    let mut word_start = None;
+    for (idx, ch) in line.char_indices() {
+        if ch.is_alphanumeric() || ch == '_' {
+            if word_start.is_none() {
+                word_start = Some(idx);
+            }
+        } else if let Some(start) = word_start.take() {
+            let end = idx;
+            if !is_in_ranges(start, end, &protected_ranges) {
+                let word = &line[start..end];
+                if keywords.contains(&word) {
+                    highlights.push((start..end, HighlightToken::Keyword));
+                } else if word.chars().all(|c| c.is_numeric() || c == '.') && word.chars().any(|c| c.is_numeric()) {
+                    highlights.push((start..end, HighlightToken::Number));
+                }
+            }
+        }
+    }
+    if let Some(start) = word_start.take() {
+        let end = line.len();
+        if !is_in_ranges(start, end, &protected_ranges) {
+            let word = &line[start..end];
+            if keywords.contains(&word) {
+                highlights.push((start..end, HighlightToken::Keyword));
+            } else if word.chars().all(|c| c.is_numeric() || c == '.') && word.chars().any(|c| c.is_numeric()) {
+                highlights.push((start..end, HighlightToken::Number));
+            }
+        }
+    }
+
+    highlights
+}
+
 fn is_in_ranges(start: usize, end: usize, ranges: &[Range<usize>]) -> bool {
     ranges
         .iter()
@@ -413,5 +536,58 @@ mod tests {
                 .any(|(_, token)| *token == HighlightToken::Comment),
             "expected comment token on second line"
         );
+    }
+
+    #[test]
+    fn generic_fallback_highlights_python_keywords() {
+        let highlights = highlight_generic_line("def foo(x):", Language::Python);
+        assert!(
+            highlights.iter().any(|(range, token)| {
+                *token == HighlightToken::Keyword && &"def foo(x):"[range.clone()] == "def"
+            }),
+            "expected 'def' to be highlighted as keyword"
+        );
+    }
+
+    #[test]
+    fn generic_fallback_highlights_js_keywords() {
+        let highlights = highlight_generic_line("const x = 42;", Language::JavaScript);
+        assert!(
+            highlights.iter().any(|(_, token)| *token == HighlightToken::Keyword),
+            "expected 'const' to be highlighted as keyword"
+        );
+    }
+
+    #[test]
+    fn generic_fallback_highlights_python_comments() {
+        let highlights = highlight_generic_line("x = 1 # comment", Language::Python);
+        assert!(
+            highlights.iter().any(|(_, token)| *token == HighlightToken::Comment),
+            "expected comment token"
+        );
+    }
+
+    #[test]
+    fn generic_fallback_highlights_strings() {
+        let highlights = highlight_generic_line(r#"let s = "hello";"#, Language::JavaScript);
+        assert!(
+            highlights.iter().any(|(_, token)| *token == HighlightToken::String),
+            "expected string token"
+        );
+    }
+
+    #[test]
+    fn generic_fallback_highlights_numbers() {
+        let highlights = highlight_generic_line("let x = 42;", Language::Go);
+        assert!(
+            highlights.iter().any(|(_, token)| *token == HighlightToken::Number),
+            "expected number token"
+        );
+    }
+
+    #[test]
+    fn markdown_language_detection() {
+        assert_eq!(Language::from_extension("md"), Language::Markdown);
+        assert_eq!(Language::from_extension("markdown"), Language::Markdown);
     }
 }

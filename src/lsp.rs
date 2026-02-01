@@ -411,6 +411,40 @@ fn parse_location(value: &Value) -> Option<LspLocation> {
     })
 }
 
+impl LspClient {
+    /// Convenience: create a new LSP client for the current workspace.
+    pub fn new() -> Result<Self, String> {
+        let root = std::env::current_dir().map_err(|e| format!("LSP: {e}"))?;
+        let config = LspServerConfig {
+            command: "rust-analyzer".to_string(),
+            args: Vec::new(),
+        };
+        Self::start(&config, &root)
+    }
+
+    /// Convenience hover by filename string.
+    pub fn hover_str(&mut self, filename: &str, line: u32, col: u32) -> Result<Option<String>, String> {
+        let path = Path::new(filename);
+        let result = self.hover(path, line, col)?;
+        Ok(result.map(|r| r.contents))
+    }
+
+    /// Convenience goto_definition returning (file, line, col) or None.
+    pub fn goto_definition_str(&mut self, filename: &str, line: u32, col: u32) -> Result<Option<(String, u32, u32)>, String> {
+        let path = Path::new(filename);
+        let locations = self.goto_definition(path, line, col)?;
+        if let Some(loc) = locations.first() {
+            Ok(Some((
+                loc.path.display().to_string(),
+                loc.line as u32,
+                loc.column as u32,
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 /// Map from file extension to LSP language ID.
 pub fn language_id_from_extension(ext: &str) -> Option<&'static str> {
     match ext {

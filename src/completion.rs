@@ -7,6 +7,11 @@ pub struct CompletionItem {
 }
 
 pub fn build_items(prefix: &str) -> Vec<CompletionItem> {
+    build_items_with_buffer(prefix, None)
+}
+
+/// Build completion items from keywords, types, and optionally buffer words.
+pub fn build_items_with_buffer(prefix: &str, buffer_text: Option<&str>) -> Vec<CompletionItem> {
     if prefix.is_empty() {
         return Vec::new();
     }
@@ -23,7 +28,7 @@ pub fn build_items(prefix: &str) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     let mut seen = HashSet::new();
     for keyword in keywords.iter().chain(types.iter()) {
-        if keyword.starts_with(prefix) && seen.insert(*keyword) {
+        if keyword.starts_with(prefix) && seen.insert(keyword.to_string()) {
             let detail = if types.contains(keyword) {
                 "Type"
             } else {
@@ -35,8 +40,46 @@ pub fn build_items(prefix: &str) -> Vec<CompletionItem> {
             });
         }
     }
+    // Buffer word completions
+    if let Some(text) = buffer_text {
+        for word in extract_words(text) {
+            if word.len() >= 3 && word.starts_with(prefix) && word != prefix && seen.insert(word.to_string()) {
+                items.push(CompletionItem {
+                    label: word.to_string(),
+                    detail: "Buffer".to_string(),
+                });
+            }
+        }
+    }
     items.sort_by(|a, b| a.label.cmp(&b.label));
+    items.truncate(50);
     items
+}
+
+/// Extract identifier-like words from text.
+fn extract_words(text: &str) -> HashSet<&str> {
+    let mut words = HashSet::new();
+    let mut start = None;
+    for (i, ch) in text.char_indices() {
+        if ch.is_alphanumeric() || ch == '_' {
+            if start.is_none() {
+                start = Some(i);
+            }
+        } else if let Some(s) = start {
+            let word = &text[s..i];
+            if word.len() >= 2 {
+                words.insert(word);
+            }
+            start = None;
+        }
+    }
+    if let Some(s) = start {
+        let word = &text[s..];
+        if word.len() >= 2 {
+            words.insert(word);
+        }
+    }
+    words
 }
 
 pub fn extract_prefix(line: &str, column: usize) -> String {
