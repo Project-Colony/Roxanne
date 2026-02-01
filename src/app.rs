@@ -872,20 +872,12 @@ impl Application for RoxanneApp {
                     let text = self.tab().content.text();
                     self.tab_mut().buffer.replace(&text);
                 }
-                // When lines are deleted, the iced text_editor's internal scroll
-                // position can become stale, leaving the cursor below the visible
-                // content. Force the widget to scroll up by the number of removed
-                // lines so it re-syncs with the actual cursor position.
+                // When lines are removed, the iced widget's internal scroll
+                // state becomes stale.  Rebuild Content to force a reset.
                 let lines_after = self.tab().buffer.line_count() as i32;
-                let removed = lines_before - lines_after;
-                if removed > 0 {
-                    self.tab_mut()
-                        .content
-                        .perform(EditorAction::Scroll { lines: -removed });
+                if lines_after != lines_before {
+                    self.rebuild_content();
                 }
-                // Keep scroll_offset in sync when cursor moves beyond visible area.
-                // The iced text_editor auto-scrolls to keep the cursor visible;
-                // mirror that logic here.
                 self.clamp_scroll_to_cursor();
                 self.sync_highlight_buffer();
                 self.refresh_search_matches(true, true);
@@ -1939,11 +1931,8 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                 let t = self.tab().content.text();
                 self.tab_mut().buffer.replace(&t);
                 let lines_after = self.tab().buffer.line_count() as i32;
-                let removed = lines_before - lines_after;
-                if removed > 0 {
-                    self.tab_mut()
-                        .content
-                        .perform(EditorAction::Scroll { lines: -removed });
+                if lines_after != lines_before {
+                    self.rebuild_content();
                 }
                 self.clamp_scroll_to_cursor();
                 self.sync_highlight_buffer();
@@ -1953,20 +1942,13 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             }
             KeyAction::DeleteLine => {
                 self.record_undo_snapshot();
-                let lines_before = self.tab().buffer.line_count() as i32;
                 // Select entire current line then delete
                 self.tab_mut().content.perform(EditorAction::Move(Motion::Home));
                 self.tab_mut().content.perform(EditorAction::Select(Motion::Down));
                 self.tab_mut().content.perform(EditorAction::Edit(EditorEdit::Delete));
                 let t = self.tab().content.text();
                 self.tab_mut().buffer.replace(&t);
-                let lines_after = self.tab().buffer.line_count() as i32;
-                let removed = lines_before - lines_after;
-                if removed > 0 {
-                    self.tab_mut()
-                        .content
-                        .perform(EditorAction::Scroll { lines: -removed });
-                }
+                self.rebuild_content();
                 self.clamp_scroll_to_cursor();
                 self.sync_highlight_buffer();
                 self.refresh_diagnostics();
@@ -3506,6 +3488,42 @@ Astuce: espacez les curseurs pour éviter les chevauchements."
         self.plugins.on_text_changed(&ct, &cf);
         self.refresh_viewport_cache();
         self.tab_mut().suppress_undo_snapshot = false;
+    }
+
+    /// Rebuild the iced EditorContent from the current buffer text and
+    /// reposition the cursor.  This forces the iced text_editor widget to
+    /// drop its stale internal scroll state so the cursor stays visible
+    /// after lines are added or removed.
+    fn rebuild_content(&mut self) {
+        let (cursor_line, cursor_col) = self.tab().content.cursor_position();
+        let text = self.tab().content.text().to_string();
+        let line_count = self.tab().buffer.line_count();
+        let clamped_line = cursor_line.min(line_count.saturating_sub(1));
+        let clamped_col = self
+            .tab()
+            .buffer
+            .line(clamped_line)
+            .map(|l| l.chars().count())
+            .unwrap_or(0)
+            .min(cursor_col);
+
+        // Replace content – the widget will create fresh state on next render.
+        self.tab_mut().content = EditorContent::with_text(&text);
+
+        // Reposition cursor: go to target line, then target column.
+        for _ in 0..clamped_line {
+            self.tab_mut()
+                .content
+                .perform(EditorAction::Move(Motion::Down));
+        }
+        self.tab_mut()
+            .content
+            .perform(EditorAction::Move(Motion::Home));
+        for _ in 0..clamped_col {
+            self.tab_mut()
+                .content
+                .perform(EditorAction::Move(Motion::Right));
+        }
     }
 
     /// Ensure scroll_offset keeps the cursor line visible, mirroring the
