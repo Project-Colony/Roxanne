@@ -2649,10 +2649,49 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         .align_items(Alignment::Center);
 
         let matches = tab.search_matches.len();
-        let status_text = self
-            .status_message
-            .clone()
-            .unwrap_or_else(|| "Prêt.".to_string());
+        let total_lines = tab.buffer.line_count();
+
+        let mut segments: Vec<String> = Vec::new();
+
+        // Mode: only show when not Insert (i.e. Normal mode)
+        if self.mode != KeymapMode::Insert {
+            segments.push(format!("Mode: {}", self.mode.label()));
+        }
+
+        // Occurrences: only when actively searching
+        if !self.search_query.is_empty() && matches > 0 {
+            segments.push(format!("Occ: {matches}"));
+        }
+
+        // Cursors: only when multi-cursor is active
+        if cursor_count > 1 {
+            segments.push(format!("Cur: {cursor_count}"));
+        }
+
+        // Diagnostics: only when there are issues
+        if diagnostics_count > 0 {
+            segments.push(format!("Diag: {diagnostics_count}"));
+        }
+
+        // Line/Col — always shown
+        segments.push(format!(
+            "Ln {}/{}, Col {}",
+            cursor_position.0 + 1,
+            total_lines,
+            cursor_position.1 + 1
+        ));
+
+        // Wrap: only when enabled
+        if self.line_wrap_enabled {
+            segments.push("Wrap".to_string());
+        }
+
+        // Minimap: only when enabled
+        if self.minimap_enabled {
+            segments.push("Map".to_string());
+        }
+
+        // Plugin statuses
         let plugin_text = self
             .plugins
             .statuses()
@@ -2660,35 +2699,16 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             .map(|status| format!("{}: {}", status.label, status.value))
             .collect::<Vec<_>>()
             .join("   ");
-        let plugin_segment = if plugin_text.is_empty() {
-            String::new()
-        } else {
-            format!("   {plugin_text}")
-        };
-        let viewport_label = self.viewport_label();
+        if !plugin_text.is_empty() {
+            segments.push(plugin_text);
+        }
 
-        let total_lines = tab.buffer.line_count();
-        let wrap_indicator = if self.line_wrap_enabled { "Wrap" } else { "NoWrap" };
-        let minimap_indicator = if self.minimap_enabled { "Map" } else { "" };
-        let lang_label = format!("{:?}", tab.highlight_settings.language);
+        // Status message (only if not default)
+        if let Some(msg) = &self.status_message {
+            segments.push(msg.clone());
+        }
 
-        let right = text(format!(
-            "{}   {}   Mode: {}   Occ: {}   Cur: {}   Diag: {}   Ln {}/{}, Col {}   UTF-8   LF   {}   {}{}   {}{}",
-            viewport_label,
-            lang_label,
-            self.mode.label(),
-            matches,
-            cursor_count,
-            diagnostics_count,
-            cursor_position.0 + 1,
-            total_lines,
-            cursor_position.1 + 1,
-            wrap_indicator,
-            if minimap_indicator.is_empty() { "" } else { minimap_indicator },
-            if minimap_indicator.is_empty() { "" } else { "   " },
-            status_text,
-            plugin_segment
-        ))
+        let right = text(segments.join("   "))
         .size(12)
         .font(Font::MONOSPACE)
         .style(Color::from_rgb8(200, 200, 200))
@@ -3491,13 +3511,6 @@ Astuce: espacez les curseurs pour éviter les chevauchements."
         let tab = self.tab_mut();
         tab.viewport_cache.update(&tab.buffer, start_line, vh);
         self.performance.last_viewport_refresh = Some(started.elapsed());
-    }
-
-    fn viewport_label(&self) -> String {
-        match self.tab().viewport_cache.range() {
-            Some((start, end)) => format!("Viewport: {}-{}", start + 1, end),
-            None => "Viewport: -".to_string(),
-        }
     }
 
     fn refresh_diagnostics(&mut self) {
