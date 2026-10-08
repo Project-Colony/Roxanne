@@ -63,51 +63,39 @@ impl AppConfig {
         let mut config = Self::default();
         let mut warnings = Vec::new();
 
-        if let Some(path) = user_config_path()
-            && let Some(file) = load_file(&path, &mut warnings)
-        {
-            let profile = file.profile.clone();
-            config.apply_file(&file, &mut warnings);
-            if let Some(profile) = profile
-                && let Some(profile_path) = profile_config_path(&profile)
-            {
-                if profile_path.exists() {
-                    if let Some(profile_file) = load_file(&profile_path, &mut warnings) {
-                        config.apply_file(&profile_file, &mut warnings);
-                    }
-                } else {
-                    warnings.push(format!(
-                        "Config: profil '{profile}' introuvable ({profile_path:?})."
-                    ));
-                }
-            }
+        if let Some(path) = user_config_path() {
+            config.apply_layer(&path, Trust::User, &mut warnings);
         }
-
-        if let Some(workspace_path) = workspace_config_path()
-            && let Some(file) = load_file(&workspace_path, &mut warnings)
-        {
-            let profile = file.profile.clone();
-            config.apply_file(&file, &mut warnings);
-            if let Some(profile) = profile
-                && let Some(profile_path) = profile_config_path(&profile)
-            {
-                if profile_path.exists() {
-                    if let Some(profile_file) = load_file(&profile_path, &mut warnings) {
-                        config.apply_file(&profile_file, &mut warnings);
-                    }
-                } else {
-                    warnings.push(format!(
-                        "Config: profil '{profile}' introuvable ({profile_path:?})."
-                    ));
-                }
-            }
+        if let Some(path) = workspace_config_path() {
+            config.apply_layer(&path, Trust::Project, &mut warnings);
         }
 
         config.load_warnings = warnings;
         config
     }
 
-    fn apply_file(&mut self, file: &ConfigFile, warnings: &mut Vec<String>) {
+    /// Applies a config file, then the profile it selects, if any.
+    fn apply_layer(&mut self, path: &Path, trust: Trust, warnings: &mut Vec<String>) {
+        let Some(file) = load_file(path, warnings) else {
+            return;
+        };
+        self.apply_file(&file, trust, warnings);
+        if let Some(profile) = &file.profile
+            && let Some(profile_path) = profile_config_path(profile)
+        {
+            if profile_path.exists() {
+                if let Some(profile_file) = load_file(&profile_path, warnings) {
+                    self.apply_file(&profile_file, trust, warnings);
+                }
+            } else {
+                warnings.push(format!(
+                    "Config: profil '{profile}' introuvable ({profile_path:?})."
+                ));
+            }
+        }
+    }
+
+    fn apply_file(&mut self, file: &ConfigFile, trust: Trust, warnings: &mut Vec<String>) {
         if let Some(theme) = &file.theme {
             warnings.extend(theme.apply_to(&mut self.theme));
         }
@@ -132,13 +120,37 @@ impl AppConfig {
             }
         }
         if let Some(plugins) = &file.plugins {
-            self.plugins = plugins.clone();
             warnings.extend(plugins.warnings());
+            match trust {
+                Trust::User => self.plugins = plugins.clone(),
+                Trust::Project => {
+                    self.plugins.enabled = plugins.enabled.clone();
+                    if !plugins.dynamic.is_empty() {
+                        warnings.push(
+                            "Config: plugins.dynamic ignoré dans .roxanne.toml, \
+                             les plugins natifs se déclarent dans ~/.config/roxanne/config.toml."
+                                .to_string(),
+                        );
+                    }
+                }
+            }
         }
         if let Some(editor) = &file.editor {
             self.editor = editor.clone();
         }
     }
+}
+
+/// Who wrote a config file, which decides whether it may load native code.
+#[derive(Debug, Clone, Copy)]
+enum Trust {
+    /// The user's own config and the profiles it selects: may list
+    /// `plugins.dynamic`.
+    User,
+    /// A `.roxanne.toml` found in the working directory or one of its
+    /// ancestors, and any profile it selects. Opening a project must never run
+    /// code from it, so its `plugins.dynamic` is ignored.
+    Project,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -61,6 +61,14 @@ impl PluginManager {
             }
         }
         for plugin_path in &config.dynamic {
+            // A relative path would resolve against the working directory, so
+            // opening a project could load a library from inside it.
+            if !Path::new(plugin_path).is_absolute() {
+                warnings.push(format!(
+                    "Plugins: {plugin_path}: chemin absolu requis pour un plugin natif."
+                ));
+                continue;
+            }
             match DynamicPlugin::load(plugin_path) {
                 Ok(plugin) => manager.register(Box::new(plugin)),
                 Err(err) => warnings.push(format!("Plugins: {plugin_path}: {err}")),
@@ -409,6 +417,18 @@ mod tests {
             statuses.get("Ligne max").map(String::as_str),
             Some("7 (L2)")
         );
+    }
+
+    #[test]
+    fn plugin_manager_refuses_relative_native_plugin_paths() {
+        let config = PluginConfig {
+            enabled: Vec::new(),
+            dynamic: vec!["target/release/libroxanne_sample.so".to_string()],
+        };
+        let (manager, warnings) = PluginManager::new(&config);
+        assert!(manager.plugins.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("chemin absolu"));
     }
 
     #[test]
