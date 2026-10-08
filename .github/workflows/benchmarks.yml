@@ -5,6 +5,9 @@ on:
     branches: ["main"]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   text-buffer-benchmarks:
     runs-on: ubuntu-latest
