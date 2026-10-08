@@ -2,6 +2,9 @@
 name = "roxanne"
 version = "0.1.0"
 edition = "2024"
+description = "A lightweight, extensible code editor built with Rust and iced"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Project-Colony/Roxanne"
 
 [dependencies]
 iced = { version = "0.12", features = ["advanced"] }

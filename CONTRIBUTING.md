@@ -23,8 +23,6 @@ cargo test
 
 ## Documentation
 - Si vous modifiez une fonctionnalité, mettez à jour les fichiers correspondants dans `docs/`.
-- Si la roadmap change, ajustez `tasks.md`.
-- Si la planification évolue, mettez à jour `docs/roadmap.md`.
 
 ## Style de code
 - Respecter `cargo fmt`.

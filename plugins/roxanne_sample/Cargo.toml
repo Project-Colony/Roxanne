@@ -2,6 +2,9 @@
 name = "roxanne_sample"
 version = "0.1.0"
 edition = "2024"
+description = "Sample native plugin for the Roxanne editor"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Project-Colony/Roxanne"
 
 [lib]
 crate-type = ["cdylib"]
