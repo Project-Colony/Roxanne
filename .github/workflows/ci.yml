@@ -28,3 +28,15 @@ jobs:
 
       - name: Cargo test
         run: cargo test --all
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@1.88
+
+      - name: Cargo check
+        run: cargo check --all-targets

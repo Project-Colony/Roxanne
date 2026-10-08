@@ -2,6 +2,7 @@
 name = "roxanne"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 description = "A lightweight, extensible code editor built with Rust and iced"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/Project-Colony/Roxanne"
