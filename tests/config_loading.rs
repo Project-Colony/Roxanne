@@ -4,14 +4,23 @@ use roxanne::keymap::{KeyAction, KeymapMode};
 use roxanne::theme::ThemePalette;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
+
+// HOME and the working directory are process-wide, and the test harness runs
+// tests on parallel threads: every test that changes them holds this lock.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct EnvGuard {
     original_home: Option<String>,
     original_dir: PathBuf,
+    _lock: MutexGuard<'static, ()>,
 }
 
 impl EnvGuard {
     fn new(home: &Path, dir: &Path) -> Self {
+        let lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let original_home = std::env::var("HOME").ok();
         let original_dir = std::env::current_dir().expect("current dir");
         unsafe {
@@ -21,6 +30,7 @@ impl EnvGuard {
         Self {
             original_home,
             original_dir,
+            _lock: lock,
         }
     }
 }
