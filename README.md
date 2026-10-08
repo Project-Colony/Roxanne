@@ -15,7 +15,7 @@ A lightweight, extensible code editor built with Rust and [iced](https://iced.rs
 
 ## Build from source
 
-You need a recent stable Rust toolchain (edition 2024, Rust 1.85 or newer) from [rustup](https://rustup.rs).
+You need a recent stable Rust toolchain (edition 2024, Rust 1.88 or newer) from [rustup](https://rustup.rs).
 
 ```bash
 git clone https://github.com/Project-Colony/Roxanne.git
