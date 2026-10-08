@@ -9,7 +9,7 @@ use toml::Value;
 
 const CURRENT_CONFIG_VERSION: u32 = 1;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AppConfig {
     pub theme: ThemePalette,
     pub keymap: Keymap,
@@ -35,9 +35,15 @@ pub struct EditorConfig {
     pub line_numbers: bool,
 }
 
-fn default_tab_size() -> usize { 4 }
-fn default_true() -> bool { true }
-fn default_line_ending() -> String { "lf".to_string() }
+fn default_tab_size() -> usize {
+    4
+}
+fn default_true() -> bool {
+    true
+}
+fn default_line_ending() -> String {
+    "lf".to_string()
+}
 
 impl Default for EditorConfig {
     fn default() -> Self {
@@ -57,42 +63,42 @@ impl AppConfig {
         let mut config = Self::default();
         let mut warnings = Vec::new();
 
-        if let Some(path) = user_config_path() {
-            if let Some(file) = load_file(&path, &mut warnings) {
-                let profile = file.profile.clone();
-                config.apply_file(&file, &mut warnings);
-                if let Some(profile) = profile {
-                    if let Some(profile_path) = profile_config_path(&profile) {
-                        if profile_path.exists() {
-                            if let Some(profile_file) = load_file(&profile_path, &mut warnings) {
-                                config.apply_file(&profile_file, &mut warnings);
-                            }
-                        } else {
-                            warnings.push(format!(
-                                "Config: profil '{profile}' introuvable ({profile_path:?})."
-                            ));
-                        }
+        if let Some(path) = user_config_path()
+            && let Some(file) = load_file(&path, &mut warnings)
+        {
+            let profile = file.profile.clone();
+            config.apply_file(&file, &mut warnings);
+            if let Some(profile) = profile
+                && let Some(profile_path) = profile_config_path(&profile)
+            {
+                if profile_path.exists() {
+                    if let Some(profile_file) = load_file(&profile_path, &mut warnings) {
+                        config.apply_file(&profile_file, &mut warnings);
                     }
+                } else {
+                    warnings.push(format!(
+                        "Config: profil '{profile}' introuvable ({profile_path:?})."
+                    ));
                 }
             }
         }
 
-        if let Some(workspace_path) = workspace_config_path() {
-            if let Some(file) = load_file(&workspace_path, &mut warnings) {
-                let profile = file.profile.clone();
-                config.apply_file(&file, &mut warnings);
-                if let Some(profile) = profile {
-                    if let Some(profile_path) = profile_config_path(&profile) {
-                        if profile_path.exists() {
-                            if let Some(profile_file) = load_file(&profile_path, &mut warnings) {
-                                config.apply_file(&profile_file, &mut warnings);
-                            }
-                        } else {
-                            warnings.push(format!(
-                                "Config: profil '{profile}' introuvable ({profile_path:?})."
-                            ));
-                        }
+        if let Some(workspace_path) = workspace_config_path()
+            && let Some(file) = load_file(&workspace_path, &mut warnings)
+        {
+            let profile = file.profile.clone();
+            config.apply_file(&file, &mut warnings);
+            if let Some(profile) = profile
+                && let Some(profile_path) = profile_config_path(&profile)
+            {
+                if profile_path.exists() {
+                    if let Some(profile_file) = load_file(&profile_path, &mut warnings) {
+                        config.apply_file(&profile_file, &mut warnings);
                     }
+                } else {
+                    warnings.push(format!(
+                        "Config: profil '{profile}' introuvable ({profile_path:?})."
+                    ));
                 }
             }
         }
@@ -131,18 +137,6 @@ impl AppConfig {
         }
         if let Some(editor) = &file.editor {
             self.editor = editor.clone();
-        }
-    }
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            theme: ThemePalette::default(),
-            keymap: Keymap::default(),
-            plugins: PluginConfig::default(),
-            editor: EditorConfig::default(),
-            load_warnings: Vec::new(),
         }
     }
 }
@@ -199,7 +193,7 @@ fn needs_migration(raw: &Value) -> bool {
         .get("config_version")
         .and_then(Value::as_integer)
         .and_then(|value| u32::try_from(value).ok());
-    version.map_or(true, |value| value < CURRENT_CONFIG_VERSION)
+    version.is_none_or(|value| value < CURRENT_CONFIG_VERSION)
 }
 
 pub fn migrate_config(mut raw: Value) -> Value {
@@ -225,8 +219,7 @@ pub fn migrate_config(mut raw: Value) -> Value {
 }
 
 fn merge_tables(target: &mut Value, source: Value) {
-    let (Some(target_table), Some(source_table)) =
-        (target.as_table_mut(), source.as_table())
+    let (Some(target_table), Some(source_table)) = (target.as_table_mut(), source.as_table())
     else {
         return;
     };

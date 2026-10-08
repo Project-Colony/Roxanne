@@ -1,5 +1,5 @@
-use crate::editor::highlight::MatchPosition;
 use crate::editor::TextBuffer;
+use crate::editor::highlight::MatchPosition;
 use regex::{Regex, RegexBuilder};
 use std::path::{Path, PathBuf};
 use walkdir::{DirEntry, WalkDir};

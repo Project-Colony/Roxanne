@@ -204,14 +204,15 @@ impl TextBuffer {
         let is_duplicate = self
             .undo_stack
             .back()
-            .map_or(false, |snapshot| snapshot.rope == self.rope);
+            .is_some_and(|snapshot| snapshot.rope == self.rope);
         if !is_duplicate {
             if self.undo_stack.len() >= MAX_HISTORY {
                 self.undo_stack.pop_front();
             }
             // Rope::clone() is O(1) due to structural sharing.
-            self.undo_stack
-                .push_back(BufferSnapshot { rope: self.rope.clone() });
+            self.undo_stack.push_back(BufferSnapshot {
+                rope: self.rope.clone(),
+            });
         }
         self.redo_stack.clear();
     }
@@ -220,8 +221,9 @@ impl TextBuffer {
         let Some(snapshot) = self.undo_stack.pop_back() else {
             return false;
         };
-        self.redo_stack
-            .push_back(BufferSnapshot { rope: self.rope.clone() });
+        self.redo_stack.push_back(BufferSnapshot {
+            rope: self.rope.clone(),
+        });
         self.rope = snapshot.rope;
         self.sync_cache();
         self.bump_revision();
@@ -232,8 +234,9 @@ impl TextBuffer {
         let Some(snapshot) = self.redo_stack.pop_back() else {
             return false;
         };
-        self.undo_stack
-            .push_back(BufferSnapshot { rope: self.rope.clone() });
+        self.undo_stack.push_back(BufferSnapshot {
+            rope: self.rope.clone(),
+        });
         self.rope = snapshot.rope;
         self.sync_cache();
         self.bump_revision();
@@ -270,8 +273,7 @@ mod tests {
 
     fn build_text(lines: usize, line_len: usize) -> String {
         let line = "x".repeat(line_len);
-        std::iter::repeat(line)
-            .take(lines)
+        std::iter::repeat_n(line, lines)
             .collect::<Vec<_>>()
             .join("\n")
     }

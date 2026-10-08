@@ -106,28 +106,80 @@ impl ThemeConfig {
             };
         }
 
-        apply!(self.palette.app_background, palette.app_background, "app_background");
+        apply!(
+            self.palette.app_background,
+            palette.app_background,
+            "app_background"
+        );
         apply!(self.palette.menu_bar, palette.menu_bar, "menu_bar");
-        apply!(self.palette.menu_button_active, palette.menu_button_active, "menu_button_active");
-        apply!(self.palette.menu_button_hover, palette.menu_button_hover, "menu_button_hover");
+        apply!(
+            self.palette.menu_button_active,
+            palette.menu_button_active,
+            "menu_button_active"
+        );
+        apply!(
+            self.palette.menu_button_hover,
+            palette.menu_button_hover,
+            "menu_button_hover"
+        );
         apply!(self.palette.submenu_bar, palette.submenu_bar, "submenu_bar");
         apply!(self.palette.button_base, palette.button_base, "button_base");
-        apply!(self.palette.button_hover, palette.button_hover, "button_hover");
-        apply!(self.palette.toggle_active, palette.toggle_active, "toggle_active");
-        apply!(self.palette.toggle_inactive, palette.toggle_inactive, "toggle_inactive");
+        apply!(
+            self.palette.button_hover,
+            palette.button_hover,
+            "button_hover"
+        );
+        apply!(
+            self.palette.toggle_active,
+            palette.toggle_active,
+            "toggle_active"
+        );
+        apply!(
+            self.palette.toggle_inactive,
+            palette.toggle_inactive,
+            "toggle_inactive"
+        );
         apply!(self.palette.tab_bar, palette.tab_bar, "tab_bar");
         apply!(self.palette.tab_active, palette.tab_active, "tab_active");
-        apply!(self.palette.editor_background, palette.editor_background, "editor_background");
+        apply!(
+            self.palette.editor_background,
+            palette.editor_background,
+            "editor_background"
+        );
         apply!(self.palette.status_bar, palette.status_bar, "status_bar");
-        apply!(self.palette.panel_background, palette.panel_background, "panel_background");
-        apply!(self.palette.panel_item_background, palette.panel_item_background, "panel_item_background");
-        apply!(self.palette.panel_item_hover, palette.panel_item_hover, "panel_item_hover");
-        apply!(self.syntax.keyword, palette.syntax.keyword, "syntax.keyword");
+        apply!(
+            self.palette.panel_background,
+            palette.panel_background,
+            "panel_background"
+        );
+        apply!(
+            self.palette.panel_item_background,
+            palette.panel_item_background,
+            "panel_item_background"
+        );
+        apply!(
+            self.palette.panel_item_hover,
+            palette.panel_item_hover,
+            "panel_item_hover"
+        );
+        apply!(
+            self.syntax.keyword,
+            palette.syntax.keyword,
+            "syntax.keyword"
+        );
         apply!(self.syntax.r#type, palette.syntax.r#type, "syntax.type");
         apply!(self.syntax.string, palette.syntax.string, "syntax.string");
-        apply!(self.syntax.comment, palette.syntax.comment, "syntax.comment");
+        apply!(
+            self.syntax.comment,
+            palette.syntax.comment,
+            "syntax.comment"
+        );
         apply!(self.syntax.number, palette.syntax.number, "syntax.number");
-        apply!(self.syntax.search_match, palette.syntax.search_match, "syntax.search_match");
+        apply!(
+            self.syntax.search_match,
+            palette.syntax.search_match,
+            "syntax.search_match"
+        );
 
         warnings
     }

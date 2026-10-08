@@ -83,9 +83,7 @@ fn path_to_uri(path: &Path) -> String {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join(path)
+        std::env::current_dir().unwrap_or_default().join(path)
     };
     format!("file://{}", absolute.display())
 }
@@ -120,12 +118,11 @@ impl LspClient {
             loop {
                 match read_message(&mut reader) {
                     Ok(Some(msg)) => {
-                        if let Some(id) = msg.get("id").and_then(|v| v.as_i64()) {
-                            if msg.get("method").is_none() {
-                                if let Ok(mut map) = pending_clone.lock() {
-                                    map.insert(id, msg);
-                                }
-                            }
+                        if let Some(id) = msg.get("id").and_then(|v| v.as_i64())
+                            && msg.get("method").is_none()
+                            && let Ok(mut map) = pending_clone.lock()
+                        {
+                            map.insert(id, msg);
                         }
                     }
                     Ok(None) => break,
@@ -189,13 +186,12 @@ impl LspClient {
     }
 
     fn wait_response(&self, id: i64, timeout_ms: u64) -> Result<Value, String> {
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
         loop {
-            if let Ok(mut map) = self.pending.lock() {
-                if let Some(response) = map.remove(&id) {
-                    return Ok(response);
-                }
+            if let Ok(mut map) = self.pending.lock()
+                && let Some(response) = map.remove(&id)
+            {
+                return Ok(response);
             }
             if std::time::Instant::now() > deadline {
                 return Err("LSP: timeout".to_string());
@@ -328,7 +324,9 @@ impl Drop for LspClient {
     }
 }
 
-fn read_message(reader: &mut BufReader<std::process::ChildStdout>) -> Result<Option<Value>, String> {
+fn read_message(
+    reader: &mut BufReader<std::process::ChildStdout>,
+) -> Result<Option<Value>, String> {
     let mut content_length: Option<usize> = None;
     loop {
         let mut line = String::new();
@@ -387,10 +385,10 @@ fn extract_hover_contents(value: &Value) -> String {
 }
 
 fn extract_locations(value: &Value) -> Vec<LspLocation> {
-    if let Some(_obj) = value.as_object() {
-        if let Some(loc) = parse_location(value) {
-            return vec![loc];
-        }
+    if let Some(_obj) = value.as_object()
+        && let Some(loc) = parse_location(value)
+    {
+        return vec![loc];
     }
     if let Some(arr) = value.as_array() {
         return arr.iter().filter_map(parse_location).collect();
@@ -423,14 +421,24 @@ impl LspClient {
     }
 
     /// Convenience hover by filename string.
-    pub fn hover_str(&mut self, filename: &str, line: u32, col: u32) -> Result<Option<String>, String> {
+    pub fn hover_str(
+        &mut self,
+        filename: &str,
+        line: u32,
+        col: u32,
+    ) -> Result<Option<String>, String> {
         let path = Path::new(filename);
         let result = self.hover(path, line, col)?;
         Ok(result.map(|r| r.contents))
     }
 
     /// Convenience goto_definition returning (file, line, col) or None.
-    pub fn goto_definition_str(&mut self, filename: &str, line: u32, col: u32) -> Result<Option<(String, u32, u32)>, String> {
+    pub fn goto_definition_str(
+        &mut self,
+        filename: &str,
+        line: u32,
+        col: u32,
+    ) -> Result<Option<(String, u32, u32)>, String> {
         let path = Path::new(filename);
         let locations = self.goto_definition(path, line, col)?;
         if let Some(loc) = locations.first() {

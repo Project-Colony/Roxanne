@@ -57,9 +57,7 @@ impl button::StyleSheet for MenuButtonStyle {
 
     fn active(&self, _style: &Self::Style) -> button::Appearance {
         button::Appearance {
-            background: self
-                .active
-                .then(|| Background::Color(self.active_color)),
+            background: self.active.then_some(Background::Color(self.active_color)),
             text_color: Color::from_rgb8(220, 220, 220),
             border: Default::default(),
             shadow_offset: Default::default(),
@@ -135,51 +133,75 @@ impl button::StyleSheet for SearchResultButtonStyle {
 // Helper constructors for common palette-driven styles
 
 pub fn app_background(palette: &ThemePalette) -> Box<PaletteContainer> {
-    Box::new(PaletteContainer { color: palette.app_background })
+    Box::new(PaletteContainer {
+        color: palette.app_background,
+    })
 }
 
 pub fn menu_bar(palette: &ThemePalette) -> Box<PaletteContainer> {
-    Box::new(PaletteContainer { color: palette.menu_bar })
+    Box::new(PaletteContainer {
+        color: palette.menu_bar,
+    })
 }
 
 pub fn submenu(palette: &ThemePalette) -> Box<PaletteContainer> {
-    Box::new(PaletteContainer { color: palette.submenu_bar })
+    Box::new(PaletteContainer {
+        color: palette.submenu_bar,
+    })
 }
 
 pub fn submenu_separator(palette: &ThemePalette) -> Box<PaletteContainer> {
-    Box::new(PaletteContainer { color: palette.menu_button_hover })
+    Box::new(PaletteContainer {
+        color: palette.menu_button_hover,
+    })
 }
 
 pub fn tab_bar(palette: &ThemePalette) -> Box<PaletteContainer> {
-    Box::new(PaletteContainer { color: palette.tab_bar })
+    Box::new(PaletteContainer {
+        color: palette.tab_bar,
+    })
 }
 
 pub fn active_tab(palette: &ThemePalette) -> Box<PaletteContainer> {
-    Box::new(PaletteContainer { color: palette.tab_active })
+    Box::new(PaletteContainer {
+        color: palette.tab_active,
+    })
 }
 
 pub fn editor(palette: &ThemePalette) -> Box<PaletteContainer> {
-    Box::new(PaletteContainer { color: palette.editor_background })
+    Box::new(PaletteContainer {
+        color: palette.editor_background,
+    })
 }
 
 pub fn gutter(palette: &ThemePalette) -> Box<PaletteContainer> {
-    Box::new(PaletteContainer { color: palette.panel_background })
+    Box::new(PaletteContainer {
+        color: palette.panel_background,
+    })
 }
 
 pub fn status_bar(palette: &ThemePalette) -> Box<PaletteContainer> {
-    Box::new(PaletteContainer { color: palette.status_bar })
+    Box::new(PaletteContainer {
+        color: palette.status_bar,
+    })
 }
 
 pub fn panel(palette: &ThemePalette) -> Box<PaletteContainer> {
-    Box::new(PaletteContainer { color: palette.panel_background })
+    Box::new(PaletteContainer {
+        color: palette.panel_background,
+    })
 }
 
 pub fn panel_item(palette: &ThemePalette) -> Box<PaletteContainer> {
-    Box::new(PaletteContainer { color: palette.panel_item_background })
+    Box::new(PaletteContainer {
+        color: palette.panel_item_background,
+    })
 }
 
 pub fn submenu_button(palette: &ThemePalette) -> Box<PaletteButton> {
-    Box::new(PaletteButton { hover: palette.button_hover })
+    Box::new(PaletteButton {
+        hover: palette.button_hover,
+    })
 }
 
 pub fn menu_button(palette: &ThemePalette, is_active: bool) -> Box<MenuButtonStyle> {
@@ -200,5 +222,7 @@ pub fn toggle_button(palette: &ThemePalette, is_active: bool) -> Box<ToggleButto
 }
 
 pub fn search_result_button(palette: &ThemePalette) -> Box<SearchResultButtonStyle> {
-    Box::new(SearchResultButtonStyle { hover_color: palette.panel_item_hover })
+    Box::new(SearchResultButtonStyle {
+        hover_color: palette.panel_item_hover,
+    })
 }

@@ -1,7 +1,7 @@
 use crate::editor::highlight::{HighlightToken, Language};
-use streaming_iterator::StreamingIterator;
 use std::ops::Range;
 use std::sync::LazyLock;
+use streaming_iterator::StreamingIterator;
 use tree_sitter::{InputEdit, Parser, Point, Query, QueryCursor, Tree};
 
 struct LangDef {
@@ -61,8 +61,8 @@ pub struct SyntaxHighlighter {
 
 impl SyntaxHighlighter {
     pub fn new(language: Language, buffer_text: &str) -> Option<Self> {
-        let inner = lang_def_for(language)
-            .and_then(|def| GenericHighlighter::new(def, buffer_text));
+        let inner =
+            lang_def_for(language).and_then(|def| GenericHighlighter::new(def, buffer_text));
         Some(Self { inner })
     }
 
@@ -113,10 +113,10 @@ impl GenericHighlighter {
         if self.text == buffer_text {
             return;
         }
-        if let Some(tree) = self.tree.as_mut() {
-            if let Some(edit) = compute_input_edit(&self.text, buffer_text) {
-                tree.edit(&edit);
-            }
+        if let Some(tree) = self.tree.as_mut()
+            && let Some(edit) = compute_input_edit(&self.text, buffer_text)
+        {
+            tree.edit(&edit);
         }
         self.tree = self.parser.parse(buffer_text, self.tree.as_ref());
         self.text = buffer_text.to_string();
@@ -206,10 +206,7 @@ fn compute_input_edit(old_text: &str, new_text: &str) -> Option<InputEdit> {
 
     let mut old_end = old_bytes.len();
     let mut new_end = new_bytes.len();
-    while old_end > start
-        && new_end > start
-        && old_bytes[old_end - 1] == new_bytes[new_end - 1]
-    {
+    while old_end > start && new_end > start && old_bytes[old_end - 1] == new_bytes[new_end - 1] {
         old_end -= 1;
         new_end -= 1;
     }
@@ -227,8 +224,7 @@ fn compute_input_edit(old_text: &str, new_text: &str) -> Option<InputEdit> {
 fn point_for_byte(text: &str, byte_index: usize) -> Point {
     let mut row = 0;
     let mut column = 0;
-    let mut current = 0;
-    for byte in text.bytes() {
+    for (current, byte) in text.bytes().enumerate() {
         if current == byte_index {
             break;
         }
@@ -238,7 +234,6 @@ fn point_for_byte(text: &str, byte_index: usize) -> Point {
         } else {
             column += 1;
         }
-        current += 1;
     }
     Point { row, column }
 }
