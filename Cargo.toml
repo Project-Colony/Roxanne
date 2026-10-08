@@ -37,3 +37,7 @@ tempfile = "3.12"
 [[bench]]
 name = "text_buffer"
 harness = false
+
+[[bench]]
+name = "viewport"
+harness = false
