@@ -29,6 +29,7 @@ use iced::{
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 const DEFAULT_VIEWPORT_HEIGHT: usize = 24;
@@ -149,6 +150,10 @@ fn editor_container_id() -> container::Id {
 
 #[derive(Debug)]
 pub struct Tab {
+    /// Unique for the life of the app, so a read or write that finishes in
+    /// the background finds its own tab even when another one has the same
+    /// file name.
+    id: u64,
     filename: String,
     /// The file this buffer was last loaded from or saved to. `None` for a new
     /// tab, which must go through Save As before it is written anywhere.
@@ -175,6 +180,7 @@ pub struct Tab {
 
 impl Tab {
     fn new(filename: &str, text: &str) -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         let buffer = TextBuffer::from(text);
         let diagnostics = diagnostics::analyze(&buffer);
         let language = std::path::Path::new(filename)
@@ -184,6 +190,7 @@ impl Tab {
             .unwrap_or(highlight::Language::Plain);
         let content = EditorContent::with_text(text);
         Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             filename: filename.to_string(),
             disk_path: None,
             last_saved_text: content.text(),
@@ -334,6 +341,14 @@ impl PerformanceMetrics {
     }
 }
 
+/// `path` resolved through symlinks when it exists, else made absolute
+/// against the working directory, so two spellings of one file compare equal.
+fn comparable_path(path: &str) -> PathBuf {
+    std::fs::canonicalize(path)
+        .or_else(|_| std::path::absolute(path))
+        .unwrap_or_else(|_| PathBuf::from(path))
+}
+
 fn kept_edits_message(path: &str) -> String {
     format!("{path}: unsaved changes kept, the file on disk was not loaded.")
 }
@@ -376,8 +391,8 @@ pub enum Message {
     MenuSelected(Menu),
     MenuAction(MenuAction),
     FileLoaded(Result<FileLoadResult, String>),
-    /// The path and the text written to it.
-    FileSaved(Result<(String, String), String>),
+    /// The tab's id, the path and the text written to it.
+    FileSaved(Result<(u64, String, String), String>),
     ThemeExported(Result<PathBuf, String>),
     ThemeImported(Result<Box<ThemeConfig>, String>),
     EditorBoundsChanged(Option<Rectangle>),
@@ -410,6 +425,7 @@ pub enum Message {
 
 #[derive(Debug, Clone)]
 pub struct FileLoadResult {
+    tab_id: u64,
     path: String,
     text: String,
     lossy: bool,
@@ -1282,9 +1298,8 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                 }
                 match result {
                     Ok(load) => {
-                        // The tab may have been closed or pointed at another
-                        // file while the file was read.
-                        let Some(idx) = self.tab_index_for_path(&load.path) else {
+                        // The tab may have been closed while the file was read.
+                        let Some(idx) = self.tab_index(load.tab_id) else {
                             return Command::none();
                         };
                         self.active_tab = idx;
@@ -1330,12 +1345,12 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                     self.performance.last_file_save = Some(started.elapsed());
                 }
                 match result {
-                    Ok((path, saved_text)) => {
+                    Ok((tab_id, path, saved_text)) => {
                         self.track_recent_file(&path);
                         self.plugins.on_file_saved(&saved_text, &path);
                         // Only the text that was written counts as saved:
                         // edits typed during the write stay marked as modified.
-                        if let Some(idx) = self.tab_index_for_path(&path) {
+                        if let Some(idx) = self.tab_index(tab_id) {
                             let tab = &mut self.tabs[idx];
                             tab.last_saved_text = saved_text;
                             tab.disk_path = Some(path);
@@ -1513,6 +1528,11 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                         Some("Enregistrer sous: nom de fichier manquant.".to_string());
                     return Command::none();
                 }
+                // Ask about replaced characters while the panel is still open
+                // and the tab keeps its name, so the next submit writes.
+                if self.asks_lossy_confirmation() {
+                    return Command::none();
+                }
                 // symlink_metadata also sees a dangling symlink, which a save
                 // would replace.
                 let replaces_other_file = self.tab().disk_path.as_deref() != Some(&new_name)
@@ -1556,17 +1576,19 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                 let Some(path) = self.file_changed_externally.take() else {
                     return Command::none();
                 };
-                match self.tab_index_for_path(&path) {
-                    None => {
-                        self.status_message = Some(format!("{path} is no longer open."));
-                        Command::none()
-                    }
-                    Some(idx) if self.tabs[idx].is_modified() => {
-                        self.status_message = Some(kept_edits_message(&path));
-                        Command::none()
-                    }
-                    Some(_) => self.read_file(path),
+                let Some(idx) = self.tab_index_for_disk_path(&path) else {
+                    self.status_message = Some(format!("{path} is no longer open."));
+                    return Command::none();
+                };
+                let tab = &self.tabs[idx];
+                if tab.is_modified() {
+                    self.status_message = Some(kept_edits_message(&path));
+                    return Command::none();
                 }
+                // The tab's own spelling of the path, which Save compares
+                // with the file name.
+                let (tab_id, disk_path) = (tab.id, tab.disk_path.clone().unwrap_or(path));
+                self.read_file(tab_id, disk_path)
             }
             Message::FileChangedIgnore => {
                 self.file_changed_externally = None;
@@ -1709,12 +1731,11 @@ impl RoxanneApp {
             self.refresh_viewport_cache();
             return Command::none();
         }
-        self.read_file(filename)
+        self.read_file(self.tab().id, filename)
     }
 
-    /// Reads `path` for the tab showing it; `FileLoaded` finds that tab again
-    /// by path once the read is done.
-    fn read_file(&mut self, path: String) -> Command<Message> {
+    /// Reads `path` into the tab `tab_id` once the read is done.
+    fn read_file(&mut self, tab_id: u64, path: String) -> Command<Message> {
         self.perf_file_open_started = Some(Instant::now());
         Command::perform(
             async move {
@@ -1730,6 +1751,7 @@ impl RoxanneApp {
                 let lossy_text = String::from_utf8_lossy(&bytes);
                 let lossy = matches!(lossy_text, Cow::Owned(_));
                 Ok(FileLoadResult {
+                    tab_id,
                     path,
                     text: lossy_text.into_owned(),
                     lossy,
@@ -1759,35 +1781,55 @@ impl RoxanneApp {
 
     /// Writes the active tab to its file name.
     fn write_tab(&mut self) -> Command<Message> {
-        if self.tab().file_is_lossy && !self.tab().lossy_save_acknowledged {
-            self.tab_mut().lossy_save_acknowledged = true;
-            self.status_message = Some(
-                "Sauvegarde bloquée: le fichier contient des caractères invalides remplacés. \
-Relancez «Enregistrer» pour confirmer l'écriture."
-                    .to_string(),
-            );
+        if self.asks_lossy_confirmation() {
             return Command::none();
         }
         if self.tab().file_is_lossy {
             self.tab_mut().lossy_save_acknowledged = false;
         }
-        let filename = self.tab().filename.clone();
+        let (tab_id, filename) = (self.tab().id, self.tab().filename.clone());
         let ct = self.tab().content.text();
         self.tab_mut().buffer.replace(&ct);
         let text = self.tab().buffer.text().to_string();
         self.perf_file_save_started = Some(Instant::now());
         Command::perform(
-            async move { file_ops::atomic_write(&filename, &text).map(|()| (filename, text)) },
+            async move { file_ops::atomic_write(&filename, &text).map(|()| (tab_id, filename, text)) },
             Message::FileSaved,
         )
     }
 
-    /// The tab showing `path`: the active one when it does, else the first.
-    fn tab_index_for_path(&self, path: &str) -> Option<usize> {
-        if self.tab().filename == path {
+    /// For a tab whose invalid characters were replaced on load: asks once and
+    /// returns true, so the save stops until the user confirms with a second one.
+    fn asks_lossy_confirmation(&mut self) -> bool {
+        if !self.tab().file_is_lossy || self.tab().lossy_save_acknowledged {
+            return false;
+        }
+        self.tab_mut().lossy_save_acknowledged = true;
+        self.status_message = Some(
+            "Sauvegarde bloquée: le fichier contient des caractères invalides remplacés. \
+Relancez «Enregistrer» pour confirmer l'écriture."
+                .to_string(),
+        );
+        true
+    }
+
+    fn tab_index(&self, tab_id: u64) -> Option<usize> {
+        self.tabs.iter().position(|tab| tab.id == tab_id)
+    }
+
+    /// The tab whose file is `path`, however either is spelled (the watcher
+    /// reports absolute paths): the active tab when it matches, else the first.
+    fn tab_index_for_disk_path(&self, path: &str) -> Option<usize> {
+        let wanted = comparable_path(path);
+        let shows = |tab: &Tab| {
+            tab.disk_path
+                .as_deref()
+                .is_some_and(|disk_path| comparable_path(disk_path) == wanted)
+        };
+        if shows(self.tab()) {
             return Some(self.active_tab);
         }
-        self.tabs.iter().position(|tab| tab.filename == path)
+        self.tabs.iter().position(shows)
     }
 
     fn export_theme(&mut self) -> Command<Message> {
@@ -4328,21 +4370,68 @@ mod tests {
         tab
     }
 
-    fn loaded(path: &str, text: &str) -> Message {
+    fn saved_tab(path: &str) -> Tab {
+        let mut tab = Tab::new(path, "");
+        tab.disk_path = Some(path.to_string());
+        tab
+    }
+
+    /// The read of `tab`'s file finishing with `text`.
+    fn loaded(tab: &Tab, text: &str) -> Message {
         Message::FileLoaded(Ok(FileLoadResult {
-            path: path.to_string(),
+            tab_id: tab.id,
+            path: tab.filename.clone(),
             text: text.to_string(),
             lossy: false,
         }))
     }
 
+    fn absolute(path: &str) -> String {
+        std::path::absolute(path)
+            .expect("absolute path")
+            .display()
+            .to_string()
+    }
+
     #[test]
-    fn tab_index_for_path_prefers_the_active_tab() {
-        let app = app_with_tabs(vec![Tab::new("a.txt", ""), Tab::new("a.txt", "")], 1);
-        assert_eq!(app.tab_index_for_path("a.txt"), Some(1));
-        let app = app_with_tabs(vec![Tab::new("a.txt", ""), Tab::new("b.txt", "")], 1);
-        assert_eq!(app.tab_index_for_path("a.txt"), Some(0));
-        assert_eq!(app.tab_index_for_path("c.txt"), None);
+    fn reload_routing_finds_the_tab_by_its_file_path() {
+        let app = app_with_tabs(
+            vec![saved_tab("a.txt"), saved_tab("b.txt"), saved_tab("a.txt")],
+            2,
+        );
+        assert_eq!(app.tab_index_for_disk_path("a.txt"), Some(2));
+        // The watcher reports absolute paths.
+        assert_eq!(app.tab_index_for_disk_path(&absolute("b.txt")), Some(1));
+        assert_eq!(app.tab_index_for_disk_path("c.txt"), None);
+        // A tab that was never loaded or saved has no file, whatever its name.
+        let app = app_with_tabs(vec![Tab::new("b.txt", "")], 0);
+        assert_eq!(app.tab_index_for_disk_path("b.txt"), None);
+    }
+
+    #[test]
+    fn a_save_lands_in_the_tab_that_was_written() {
+        // Two new tabs with the same name; the second one became active
+        // while the first one was being saved.
+        let mut app = app_with_tabs(
+            vec![
+                Tab::new("notes.txt", "first"),
+                Tab::new("notes.txt", "second"),
+            ],
+            1,
+        );
+        let written = app.tabs[0].content.text();
+
+        let _ = app.update(Message::FileSaved(Ok((
+            app.tabs[0].id,
+            "notes.txt".to_string(),
+            written,
+        ))));
+
+        assert_eq!(app.tabs[0].disk_path.as_deref(), Some("notes.txt"));
+        assert_eq!(
+            app.tabs[1].disk_path, None,
+            "the other tab was marked saved"
+        );
     }
 
     #[test]
@@ -4352,7 +4441,7 @@ mod tests {
             0,
         );
 
-        let _ = app.update(loaded("b.txt", "new"));
+        let _ = app.update(loaded(&app.tabs[1], "new"));
 
         assert_eq!(app.tabs[0].buffer.text(), "draft");
         assert!(app.tabs[0].is_modified());
@@ -4368,14 +4457,14 @@ mod tests {
             0,
         );
 
-        let _ = app.update(Message::FileChangedExternally("b.txt".to_string()));
+        let _ = app.update(Message::FileChangedExternally(absolute("b.txt")));
         let _ = app.update(Message::FileChangedReload);
         assert_eq!(
             app.status_message.as_deref(),
-            Some(kept_edits_message("b.txt").as_str())
+            Some(kept_edits_message(&absolute("b.txt")).as_str())
         );
         // A read that was already under way when the edits were made.
-        let _ = app.update(loaded("b.txt", "changed on disk"));
+        let _ = app.update(loaded(&app.tabs[1], "changed on disk"));
 
         let tab = &mut app.tabs[1];
         assert_eq!(tab.buffer.text(), "draft");
@@ -4412,6 +4501,29 @@ mod tests {
         let _ = app.update(Message::SaveAsSubmit);
         assert!(!app.save_as_open);
         assert_eq!(app.tab().filename, taken);
+    }
+
+    #[test]
+    fn save_as_asks_about_replaced_characters_before_renaming_the_tab() {
+        let dir = tempdir().expect("tempdir");
+        let target = dir.path().join("copy.txt").display().to_string();
+        let mut tab = saved_tab("broken.txt");
+        tab.file_is_lossy = true;
+        let mut app = app_with_tabs(vec![tab], 0);
+
+        let _ = app.open_save_as();
+        let _ = app.update(Message::SaveAsChanged(target.clone()));
+        let _ = app.update(Message::SaveAsSubmit);
+        assert!(app.save_as_open, "the panel closed before the confirmation");
+        assert_eq!(app.tab().filename, "broken.txt");
+
+        let _ = app.update(Message::SaveAsSubmit);
+        assert!(!app.save_as_open);
+        assert_eq!(app.tab().filename, target);
+        assert!(
+            !app.tab().lossy_save_acknowledged,
+            "the second submit did not write"
+        );
     }
 }
 

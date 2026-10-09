@@ -52,8 +52,10 @@ pub fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     let (path, original) = match std::fs::metadata(path) {
+        // Some volumes cannot resolve a path (Windows RAM disks and some
+        // user-space file systems): save to the path as given there.
         Ok(metadata) => (
-            std::fs::canonicalize(path).map_err(|err| err.to_string())?,
+            std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)),
             Some(metadata),
         ),
         Err(err) if err.kind() == ErrorKind::NotFound => (PathBuf::from(path), None),
