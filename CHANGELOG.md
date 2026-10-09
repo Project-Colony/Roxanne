@@ -23,6 +23,11 @@ and the project follows [Semantic Versioning](https://semver.org/).
   and never replaces unsaved edits or their undo history. Opening a search
   result in a file with unsaved edits keeps them as well.
 - An untouched file without a final newline no longer shows as modified.
+- Config hot reload no longer starts a thread every second. It now covers
+  profiles and config files created after startup, and keeps working after an
+  editor saves by renaming a new file over the old one.
+- Files opened after startup are watched for changes made by other programs,
+  and saving a file in Roxanne no longer asks whether to reload it.
 - Opening a file from the file tree no longer renames the current tab.
 
 ### Security

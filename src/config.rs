@@ -250,28 +250,42 @@ fn merge_tables(target: &mut Value, source: Value) {
     }
 }
 
-/// Returns all config file paths that should be watched for hot reload.
+/// The config files the hot reload watches, whether they exist yet or not:
+/// the user config, every profile (`profiles/*.toml` stands for all of them)
+/// and the workspace `.roxanne.toml`. With no workspace config yet, a new one
+/// is looked for in the working directory, except at a root or in the home
+/// folder: no project lives there, and on macOS a watch there would report
+/// every change below it.
 pub fn watch_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Some(p) = user_config_path() {
-        paths.push(p);
+    if let Some(dir) = user_config_dir() {
+        paths.push(dir.join("config.toml"));
+        paths.push(dir.join("profiles").join("*.toml"));
     }
-    if let Some(p) = workspace_config_path() {
-        paths.push(p);
+    if let Some(path) = workspace_config_path() {
+        paths.push(path);
+    } else if let Ok(dir) = std::env::current_dir()
+        && dir.parent().is_some()
+        && std::env::var_os("HOME").is_none_or(|home| dir != Path::new(&home))
+    {
+        paths.push(dir.join(".roxanne.toml"));
     }
     paths
 }
 
-fn user_config_path() -> Option<PathBuf> {
+fn user_config_dir() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".config/roxanne/config.toml"))
+    Some(PathBuf::from(home).join(".config/roxanne"))
+}
+
+fn user_config_path() -> Option<PathBuf> {
+    Some(user_config_dir()?.join("config.toml"))
 }
 
 fn profile_config_path(profile: &str) -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
     Some(
-        PathBuf::from(home)
-            .join(".config/roxanne/profiles")
+        user_config_dir()?
+            .join("profiles")
             .join(format!("{profile}.toml")),
     )
 }

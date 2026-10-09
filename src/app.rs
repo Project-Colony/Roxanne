@@ -10,6 +10,7 @@ use crate::plugins::PluginManager;
 use crate::search::{self, SearchOptions, SearchResult, SearchResultsSummary, SearchScope};
 use crate::theme::{ThemeConfig, ThemePalette};
 use crate::ui::styles;
+use crate::watch;
 use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, overlay, renderer, widget};
 use iced::alignment::{Horizontal, Vertical};
 use iced::theme;
@@ -24,10 +25,11 @@ use iced::widget::{
 use iced::{
     Alignment, Application, Color, Command, Element, Font, Length, Point, Rectangle, Renderer,
     Settings, Size, Subscription, Theme, Vector, clipboard, event, executor, keyboard, mouse,
-    subscription, window,
+    window,
 };
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -1686,16 +1688,28 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
     fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
             event::listen().map(Message::Event),
-            config_watcher_subscription(),
+            watch::subscription("config-files", config::watch_paths, false, |_| {
+                Message::ConfigFileChanged
+            }),
         ];
-        // Watch open files for external changes
-        let file_paths: Vec<String> = self
+        // Open files, for changes made by other programs. The id holds a hash
+        // of the paths, so opening or closing a file restarts the watcher.
+        let mut paths: Vec<String> = self
             .tabs
             .iter()
-            .filter_map(|t| t.disk_path.clone())
+            .filter_map(|tab| tab.disk_path.clone())
             .collect();
-        if !file_paths.is_empty() {
-            subscriptions.push(file_watcher_subscription(file_paths));
+        if !paths.is_empty() {
+            paths.sort();
+            paths.dedup();
+            let mut hasher = DefaultHasher::new();
+            paths.hash(&mut hasher);
+            subscriptions.push(watch::subscription(
+                ("open-files", hasher.finish()),
+                move || paths.into_iter().map(PathBuf::from).collect(),
+                true,
+                |path| Message::FileChangedExternally(path.display().to_string()),
+            ));
         }
         Subscription::batch(subscriptions)
     }
@@ -3957,149 +3971,6 @@ Astuce: espacez les curseurs pour éviter les chevauchements."
         self.completion_panel_open = false;
         self.tab_mut().completion_items.clear();
     }
-}
-
-fn config_watcher_subscription() -> Subscription<Message> {
-    use std::sync::{Arc, Mutex};
-
-    struct WatcherState {
-        _changed: Arc<Mutex<bool>>,
-        _watcher: Option<notify::RecommendedWatcher>,
-    }
-
-    subscription::channel(
-        std::any::TypeId::of::<ConfigWatcherId>(),
-        16,
-        |mut output| async move {
-            use iced::futures::SinkExt;
-            use notify::{RecursiveMode, Watcher};
-
-            let changed = Arc::new(Mutex::new(false));
-            let changed_clone = changed.clone();
-
-            let watcher =
-                notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
-                    if let Ok(event) = event
-                        && matches!(
-                            event.kind,
-                            notify::EventKind::Modify(_) | notify::EventKind::Create(_)
-                        )
-                        && let Ok(mut flag) = changed_clone.lock()
-                    {
-                        *flag = true;
-                    }
-                })
-                .ok()
-                .map(|mut w| {
-                    for path in config::watch_paths() {
-                        let _ = w.watch(&path, RecursiveMode::NonRecursive);
-                    }
-                    w
-                });
-
-            let _state = WatcherState {
-                _changed: changed.clone(),
-                _watcher: watcher,
-            };
-
-            loop {
-                // Use iced's time subscription internally would be ideal,
-                // but in a channel we poll with a blocking sleep on a thread.
-                let changed_ref = changed.clone();
-                let did_change = iced::futures::future::poll_fn(|_cx| {
-                    if let Ok(mut flag) = changed_ref.lock()
-                        && *flag
-                    {
-                        *flag = false;
-                        return std::task::Poll::Ready(true);
-                    }
-                    // Use a waker to re-poll after a delay
-                    let waker = _cx.waker().clone();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_secs(1));
-                        waker.wake();
-                    });
-                    std::task::Poll::Pending
-                })
-                .await;
-
-                if did_change {
-                    let _ = output.send(Message::ConfigFileChanged).await;
-                }
-            }
-        },
-    )
-}
-
-struct ConfigWatcherId;
-
-fn file_watcher_subscription(paths: Vec<String>) -> Subscription<Message> {
-    use std::sync::{Arc, Mutex};
-
-    struct FileWatcherState {
-        _changed_path: Arc<Mutex<Option<String>>>,
-        _watcher: Option<notify::RecommendedWatcher>,
-    }
-
-    struct FileWatcherId;
-
-    subscription::channel(
-        std::any::TypeId::of::<FileWatcherId>(),
-        16,
-        |mut output| async move {
-            use iced::futures::SinkExt;
-            use notify::{RecursiveMode, Watcher};
-
-            let changed_path: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-            let changed_clone = changed_path.clone();
-
-            let watcher =
-                notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
-                    if let Ok(event) = event
-                        && matches!(event.kind, notify::EventKind::Modify(_))
-                        && let Some(path) = event.paths.first()
-                        && let Ok(mut flag) = changed_clone.lock()
-                    {
-                        *flag = Some(path.display().to_string());
-                    }
-                })
-                .ok()
-                .map(|mut w| {
-                    for path_str in &paths {
-                        let path = Path::new(path_str);
-                        if path.exists() {
-                            let _ = w.watch(path, RecursiveMode::NonRecursive);
-                        }
-                    }
-                    w
-                });
-
-            let _state = FileWatcherState {
-                _changed_path: changed_path.clone(),
-                _watcher: watcher,
-            };
-
-            loop {
-                let changed_ref = changed_path.clone();
-                let result = iced::futures::future::poll_fn(|_cx| {
-                    if let Ok(mut flag) = changed_ref.lock()
-                        && let Some(path) = flag.take()
-                    {
-                        return std::task::Poll::Ready(path);
-                    }
-                    let waker = _cx.waker().clone();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_secs(2));
-                        waker.wake();
-                    });
-                    std::task::Poll::Pending
-                })
-                .await;
-
-                let _ = output.send(Message::FileChangedExternally(result)).await;
-            }
-        },
-    )
 }
 
 #[cfg(test)]
