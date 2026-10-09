@@ -4,11 +4,11 @@
 //! background thread, so a request never blocks the caller: the answer comes
 //! back through a future. The server is asked not to run build scripts, proc
 //! macros or `cargo check`, which all run code from the project. A project's
-//! own `rust-analyzer.toml` can still override some of these settings.
+//! own `rust-analyzer.toml` can still override some of these settings, and
+//! its `rust-toolchain.toml` picks the toolchain that runs `cargo metadata`.
 
 use iced::futures::channel::oneshot;
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::future::Future;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -192,8 +192,8 @@ struct Server {
     writer: Box<dyn Write + Send>,
     incoming: mpsc::Receiver<Value>,
     next_id: i64,
-    /// Version and text last sent for each open document, by URI.
-    documents: HashMap<String, (i64, String)>,
+    /// URI, version and text of the one document open in the server.
+    document: Option<(String, i64, String)>,
     loaded: bool,
     closed: bool,
 }
@@ -236,7 +236,7 @@ impl Server {
             writer: Box::new(writer),
             incoming,
             next_id: 0,
-            documents: HashMap::new(),
+            document: None,
             loaded: false,
             closed: false,
         }
@@ -272,39 +272,44 @@ impl Server {
         self.response(id, REQUEST_TIMEOUT)
     }
 
-    /// Tells the server about the text of `uri`: the whole text the first
-    /// time, then the new text whenever it changed since the last request.
+    /// Tells the server the text of `uri`: the whole text the first time,
+    /// then the new text whenever it changed since the last request. Only
+    /// the document asked about stays open. The one asked about before is
+    /// closed, so the server reads it from disk again instead of keeping the
+    /// text it had at that request.
     fn sync(&mut self, uri: &str, text: &str) -> Result<(), String> {
-        let (method, params) = match self.documents.get_mut(uri) {
-            Some((_, sent)) if sent.as_str() == text => return Ok(()),
-            Some((version, sent)) => {
-                *version += 1;
-                text.clone_into(sent);
-                (
-                    "textDocument/didChange",
-                    json!({
-                        "textDocument": { "uri": uri, "version": *version },
-                        "contentChanges": [{ "text": text }],
-                    }),
-                )
+        if let Some((open, version, sent)) = &mut self.document
+            && open == uri
+        {
+            if sent == text {
+                return Ok(());
             }
-            None => {
-                self.documents
-                    .insert(uri.to_string(), (1, text.to_string()));
-                (
-                    "textDocument/didOpen",
-                    json!({
-                        "textDocument": {
-                            "uri": uri,
-                            "languageId": "rust",
-                            "version": 1,
-                            "text": text,
-                        }
-                    }),
-                )
-            }
-        };
-        self.notify(method, params)
+            *version += 1;
+            text.clone_into(sent);
+            let params = json!({
+                "textDocument": { "uri": uri, "version": *version },
+                "contentChanges": [{ "text": text }],
+            });
+            return self.notify("textDocument/didChange", params);
+        }
+        if let Some((open, ..)) = self.document.take() {
+            self.notify(
+                "textDocument/didClose",
+                json!({ "textDocument": { "uri": open } }),
+            )?;
+        }
+        self.document = Some((uri.to_string(), 1, text.to_string()));
+        self.notify(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "rust",
+                    "version": 1,
+                    "text": text,
+                }
+            }),
+        )
     }
 
     /// Waits once per server, at most `LOAD_TIMEOUT`, until it reports that
@@ -429,15 +434,13 @@ fn initialize_params(root: &Path) -> Value {
 
 /// A `file://` URI for an absolute path.
 fn path_to_uri(path: &Path) -> String {
-    let mut path = path.to_string_lossy().into_owned();
-    if cfg!(windows) {
-        path = path.replace('\\', "/");
-    }
-    let mut uri = String::from("file://");
-    // `C:/dir` becomes `file:///C:/dir`.
-    if !path.starts_with('/') {
-        uri.push('/');
-    }
+    let path = path.to_string_lossy();
+    let path = if cfg!(windows) {
+        windows_uri_path(&path)
+    } else {
+        format!("//{path}")
+    };
+    let mut uri = String::from("file:");
     for byte in path.bytes() {
         if byte.is_ascii_alphanumeric() || b"-._~/:".contains(&byte) {
             uri.push(char::from(byte));
@@ -446,6 +449,23 @@ fn path_to_uri(path: &Path) -> String {
         }
     }
     uri
+}
+
+/// What follows `file:` in the URI of a Windows path, before escaping.
+/// `C:\dir` and `\\?\C:\dir`, the form `canonicalize` returns, give
+/// `///C:/dir`. `\\server\share` and `\\?\UNC\server\share` give
+/// `//server/share`, a URI whose host is `server`.
+fn windows_uri_path(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    if let Some(unc) = path.strip_prefix("//?/UNC/") {
+        format!("//{unc}")
+    } else if let Some(local) = path.strip_prefix("//?/") {
+        format!("///{local}")
+    } else if path.starts_with("//") {
+        path
+    } else {
+        format!("///{path}")
+    }
 }
 
 /// The path a `file://` URI names, or `None` for any other URI.
@@ -470,11 +490,21 @@ fn uri_to_path(uri: &str) -> Option<PathBuf> {
         }
     }
     let path = String::from_utf8(bytes).ok()?;
-    // `file:///C:/dir` names `C:/dir` on Windows.
-    if cfg!(windows) && path.as_bytes().get(2) == Some(&b':') {
-        return Some(PathBuf::from(&path[1..]));
+    if cfg!(windows) {
+        return Some(PathBuf::from(windows_path(&path)));
     }
     Some(PathBuf::from(path))
+}
+
+/// The Windows path named by what follows `file://` in a URI, once
+/// unescaped: `/C:/dir` names `C:/dir`, and `server/share`, from a URI whose
+/// host is `server`, names `//server/share`.
+fn windows_path(uri_path: &str) -> String {
+    match uri_path.strip_prefix('/') {
+        Some(local) if local.as_bytes().get(1) == Some(&b':') => local.to_string(),
+        Some(_) => uri_path.to_string(),
+        None => format!("//{uri_path}"),
+    }
 }
 
 /// One message from the server, or `None` once its output ends or breaks.
@@ -591,6 +621,34 @@ mod tests {
         assert_eq!(uri_to_path("untitled:1"), None);
     }
 
+    /// Runs on every platform, so the Linux-only CI covers the Windows forms.
+    #[test]
+    fn windows_paths_map_to_uris_rust_analyzer_accepts() {
+        for (path, uri_path) in [
+            (r"C:\a\b.rs", "///C:/a/b.rs"),
+            (r"\\?\C:\a\b.rs", "///C:/a/b.rs"),
+            (r"\\server\share\b.rs", "//server/share/b.rs"),
+            (r"\\?\UNC\server\share\b.rs", "//server/share/b.rs"),
+        ] {
+            assert_eq!(windows_uri_path(path), uri_path, "{path}");
+        }
+        assert_eq!(windows_path("/C:/a/b.rs"), "C:/a/b.rs");
+        assert_eq!(windows_path("server/share/b.rs"), "//server/share/b.rs");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verbatim_windows_paths_give_drive_letter_uris() {
+        assert_eq!(
+            path_to_uri(Path::new(r"\\?\C:\a\b.rs")),
+            "file:///C:/a/b.rs"
+        );
+        assert_eq!(
+            uri_to_path("file:///C:/a/b.rs"),
+            Some(PathBuf::from(r"C:\a\b.rs"))
+        );
+    }
+
     /// Plays a server that asks the client something and reports progress,
     /// then checks what the client sends and how it reads the answers.
     #[test]
@@ -651,6 +709,23 @@ mod tests {
                     },
                 }],
             }));
+
+            // Asking about another file closes the first one.
+            let close = next();
+            assert_eq!(close["method"], "textDocument/didClose");
+            assert_eq!(
+                close["params"]["textDocument"]["uri"],
+                "file:///work/project/src/main.rs"
+            );
+            let open = next();
+            assert_eq!(open["method"], "textDocument/didOpen");
+            assert_eq!(
+                open["params"]["textDocument"]["uri"],
+                "file:///work/project/src/lib.rs"
+            );
+            let hover = next();
+            assert_eq!(hover["method"], "textDocument/hover");
+            reply(json!({ "jsonrpc": "2.0", "id": hover["id"], "result": null }));
         });
 
         let mut server = Server::connect(client_reads, client_writes, None);
@@ -671,6 +746,16 @@ mod tests {
                 column: 2,
             }]
         );
+        let hover = server
+            .query(
+                "textDocument/hover",
+                Path::new("/work/project/src/lib.rs"),
+                "",
+                0,
+                0,
+            )
+            .unwrap();
+        assert_eq!(hover, Value::Null);
         fake.join().unwrap();
     }
 }
