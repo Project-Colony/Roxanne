@@ -46,7 +46,9 @@ impl std::fmt::Debug for PluginManager {
 
 impl PluginManager {
     pub fn new(config: &PluginConfig) -> (Self, Vec<String>) {
-        let mut manager = Self { plugins: Vec::new() };
+        let mut manager = Self {
+            plugins: Vec::new(),
+        };
         let mut warnings = Vec::new();
         for plugin in &config.enabled {
             match plugin.as_str() {
@@ -403,7 +405,10 @@ mod tests {
         assert_eq!(statuses.get("Lignes").map(String::as_str), Some("2"));
         assert_eq!(statuses.get("Caractères").map(String::as_str), Some("10"));
         assert_eq!(statuses.get("Octets").map(String::as_str), Some("10"));
-        assert_eq!(statuses.get("Ligne max").map(String::as_str), Some("7 (L2)"));
+        assert_eq!(
+            statuses.get("Ligne max").map(String::as_str),
+            Some("7 (L2)")
+        );
     }
 
     #[test]

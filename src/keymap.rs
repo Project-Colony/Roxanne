@@ -63,8 +63,8 @@ pub struct Keymap {
     normal: Vec<KeyBinding>,
 }
 
-impl Keymap {
-    pub fn default() -> Self {
+impl Default for Keymap {
+    fn default() -> Self {
         let mut keymap = Self {
             insert: Vec::new(),
             normal: Vec::new(),
@@ -141,16 +141,14 @@ impl Keymap {
             (KeyAction::DeleteLine, "d"),
         ];
         for (action, combo) in normal_bindings {
-            keymap.add_binding(
-                KeymapMode::Normal,
-                action,
-                KeyCombo::parse(combo).unwrap(),
-            );
+            keymap.add_binding(KeymapMode::Normal, action, KeyCombo::parse(combo).unwrap());
         }
 
         keymap
     }
+}
 
+impl Keymap {
     pub fn apply_config(&mut self, config: &KeymapConfig) -> Vec<String> {
         let mut warnings = Vec::new();
         let (insert_entries, insert_warnings) = config.entries_for_mode(KeymapMode::Insert);
@@ -158,10 +156,7 @@ impl Keymap {
         for entry in insert_entries {
             match KeyCombo::parse(entry.shortcut) {
                 Ok(combo) => self.set_binding(KeymapMode::Insert, entry.action, combo),
-                Err(err) => warnings.push(format!(
-                    "Keymap: action {:?}: {err}",
-                    entry.action
-                )),
+                Err(err) => warnings.push(format!("Keymap: action {:?}: {err}", entry.action)),
             }
         }
         let (normal_entries, normal_warnings) = config.entries_for_mode(KeymapMode::Normal);
@@ -169,10 +164,7 @@ impl Keymap {
         for entry in normal_entries {
             match KeyCombo::parse(entry.shortcut) {
                 Ok(combo) => self.set_binding(KeymapMode::Normal, entry.action, combo),
-                Err(err) => warnings.push(format!(
-                    "Keymap: action {:?}: {err}",
-                    entry.action
-                )),
+                Err(err) => warnings.push(format!("Keymap: action {:?}: {err}", entry.action)),
             }
         }
         warnings
@@ -422,23 +414,12 @@ impl KeyCombo {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct Modifiers {
     command: bool,
     control: bool,
     shift: bool,
     alt: bool,
-}
-
-impl Default for Modifiers {
-    fn default() -> Self {
-        Self {
-            command: false,
-            control: false,
-            shift: false,
-            alt: false,
-        }
-    }
 }
 
 impl Modifiers {

@@ -1,11 +1,10 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use roxanne::editor::{TextBuffer, ViewportCache};
 use std::time::{Duration, Instant};
 
 fn build_text(lines: usize, line_len: usize) -> String {
     let line = "a".repeat(line_len);
-    std::iter::repeat(line)
-        .take(lines)
+    std::iter::repeat_n(line, lines)
         .collect::<Vec<_>>()
         .join("\n")
 }

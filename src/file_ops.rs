@@ -25,14 +25,11 @@ fn rename_file(from: &Path, to: &Path) -> Result<(), std::io::Error> {
     #[cfg(test)]
     {
         let mut guard = rename_failure_state().lock().expect("rename failure lock");
-        if let Some(target) = guard.as_ref() {
-            if target.as_path() == to {
-                *guard = None;
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
-                    "simulated rename failure",
-                ));
-            }
+        if let Some(target) = guard.as_ref()
+            && target.as_path() == to
+        {
+            *guard = None;
+            return Err(std::io::Error::other("simulated rename failure"));
         }
     }
 
@@ -106,31 +103,29 @@ pub fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
         None
     };
 
-    if let Some(backup_path) = backup_path.as_ref() {
-        if let Err(err) = rename_file(path, backup_path) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(err.to_string());
-        }
+    if let Some(backup_path) = backup_path.as_ref()
+        && let Err(err) = rename_file(path, backup_path)
+    {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(err.to_string());
     }
 
     match rename_file(&temp_path, path) {
         Ok(()) => {
-            if let Some(backup_path) = backup_path {
-                if let Err(err) = std::fs::remove_file(&backup_path) {
-                    return Err(format!("suppression sauvegarde échouée: {err}"));
-                }
+            if let Some(backup_path) = backup_path
+                && let Err(err) = std::fs::remove_file(&backup_path)
+            {
+                return Err(format!("suppression sauvegarde échouée: {err}"));
             }
             Ok(())
         }
         Err(err) => {
             let _ = std::fs::remove_file(&temp_path);
-            if let Some(backup_path) = backup_path {
-                if let Err(restore_err) = rename_file(&backup_path, path) {
-                    let _ = std::fs::remove_file(&backup_path);
-                    return Err(format!(
-                        "{err} (restauration échouée: {restore_err})"
-                    ));
-                }
+            if let Some(backup_path) = backup_path
+                && let Err(restore_err) = rename_file(&backup_path, path)
+            {
+                let _ = std::fs::remove_file(&backup_path);
+                return Err(format!("{err} (restauration échouée: {restore_err})"));
             }
             Err(err.to_string())
         }
@@ -150,8 +145,7 @@ mod tests {
 
     fn build_text(lines: usize, line_len: usize) -> String {
         let line = "a".repeat(line_len);
-        std::iter::repeat(line)
-            .take(lines)
+        std::iter::repeat_n(line, lines)
             .collect::<Vec<_>>()
             .join("\n")
     }

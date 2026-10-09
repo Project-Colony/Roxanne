@@ -43,7 +43,11 @@ pub fn build_items_with_buffer(prefix: &str, buffer_text: Option<&str>) -> Vec<C
     // Buffer word completions
     if let Some(text) = buffer_text {
         for word in extract_words(text) {
-            if word.len() >= 3 && word.starts_with(prefix) && word != prefix && seen.insert(word.to_string()) {
+            if word.len() >= 3
+                && word.starts_with(prefix)
+                && word != prefix
+                && seen.insert(word.to_string())
+            {
                 items.push(CompletionItem {
                     label: word.to_string(),
                     detail: "Buffer".to_string(),

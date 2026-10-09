@@ -42,14 +42,14 @@ impl ViewportCache {
 
         for line_index in start_line..end_line {
             let current = buffer.line(line_index).unwrap_or("");
-            if let Some(cached) = cached_map.remove(&line_index) {
-                if !revision_changed || cached == current {
-                    next_lines.push(ViewportLine {
-                        line: line_index,
-                        text: cached,
-                    });
-                    continue;
-                }
+            if let Some(cached) = cached_map.remove(&line_index)
+                && (!revision_changed || cached == current)
+            {
+                next_lines.push(ViewportLine {
+                    line: line_index,
+                    text: cached,
+                });
+                continue;
             }
 
             next_lines.push(ViewportLine {

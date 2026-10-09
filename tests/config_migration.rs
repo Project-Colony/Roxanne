@@ -16,9 +16,7 @@ find = "ctrl+f"
 "#,
     );
 
-    let version = migrated
-        .get("config_version")
-        .and_then(Value::as_integer);
+    let version = migrated.get("config_version").and_then(Value::as_integer);
     assert_eq!(version, Some(1));
 
     let keymap = migrated
