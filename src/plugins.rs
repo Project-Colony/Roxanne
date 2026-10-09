@@ -61,6 +61,14 @@ impl PluginManager {
             }
         }
         for plugin_path in &config.dynamic {
+            // A relative path would resolve against the working directory, so
+            // opening a project could load a library from inside it.
+            if !Path::new(plugin_path).is_absolute() {
+                warnings.push(format!(
+                    "Plugins: {plugin_path}: chemin absolu requis pour un plugin natif."
+                ));
+                continue;
+            }
             match DynamicPlugin::load(plugin_path) {
                 Ok(plugin) => manager.register(Box::new(plugin)),
                 Err(err) => warnings.push(format!("Plugins: {plugin_path}: {err}")),
@@ -162,8 +170,23 @@ struct DynamicPlugin {
 
 impl DynamicPlugin {
     fn load(path: &str) -> Result<Self, String> {
-        let library = unsafe { Library::new(Path::new(path)) }
-            .map_err(|err| format!("chargement impossible: {err}"))?;
+        // On Windows, plain LoadLibrary looks for the plugin's own DLL
+        // dependencies in the working directory (the opened project) and not
+        // next to the plugin. Search the plugin's folder, the application folder
+        // and System32 instead.
+        #[cfg(windows)]
+        let library = unsafe {
+            use libloading::os::windows;
+            windows::Library::load_with_flags(
+                path,
+                windows::LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+                    | windows::LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+            )
+        }
+        .map(Library::from);
+        #[cfg(not(windows))]
+        let library = unsafe { Library::new(Path::new(path)) };
+        let library = library.map_err(|err| format!("chargement impossible: {err}"))?;
         let symbol: libloading::Symbol<unsafe extern "C" fn() -> PluginApiV1> = unsafe {
             library
                 .get(b"roxanne_plugin_api_v1")
@@ -409,6 +432,18 @@ mod tests {
             statuses.get("Ligne max").map(String::as_str),
             Some("7 (L2)")
         );
+    }
+
+    #[test]
+    fn plugin_manager_refuses_relative_native_plugin_paths() {
+        let config = PluginConfig {
+            enabled: Vec::new(),
+            dynamic: vec!["target/release/libroxanne_sample.so".to_string()],
+        };
+        let (manager, warnings) = PluginManager::new(&config);
+        assert!(manager.plugins.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("chemin absolu"));
     }
 
     #[test]

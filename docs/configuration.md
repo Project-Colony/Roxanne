@@ -23,6 +23,10 @@
 - Profil : `~/.config/roxanne/profiles/<profil>.toml`
 - Workspace : `.roxanne.toml` dans le workspace (recherche ascendante)
 
+Native plugins (`plugins.dynamic`) are read only from the user configuration and the
+profiles it selects. A workspace `.roxanne.toml`, and any profile it selects, cannot load
+native code: its `plugins.dynamic` is ignored with a warning.
+
 ## Rechargement à chaud
 - Utiliser **Tools → Reload Config** pour recharger les fichiers de configuration en cours
   d’exécution.
@@ -74,7 +78,7 @@ enter_insert_mode = "i"
 
 [plugins]
 enabled = ["word_count", "line_count"]
-dynamic = ["./target/release/libroxanne_sample.so"]
+dynamic = ["/opt/roxanne/plugins/libroxanne_sample.so"]
 ```
 
 ## Clés disponibles
@@ -144,7 +148,9 @@ Migration :
 Clés possibles dans `[plugins]` :
 - `enabled` : liste des plugins internes à activer (`word_count`, `line_count`, `character_count`, `byte_count`, `longest_line`).
 - `dynamic` : chemins vers des plugins dynamiques (`.so`, `.dylib`, `.dll`).
-  Exemple : `target/release/libroxanne_sample.so` après compilation d'un plugin externe.
+  Absolute paths only, and only in the user configuration (see above): a relative path
+  would resolve against the working directory, so it is refused.
+  Example: `/opt/roxanne/plugins/libroxanne_sample.so`, once an external plugin is built.
 
 ## Planification configuration
 - Phase 3 : merge multi-niveaux fiable + validation des schémas.

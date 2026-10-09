@@ -157,3 +157,47 @@ fn editor_config_defaults() {
     assert!(!config.editor.word_wrap);
     assert!(!config.editor.minimap);
 }
+
+#[test]
+fn project_config_never_lists_native_plugins() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    let nested = project.join("src/deep");
+    fs::create_dir_all(&nested).expect("create project");
+    // Started from a sub-directory, so the project file is found in an ancestor.
+    let _guard = EnvGuard::new(&home, &nested);
+
+    write_file(
+        &home.join(".config/roxanne/config.toml"),
+        r#"
+[plugins]
+dynamic = ["/opt/roxanne/libtrusted.so"]
+"#,
+    );
+    write_file(
+        &home.join(".config/roxanne/profiles/rogue.toml"),
+        r#"
+[plugins]
+dynamic = ["/opt/roxanne/libprofile.so"]
+"#,
+    );
+    write_file(
+        &project.join(".roxanne.toml"),
+        r#"
+profile = "rogue"
+
+[plugins]
+dynamic = ["/tmp/libevil.so"]
+"#,
+    );
+
+    let config = AppConfig::load();
+    assert_eq!(config.plugins.dynamic, ["/opt/roxanne/libtrusted.so"]);
+    assert!(
+        config
+            .load_warnings
+            .iter()
+            .any(|warning| warning.contains("plugins.dynamic"))
+    );
+}

@@ -13,6 +13,8 @@ A lightweight, extensible code editor built with Rust and [iced](https://iced.rs
 - TOML configuration in `~/.config/roxanne/` with profiles and live reload.
 - Built-in plugins and native plugins loaded from shared libraries (see `plugins/roxanne_sample`).
 
+Native plugins run with your rights, so Roxanne loads only the ones listed in your own `~/.config/roxanne/config.toml` (or a profile it selects), and only by absolute path. A project's `.roxanne.toml`, found in the working directory or any parent, can set the theme, keymap, editor options and built-in plugins, but its `plugins.dynamic` is ignored: opening a folder never loads code from it.
+
 ## Build from source
 
 You need a recent stable Rust toolchain (edition 2024, Rust 1.88 or newer) from [rustup](https://rustup.rs).
