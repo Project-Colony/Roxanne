@@ -25,7 +25,9 @@ and the project follows [Semantic Versioning](https://semver.org/).
 - An untouched file without a final newline no longer shows as modified.
 - Config hot reload no longer starts a thread every second. It now covers
   profiles and config files created after startup, and keeps working after an
-  editor saves by renaming a new file over the old one.
+  editor saves by renaming a new file over the old one. Removing or moving away
+  a config file or profile reloads the config as well, and a config directory
+  that is removed and restored keeps being watched.
 - Files opened after startup are watched for changes made by other programs,
   and saving a file in Roxanne no longer asks whether to reload it.
 - Opening a file from the file tree no longer renames the current tab.
