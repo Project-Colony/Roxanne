@@ -32,6 +32,19 @@ native code: its `plugins.dynamic` is ignored with a warning.
   d’exécution.
 - Les thèmes, keymaps et plugins sont réappliqués immédiatement.
 
+Roxanne also reloads on its own when `config.toml`, any file in `profiles/` or the
+workspace `.roxanne.toml` changes on disk, including a file created after Roxanne
+started. It watches the directories that hold these files, so an editor that saves by
+renaming a new file over the old one keeps triggering reloads. A missing
+`~/.config/roxanne/` or `profiles/` directory is picked up once it is created, as long
+as the directory above it exists. With no
+workspace config at startup, a new `.roxanne.toml` is looked for in the working
+directory, unless that is the home folder or a filesystem root: there, use
+**Tools → Reload Config**.
+
+Open files are watched the same way. A change made by another program asks whether to
+reload the file. Roxanne's own saves never ask.
+
 ## Version du schéma
 - `config_version` : entier optionnel qui indique la version du schéma de configuration.
 - Si la version est absente ou inférieure à la version courante, Roxanne applique une migration

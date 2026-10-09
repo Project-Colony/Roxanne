@@ -10,3 +10,4 @@ pub mod plugins;
 pub mod search;
 pub mod theme;
 pub mod ui;
+pub mod watch;

@@ -105,7 +105,12 @@ pub fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
     // MOVEFILE_REPLACE_EXISTING on Windows), so the original is never removed
     // before the new text is in place.
     fill_temp_file(temp_file, contents, original.as_ref())
-        .and_then(|()| rename_file(&temp_path, &path))
+        .and_then(|()| {
+            // Before the rename, so a watcher never sees the new file unrecorded
+            // and takes Roxanne's own save for another program's.
+            crate::watch::record_own_write(&path, &std::fs::metadata(&temp_path)?);
+            rename_file(&temp_path, &path)
+        })
         .map_err(|err| {
             let _ = std::fs::remove_file(&temp_path);
             err.to_string()

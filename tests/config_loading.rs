@@ -201,3 +201,46 @@ dynamic = ["/tmp/libevil.so"]
             .any(|warning| warning.contains("plugins.dynamic"))
     );
 }
+
+#[test]
+fn watch_paths_cover_profiles_and_files_not_yet_created() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    // Resolved, so the working directory compares equal to HOME on macOS,
+    // where the temporary directory sits behind a symlink.
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let home = root.join("home");
+    let project = root.join("project");
+    let src = project.join("src");
+    fs::create_dir_all(&home).expect("create home");
+    fs::create_dir_all(&src).expect("create src");
+    let config_dir = home.join(".config/roxanne");
+
+    {
+        let _env = EnvGuard::new(&home, &src);
+        // Nothing exists yet: every location is watched for a new file.
+        assert_eq!(
+            roxanne::config::watch_paths(),
+            [
+                config_dir.join("config.toml"),
+                config_dir.join("profiles").join("*.toml"),
+                src.join(".roxanne.toml"),
+            ]
+        );
+    }
+
+    write_file(&project.join(".roxanne.toml"), "");
+    {
+        let _env = EnvGuard::new(&home, &src);
+        // The workspace config found in a parent directory.
+        assert_eq!(
+            roxanne::config::watch_paths()[2],
+            project.join(".roxanne.toml")
+        );
+    }
+
+    {
+        // Started from the home folder: no watch there for a workspace config.
+        let _env = EnvGuard::new(&home, &home);
+        assert_eq!(roxanne::config::watch_paths().len(), 2);
+    }
+}
