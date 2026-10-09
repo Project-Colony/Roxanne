@@ -17,57 +17,40 @@ Ce document décrit les options d'installation et d'exécution de Roxanne.
    ./target/release/roxanne
    ```
 
-## Packaging local (artefacts distribuables)
-Pour générer un paquet avec checksum et signature optionnelle :
+## Release downloads
+Each release on the [Releases page](https://github.com/Project-Colony/Roxanne/releases)
+ships one binary per platform, which Colony picks and installs for you:
+
+| Platform | Asset |
+| --- | --- |
+| Linux x86_64 | `roxanne-linux` |
+| Windows x86_64 | `roxanne-windows.exe` |
+| macOS, Apple Silicon | `roxanne-macos` |
+| macOS, Intel | `roxanne-macos-x86` |
+
+Every asset comes with `<asset>.sig`, an ed25519 signature by the Project Colony
+release key, and `<asset>.meta` with its own signature `<asset>.meta.sig`, which
+names the version, the asset and its SHA-256. To check a download with OpenSSL 3,
+save the public key as `colony-release.pub`:
+
+```
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEARNjg3Nn8H6/aBg1unwGjkUTcrdTxERNefVaqU8cFu0s=
+-----END PUBLIC KEY-----
+```
+
+then run:
+
 ```bash
-scripts/package.sh --target x86_64-unknown-linux-gnu
-```
-- Les artefacts sont placés dans `dist/`.
-- Le script crée un `*.sha256` pour validation et agrège les hashes dans `dist/SHA256SUMS`.
-- Pour signer l'archive (si `gpg` est disponible) :
-  ```bash
-  SIGN=1 scripts/package.sh --target x86_64-unknown-linux-gnu
-  ```
-
-### Périmètre des artefacts (Linux/macOS/Windows)
-Chaque target génère un paquet `roxanne-<version>-<target>` avec le binaire,
-la documentation et les licences.
-
-| OS | Format | Nom attendu |
-| --- | --- | --- |
-| Linux | `.tar.gz` | `roxanne-<version>-<target>.tar.gz` |
-| macOS | `.tar.gz` | `roxanne-<version>-<target>.tar.gz` |
-| Windows | `.zip` | `roxanne-<version>-<target>.zip` |
-
-Arborescence interne typique :
-```
-roxanne-<version>-<target>/
-├─ roxanne[.exe]
-├─ README.md
-├─ LICENSE
-└─ installation.md
+openssl pkeyutl -verify -pubin -inkey colony-release.pub -rawin -in roxanne-linux -sigfile roxanne-linux.sig
+openssl pkeyutl -verify -pubin -inkey colony-release.pub -rawin -in roxanne-linux.meta -sigfile roxanne-linux.meta.sig
+cat roxanne-linux.meta
+sha256sum roxanne-linux
 ```
 
-Fichiers de checksum/signature attendus :
-- `roxanne-<version>-<target>.<ext>.sha256`
-- `SHA256SUMS` (agrège toutes les sommes)
-- `roxanne-<version>-<target>.<ext>.asc` (si `SIGN=1` et `gpg` disponible)
-- `roxanne-<version>-<target>.<ext>.asc.sha256` (si signature générée)
-
-## Vérifier un artefact
-```bash
-sha256sum -c dist/roxanne-<version>-<target>.tar.gz.sha256
-```
-ou
-```bash
-sha256sum -c dist/SHA256SUMS
-```
-
-Pour une signature GPG :
-```bash
-gpg --verify dist/roxanne-<version>-<target>.<ext>.asc dist/roxanne-<version>-<target>.<ext>
-```
+Both `openssl` commands must print `Signature Verified Successfully`, and
+`roxanne-linux.meta` must read exactly `version=<tag>`, `asset=roxanne-linux` and
+`sha256=` followed by the digest that `sha256sum` prints.
 
 ## Désinstallation
 - Supprimer l'exécutable et les fichiers de configuration locaux.
-- Supprimer les archives `dist/` si besoin.
