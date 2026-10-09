@@ -12,6 +12,7 @@ A lightweight, extensible code editor built with Rust and [iced](https://iced.rs
 - Language Server Protocol client that starts the language servers you configure.
 - TOML configuration in `~/.config/roxanne/` with profiles and live reload.
 - Built-in plugins and native plugins loaded from shared libraries (see `plugins/roxanne_sample`).
+- Safe saving: the text goes to a temporary file next to the real one, which it replaces in a single rename, so a file is never left half written. The file keeps its permissions and a symlink stays a link. A new tab asks for a file name before its first save, Save As asks before replacing an existing file, and reloading a file never discards unsaved edits.
 
 Native plugins run with your rights, so Roxanne loads only the ones listed in your own `~/.config/roxanne/config.toml` (or a profile it selects), and only by absolute path. A project's `.roxanne.toml`, found in the working directory or any parent, can set the theme, keymap, editor options and built-in plugins, but its `plugins.dynamic` is ignored: opening a folder never loads code from it.
 

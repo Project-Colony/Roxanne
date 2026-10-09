@@ -29,6 +29,7 @@ use iced::{
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 const DEFAULT_VIEWPORT_HEIGHT: usize = 24;
@@ -149,10 +150,20 @@ fn editor_container_id() -> container::Id {
 
 #[derive(Debug)]
 pub struct Tab {
+    /// Unique for the life of the app, so a read or write that finishes in
+    /// the background finds its own tab even when another one has the same
+    /// file name.
+    id: u64,
     filename: String,
+    /// The file this buffer was last loaded from or saved to. `None` for a new
+    /// tab, which must go through Save As before it is written anywhere.
+    disk_path: Option<String>,
     content: EditorContent,
     buffer: TextBuffer,
     viewport_cache: ViewportCache,
+    /// `content.text()` when the tab last matched its file. Kept in that form,
+    /// which always ends with a newline, so an untouched file without a final
+    /// newline does not count as modified.
     last_saved_text: String,
     highlight_settings: highlight::Settings,
     multi_cursors: Vec<Position>,
@@ -169,6 +180,7 @@ pub struct Tab {
 
 impl Tab {
     fn new(filename: &str, text: &str) -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         let buffer = TextBuffer::from(text);
         let diagnostics = diagnostics::analyze(&buffer);
         let language = std::path::Path::new(filename)
@@ -176,16 +188,19 @@ impl Tab {
             .and_then(|ext| ext.to_str())
             .map(highlight::Language::from_extension)
             .unwrap_or(highlight::Language::Plain);
+        let content = EditorContent::with_text(text);
         Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             filename: filename.to_string(),
-            content: EditorContent::with_text(text),
+            disk_path: None,
+            last_saved_text: content.text(),
+            content,
             buffer,
             viewport_cache: {
                 let mut vc = ViewportCache::new();
                 vc.update(&TextBuffer::from(text), 0, DEFAULT_VIEWPORT_HEIGHT);
                 vc
             },
-            last_saved_text: text.to_string(),
             highlight_settings: highlight::Settings {
                 language,
                 buffer_text: text.into(),
@@ -206,6 +221,22 @@ impl Tab {
 
     fn is_modified(&self) -> bool {
         self.content.text() != self.last_saved_text
+    }
+
+    /// Shows `text` read from `path`, starting a fresh undo history. Callers
+    /// check `is_modified` first, so unsaved edits are never replaced.
+    fn load_text(&mut self, path: &str, text: String, lossy: bool) {
+        self.disk_path = Some(path.to_string());
+        self.file_is_lossy = lossy;
+        self.lossy_save_acknowledged = false;
+        self.content = EditorContent::with_text(&text);
+        self.buffer.replace(&text);
+        self.last_saved_text = self.content.text();
+        self.buffer.clear_history();
+        self.multi_cursors.clear();
+        self.completion_items.clear();
+        self.suppress_undo_snapshot = false;
+        self.scroll_offset = 0;
     }
 
     fn display_name(&self) -> &str {
@@ -251,6 +282,9 @@ pub struct RoxanneApp {
     perf_search_files_started: Option<Instant>,
     save_as_open: bool,
     save_as_input: String,
+    /// The existing file the user was asked about; a second Save on the same
+    /// name replaces it.
+    save_as_overwrite: Option<String>,
     recent_files: Vec<String>,
     line_wrap_enabled: bool,
     minimap_enabled: bool,
@@ -307,6 +341,18 @@ impl PerformanceMetrics {
     }
 }
 
+/// `path` resolved through symlinks when it exists, else made absolute
+/// against the working directory, so two spellings of one file compare equal.
+fn comparable_path(path: &str) -> PathBuf {
+    std::fs::canonicalize(path)
+        .or_else(|_| std::path::absolute(path))
+        .unwrap_or_else(|_| PathBuf::from(path))
+}
+
+fn kept_edits_message(path: &str) -> String {
+    format!("{path}: unsaved changes kept, the file on disk was not loaded.")
+}
+
 fn format_duration(duration: Duration) -> String {
     let millis = duration.as_secs_f64() * 1000.0;
     format!("{millis:.1} ms")
@@ -345,7 +391,8 @@ pub enum Message {
     MenuSelected(Menu),
     MenuAction(MenuAction),
     FileLoaded(Result<FileLoadResult, String>),
-    FileSaved(Result<(), String>),
+    /// The tab's id, the path and the text written to it.
+    FileSaved(Result<(u64, String, String), String>),
     ThemeExported(Result<PathBuf, String>),
     ThemeImported(Result<Box<ThemeConfig>, String>),
     EditorBoundsChanged(Option<Rectangle>),
@@ -378,6 +425,8 @@ pub enum Message {
 
 #[derive(Debug, Clone)]
 pub struct FileLoadResult {
+    tab_id: u64,
+    path: String,
     text: String,
     lossy: bool,
 }
@@ -836,6 +885,7 @@ impl Application for RoxanneApp {
                 perf_search_files_started: None,
                 save_as_open: false,
                 save_as_input: String::new(),
+                save_as_overwrite: None,
                 recent_files: Vec::new(),
                 line_wrap_enabled: false,
                 minimap_enabled: false,
@@ -1074,29 +1124,20 @@ impl Application for RoxanneApp {
                 match result {
                     Ok(load) => {
                         let nav = load.result;
-                        let text = load.text;
                         let path_str = nav.path.display().to_string();
                         // Open in a new tab (or switch to existing)
                         let existing = self.tabs.iter().position(|t| t.filename == path_str);
                         if let Some(idx) = existing {
                             self.active_tab = idx;
-                            // Reload content
-                            let tab = self.tab_mut();
-                            tab.content = EditorContent::with_text(&text);
-                            tab.buffer.replace(&text);
-                            tab.last_saved_text = text;
                         } else {
-                            let mut new_tab = Tab::new(&path_str, &text);
-                            new_tab.file_is_lossy = load.lossy;
-                            new_tab.last_saved_text = text;
-                            self.tabs.push(new_tab);
+                            self.tabs.push(Tab::new(&path_str, ""));
                             self.active_tab = self.tabs.len() - 1;
                         }
-                        self.tab_mut().buffer.clear_history();
-                        self.tab_mut().multi_cursors.clear();
+                        let kept_edits = self.tab().is_modified();
+                        if !kept_edits {
+                            self.tab_mut().load_text(&path_str, load.text, load.lossy);
+                        }
                         self.completion_panel_open = false;
-                        self.tab_mut().completion_items.clear();
-                        self.tab_mut().suppress_undo_snapshot = false;
                         self.sync_highlight_buffer();
                         self.refresh_search_matches(false, true);
                         self.refresh_diagnostics();
@@ -1111,7 +1152,9 @@ impl Application for RoxanneApp {
                             nav.line + 1,
                             nav.column + 1
                         );
-                        if load.lossy {
+                        if kept_edits {
+                            self.status_message = Some(kept_edits_message(&path_str));
+                        } else if load.lossy {
                             self.status_message = Some(format!(
                                 "{opened_message} (caractères invalides remplacés). Sauvegarde \
 bloquée tant qu'une confirmation explicite n'est pas donnée."
@@ -1210,11 +1253,7 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                         self.status_message = Some(self.performance.summary());
                         Command::none()
                     }
-                    MenuAction::SaveAs => {
-                        self.save_as_input = self.tab().filename.clone();
-                        self.save_as_open = true;
-                        Command::none()
-                    }
+                    MenuAction::SaveAs => self.open_save_as(),
                     MenuAction::Undo => {
                         self.apply_undo();
                         Command::none()
@@ -1259,25 +1298,19 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                 }
                 match result {
                     Ok(load) => {
-                        let text = load.text;
-                        let filename = self.tab().filename.clone();
-                        self.track_recent_file(&filename);
-                        // Check if a tab already has this file open
-                        let existing = self.tabs.iter().position(|t| t.filename == filename);
-                        if let Some(idx) = existing {
-                            self.active_tab = idx;
+                        // The tab may have been closed while the file was read.
+                        let Some(idx) = self.tab_index(load.tab_id) else {
+                            return Command::none();
+                        };
+                        self.active_tab = idx;
+                        if self.tab().is_modified() {
+                            self.status_message = Some(kept_edits_message(&load.path));
+                            self.refresh_search_matches(false, false);
+                            self.refresh_viewport_cache();
+                            return Command::none();
                         }
-                        let tab = self.tab_mut();
-                        tab.file_is_lossy = load.lossy;
-                        tab.lossy_save_acknowledged = false;
-                        tab.content = EditorContent::with_text(&text);
-                        tab.buffer.replace(&text);
-                        tab.last_saved_text = text;
-                        tab.buffer.clear_history();
-                        tab.multi_cursors.clear();
-                        tab.completion_items.clear();
-                        tab.suppress_undo_snapshot = false;
-                        tab.scroll_offset = 0;
+                        self.track_recent_file(&load.path);
+                        self.tab_mut().load_text(&load.path, load.text, load.lossy);
                         self.completion_panel_open = false;
                         self.sync_highlight_buffer();
                         self.refresh_search_matches(false, true);
@@ -1312,11 +1345,16 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                     self.performance.last_file_save = Some(started.elapsed());
                 }
                 match result {
-                    Ok(()) => {
-                        let saved_text = self.tab().content.text().to_string();
-                        self.tab_mut().last_saved_text = saved_text.clone();
-                        let filename = self.tab().filename.clone();
-                        self.plugins.on_file_saved(&saved_text, &filename);
+                    Ok((tab_id, path, saved_text)) => {
+                        self.track_recent_file(&path);
+                        self.plugins.on_file_saved(&saved_text, &path);
+                        // Only the text that was written counts as saved:
+                        // edits typed during the write stay marked as modified.
+                        if let Some(idx) = self.tab_index(tab_id) {
+                            let tab = &mut self.tabs[idx];
+                            tab.last_saved_text = saved_text;
+                            tab.disk_path = Some(path);
+                        }
                         let duration = self
                             .performance
                             .last_file_save
@@ -1462,13 +1500,8 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                     self.refresh_viewport_cache();
                     return Command::none();
                 }
-                // Open in new tab
-                self.tab_mut().filename = path_str;
-                self.perf_file_open_started = Some(Instant::now());
-                let filename = self.tab().filename.clone();
-                // Create a new tab and open the file
-                let new_tab = Tab::new(&filename, "");
-                self.tabs.push(new_tab);
+                // Open in a new tab
+                self.tabs.push(Tab::new(&path_str, ""));
                 self.active_tab = self.tabs.len() - 1;
                 self.open_file()
             }
@@ -1495,13 +1528,30 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                         Some("Enregistrer sous: nom de fichier manquant.".to_string());
                     return Command::none();
                 }
+                // Ask about replaced characters while the panel is still open
+                // and the tab keeps its name, so the next submit writes.
+                if self.asks_lossy_confirmation() {
+                    return Command::none();
+                }
+                // symlink_metadata also sees a dangling symlink, which a save
+                // would replace.
+                let replaces_other_file = self.tab().disk_path.as_deref() != Some(&new_name)
+                    && std::fs::symlink_metadata(&new_name).is_ok();
+                if replaces_other_file && self.save_as_overwrite.as_deref() != Some(&new_name) {
+                    self.status_message = Some(format!(
+                        "{new_name} already exists: press Replace to overwrite it."
+                    ));
+                    self.save_as_overwrite = Some(new_name);
+                    return Command::none();
+                }
+                self.save_as_overwrite = None;
                 self.tab_mut().filename = new_name;
                 self.save_as_open = false;
-                self.save_file()
+                Command::batch([self.write_tab(), Self::editor_bounds_command()])
             }
             Message::SaveAsClosed => {
                 self.save_as_open = false;
-                Command::none()
+                Self::editor_bounds_command()
             }
             Message::RecentFileSelected(path) => {
                 let existing = self.tabs.iter().position(|t| t.filename == path);
@@ -1523,8 +1573,22 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                 Command::none()
             }
             Message::FileChangedReload => {
-                self.file_changed_externally = None;
-                self.open_file()
+                let Some(path) = self.file_changed_externally.take() else {
+                    return Command::none();
+                };
+                let Some(idx) = self.tab_index_for_disk_path(&path) else {
+                    self.status_message = Some(format!("{path} is no longer open."));
+                    return Command::none();
+                };
+                let tab = &self.tabs[idx];
+                if tab.is_modified() {
+                    self.status_message = Some(kept_edits_message(&path));
+                    return Command::none();
+                }
+                // The tab's own spelling of the path, which Save compares
+                // with the file name.
+                let (tab_id, disk_path) = (tab.id, tab.disk_path.clone().unwrap_or(path));
+                self.read_file(tab_id, disk_path)
             }
             Message::FileChangedIgnore => {
                 self.file_changed_externally = None;
@@ -1628,8 +1692,7 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
         let file_paths: Vec<String> = self
             .tabs
             .iter()
-            .filter(|t| !t.filename.trim().is_empty() && t.filename != "untitled.txt")
-            .map(|t| t.filename.clone())
+            .filter_map(|t| t.disk_path.clone())
             .collect();
         if !file_paths.is_empty() {
             subscriptions.push(file_watcher_subscription(file_paths));
@@ -1668,10 +1731,15 @@ impl RoxanneApp {
             self.refresh_viewport_cache();
             return Command::none();
         }
+        self.read_file(self.tab().id, filename)
+    }
+
+    /// Reads `path` into the tab `tab_id` once the read is done.
+    fn read_file(&mut self, tab_id: u64, path: String) -> Command<Message> {
         self.perf_file_open_started = Some(Instant::now());
         Command::perform(
             async move {
-                let metadata = std::fs::metadata(&filename).map_err(|err| err.to_string())?;
+                let metadata = std::fs::metadata(&path).map_err(|err| err.to_string())?;
                 if metadata.len() > MAX_OPEN_FILE_SIZE {
                     return Err(format!(
                         "fichier trop volumineux ({} octets, limite {} octets)",
@@ -1679,10 +1747,12 @@ impl RoxanneApp {
                         MAX_OPEN_FILE_SIZE
                     ));
                 }
-                let bytes = std::fs::read(&filename).map_err(|err| err.to_string())?;
+                let bytes = std::fs::read(&path).map_err(|err| err.to_string())?;
                 let lossy_text = String::from_utf8_lossy(&bytes);
                 let lossy = matches!(lossy_text, Cow::Owned(_));
                 Ok(FileLoadResult {
+                    tab_id,
+                    path,
                     text: lossy_text.into_owned(),
                     lossy,
                 })
@@ -1692,32 +1762,74 @@ impl RoxanneApp {
     }
 
     fn save_file(&mut self) -> Command<Message> {
-        if self.tab().filename.trim().is_empty() {
-            self.status_message = Some("Nom de fichier manquant.".to_string());
-            return Command::none();
+        let tab = self.tab();
+        // A new tab, or one whose file name was edited, asks where to save
+        // instead of writing a name relative to the working directory or
+        // replacing another file unasked.
+        if tab.disk_path.as_deref() != Some(tab.filename.as_str()) {
+            return self.open_save_as();
         }
-        if self.tab().file_is_lossy && !self.tab().lossy_save_acknowledged {
-            self.tab_mut().lossy_save_acknowledged = true;
-            self.status_message = Some(
-                "Sauvegarde bloquée: le fichier contient des caractères invalides remplacés. \
-Relancez «Enregistrer» pour confirmer l'écriture."
-                    .to_string(),
-            );
+        self.write_tab()
+    }
+
+    fn open_save_as(&mut self) -> Command<Message> {
+        self.save_as_input = self.tab().filename.clone();
+        self.save_as_overwrite = None;
+        self.save_as_open = true;
+        Self::editor_bounds_command()
+    }
+
+    /// Writes the active tab to its file name.
+    fn write_tab(&mut self) -> Command<Message> {
+        if self.asks_lossy_confirmation() {
             return Command::none();
         }
         if self.tab().file_is_lossy {
             self.tab_mut().lossy_save_acknowledged = false;
         }
-        let filename = self.tab().filename.clone();
-        self.track_recent_file(&filename);
+        let (tab_id, filename) = (self.tab().id, self.tab().filename.clone());
         let ct = self.tab().content.text();
         self.tab_mut().buffer.replace(&ct);
         let text = self.tab().buffer.text().to_string();
         self.perf_file_save_started = Some(Instant::now());
         Command::perform(
-            async move { file_ops::atomic_write(&filename, &text).map_err(|err| err.to_string()) },
+            async move { file_ops::atomic_write(&filename, &text).map(|()| (tab_id, filename, text)) },
             Message::FileSaved,
         )
+    }
+
+    /// For a tab whose invalid characters were replaced on load: asks once and
+    /// returns true, so the save stops until the user confirms with a second one.
+    fn asks_lossy_confirmation(&mut self) -> bool {
+        if !self.tab().file_is_lossy || self.tab().lossy_save_acknowledged {
+            return false;
+        }
+        self.tab_mut().lossy_save_acknowledged = true;
+        self.status_message = Some(
+            "Sauvegarde bloquée: le fichier contient des caractères invalides remplacés. \
+Relancez «Enregistrer» pour confirmer l'écriture."
+                .to_string(),
+        );
+        true
+    }
+
+    fn tab_index(&self, tab_id: u64) -> Option<usize> {
+        self.tabs.iter().position(|tab| tab.id == tab_id)
+    }
+
+    /// The tab whose file is `path`, however either is spelled (the watcher
+    /// reports absolute paths): the active tab when it matches, else the first.
+    fn tab_index_for_disk_path(&self, path: &str) -> Option<usize> {
+        let wanted = comparable_path(path);
+        let shows = |tab: &Tab| {
+            tab.disk_path
+                .as_deref()
+                .is_some_and(|disk_path| comparable_path(disk_path) == wanted)
+        };
+        if shows(self.tab()) {
+            return Some(self.active_tab);
+        }
+        self.tabs.iter().position(shows)
     }
 
     fn export_theme(&mut self) -> Command<Message> {
@@ -3720,8 +3832,10 @@ Astuce: espacez les curseurs pour éviter les chevauchements."
             .padding([4, 8])
             .size(12);
 
+        let confirming = self.save_as_overwrite.as_deref() == Some(self.save_as_input.trim());
+        let save_label = if confirming { "Replace" } else { "Enregistrer" };
         let actions = row![
-            Button::new(text("Enregistrer").size(12).font(Font::MONOSPACE))
+            Button::new(text(save_label).size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
                 .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::SaveAsSubmit),
@@ -3990,10 +4104,12 @@ fn file_watcher_subscription(paths: Vec<String>) -> Subscription<Message> {
 
 #[cfg(test)]
 mod tests {
-    use super::RoxanneApp;
+    use super::{EditorContent, FileLoadResult, Message, RoxanneApp, Tab, kept_edits_message};
+    use crate::config::AppConfig;
     use crate::diagnostics;
     use crate::editor::TextBuffer;
     use crate::search::{self, SearchOptions};
+    use iced::Application;
     use std::fs;
     use tempfile::tempdir;
 
@@ -4235,6 +4351,179 @@ mod tests {
                 .expect("workspace root");
 
         assert_eq!(resolved, dir.path());
+    }
+
+    fn app_with_tabs(tabs: Vec<Tab>, active_tab: usize) -> RoxanneApp {
+        let mut app = RoxanneApp::new(AppConfig::default()).0;
+        app.tabs = tabs;
+        app.active_tab = active_tab;
+        app
+    }
+
+    /// A tab loaded from `path` whose text was then changed to `edited`.
+    fn edited_tab(path: &str, edited: &str) -> Tab {
+        let mut tab = Tab::new(path, "on disk");
+        tab.disk_path = Some(path.to_string());
+        tab.buffer.record_snapshot();
+        tab.buffer.replace(edited);
+        tab.content = EditorContent::with_text(edited);
+        tab
+    }
+
+    fn saved_tab(path: &str) -> Tab {
+        let mut tab = Tab::new(path, "");
+        tab.disk_path = Some(path.to_string());
+        tab
+    }
+
+    /// The read of `tab`'s file finishing with `text`.
+    fn loaded(tab: &Tab, text: &str) -> Message {
+        Message::FileLoaded(Ok(FileLoadResult {
+            tab_id: tab.id,
+            path: tab.filename.clone(),
+            text: text.to_string(),
+            lossy: false,
+        }))
+    }
+
+    fn absolute(path: &str) -> String {
+        std::path::absolute(path)
+            .expect("absolute path")
+            .display()
+            .to_string()
+    }
+
+    #[test]
+    fn reload_routing_finds_the_tab_by_its_file_path() {
+        let app = app_with_tabs(
+            vec![saved_tab("a.txt"), saved_tab("b.txt"), saved_tab("a.txt")],
+            2,
+        );
+        assert_eq!(app.tab_index_for_disk_path("a.txt"), Some(2));
+        // The watcher reports absolute paths.
+        assert_eq!(app.tab_index_for_disk_path(&absolute("b.txt")), Some(1));
+        assert_eq!(app.tab_index_for_disk_path("c.txt"), None);
+        // A tab that was never loaded or saved has no file, whatever its name.
+        let app = app_with_tabs(vec![Tab::new("b.txt", "")], 0);
+        assert_eq!(app.tab_index_for_disk_path("b.txt"), None);
+    }
+
+    #[test]
+    fn a_save_lands_in_the_tab_that_was_written() {
+        // Two new tabs with the same name; the second one became active
+        // while the first one was being saved.
+        let mut app = app_with_tabs(
+            vec![
+                Tab::new("notes.txt", "first"),
+                Tab::new("notes.txt", "second"),
+            ],
+            1,
+        );
+        let written = app.tabs[0].content.text();
+
+        let _ = app.update(Message::FileSaved(Ok((
+            app.tabs[0].id,
+            "notes.txt".to_string(),
+            written,
+        ))));
+
+        assert_eq!(app.tabs[0].disk_path.as_deref(), Some("notes.txt"));
+        assert_eq!(
+            app.tabs[1].disk_path, None,
+            "the other tab was marked saved"
+        );
+    }
+
+    #[test]
+    fn a_loaded_file_goes_to_its_own_tab_not_the_active_one() {
+        let mut app = app_with_tabs(
+            vec![edited_tab("a.txt", "draft"), Tab::new("b.txt", "old")],
+            0,
+        );
+
+        let _ = app.update(loaded(&app.tabs[1], "new"));
+
+        assert_eq!(app.tabs[0].buffer.text(), "draft");
+        assert!(app.tabs[0].is_modified());
+        assert_eq!(app.tabs[1].buffer.text(), "new");
+        assert!(!app.tabs[1].is_modified());
+        assert_eq!(app.tabs[1].disk_path.as_deref(), Some("b.txt"));
+    }
+
+    #[test]
+    fn reloading_a_modified_tab_keeps_its_edits_and_undo_history() {
+        let mut app = app_with_tabs(
+            vec![Tab::new("a.txt", "a"), edited_tab("b.txt", "draft")],
+            0,
+        );
+
+        let _ = app.update(Message::FileChangedExternally(absolute("b.txt")));
+        let _ = app.update(Message::FileChangedReload);
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(kept_edits_message(&absolute("b.txt")).as_str())
+        );
+        // A read that was already under way when the edits were made.
+        let _ = app.update(loaded(&app.tabs[1], "changed on disk"));
+
+        let tab = &mut app.tabs[1];
+        assert_eq!(tab.buffer.text(), "draft");
+        assert!(tab.is_modified());
+        assert!(tab.buffer.undo(), "the undo history was cleared");
+        assert_eq!(app.tabs[0].buffer.text(), "a");
+    }
+
+    #[test]
+    fn saving_a_new_tab_asks_for_a_file_name() {
+        let mut app = app_with_tabs(vec![Tab::new("untitled.txt", "text")], 0);
+
+        let _ = app.update(Message::SavePressed);
+
+        assert!(app.save_as_open);
+        assert_eq!(app.save_as_input, "untitled.txt");
+        assert_eq!(app.tab().disk_path, None);
+    }
+
+    #[test]
+    fn save_as_asks_before_replacing_an_existing_file() {
+        let dir = tempdir().expect("tempdir");
+        let taken = dir.path().join("taken.txt");
+        fs::write(&taken, "keep").expect("write file");
+        let taken = taken.to_str().expect("path").to_string();
+        let mut app = app_with_tabs(vec![Tab::new("untitled.txt", "text")], 0);
+
+        let _ = app.update(Message::SavePressed);
+        let _ = app.update(Message::SaveAsChanged(taken.clone()));
+        let _ = app.update(Message::SaveAsSubmit);
+        assert!(app.save_as_open, "replaced an existing file without asking");
+        assert_eq!(app.tab().filename, "untitled.txt");
+
+        let _ = app.update(Message::SaveAsSubmit);
+        assert!(!app.save_as_open);
+        assert_eq!(app.tab().filename, taken);
+    }
+
+    #[test]
+    fn save_as_asks_about_replaced_characters_before_renaming_the_tab() {
+        let dir = tempdir().expect("tempdir");
+        let target = dir.path().join("copy.txt").display().to_string();
+        let mut tab = saved_tab("broken.txt");
+        tab.file_is_lossy = true;
+        let mut app = app_with_tabs(vec![tab], 0);
+
+        let _ = app.open_save_as();
+        let _ = app.update(Message::SaveAsChanged(target.clone()));
+        let _ = app.update(Message::SaveAsSubmit);
+        assert!(app.save_as_open, "the panel closed before the confirmation");
+        assert_eq!(app.tab().filename, "broken.txt");
+
+        let _ = app.update(Message::SaveAsSubmit);
+        assert!(!app.save_as_open);
+        assert_eq!(app.tab().filename, target);
+        assert!(
+            !app.tab().lossy_save_acknowledged,
+            "the second submit did not write"
+        );
     }
 }
 
