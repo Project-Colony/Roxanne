@@ -11,6 +11,20 @@ and the project follows [Semantic Versioning](https://semver.org/).
 - GitHub templates for issues and pull requests.
 - Initial changelog.
 
+### Fixed
+- Saving keeps the file's permissions (a `0600` file stays `0600`) and, on
+  Unix, its owner and group where the user may set them. Saving through a
+  symlink updates its target and keeps the link.
+- A failed save leaves the original file untouched. It used to delete the only
+  copy when restoring the backup failed.
+- Saving a new tab asks for a file name instead of writing `untitled.txt` in
+  the working directory, and Save As asks before replacing an existing file.
+- Reloading a file changed on disk reloads that file's tab, not the active one,
+  and never replaces unsaved edits or their undo history. Opening a search
+  result in a file with unsaved edits keeps them as well.
+- An untouched file without a final newline no longer shows as modified.
+- Opening a file from the file tree no longer renames the current tab.
+
 ### Security
 - Native plugins (`plugins.dynamic`) are only loaded from the user's own
   configuration and the profiles it selects. A `.roxanne.toml` in the opened

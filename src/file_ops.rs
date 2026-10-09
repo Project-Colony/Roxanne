@@ -1,4 +1,4 @@
-use std::fs::OpenOptions;
+use std::fs::{File, Metadata, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,10 +36,29 @@ fn rename_file(from: &Path, to: &Path) -> Result<(), std::io::Error> {
     std::fs::rename(from, to)
 }
 
+/// Replaces the file at `path` with `contents`, so it never holds a partial write.
+///
+/// The text goes to a temporary file next to the real file (a symlink is
+/// followed, so the link stays and its target gets the new text), which then
+/// takes the file's place in one rename. The new file keeps the old one's
+/// permissions and, on Unix, its owner and group as far as the user may set them.
+/// On any failure only the temporary file is removed and the original is left
+/// as it was.
+///
+/// The rename gives the file a new inode, so other hard links to it keep the
+/// old text. An in-place write would keep them, but could leave a half-written
+/// file behind.
 pub fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    let path = Path::new(path);
+    let (path, original) = match std::fs::metadata(path) {
+        Ok(metadata) => (
+            std::fs::canonicalize(path).map_err(|err| err.to_string())?,
+            Some(metadata),
+        ),
+        Err(err) if err.kind() == ErrorKind::NotFound => (PathBuf::from(path), None),
+        Err(err) => return Err(err.to_string()),
+    };
     let parent = path.parent().unwrap_or(Path::new(""));
     let file_name = path
         .file_name()
@@ -50,8 +69,17 @@ pub fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
         .map_err(|err| err.to_string())?
         .as_millis();
     let base_name = format!(".{file_name}.{stamp}");
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if original.is_some() {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Owner-only until the original permissions are copied, so no other
+        // user can open the temporary file and read the new text.
+        options.mode(0o600);
+    }
     let mut attempts = 0_u32;
-    let (temp_path, mut temp_file) = loop {
+    let (temp_path, temp_file) = loop {
         let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let temp_name = format!("{base_name}.{counter}.tmp");
         let temp_path = if parent.as_os_str().is_empty() {
@@ -59,11 +87,7 @@ pub fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
         } else {
             parent.join(&temp_name)
         };
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
+        match options.open(&temp_path) {
             Ok(file) => break (temp_path, file),
             Err(err) if err.kind() == ErrorKind::AlreadyExists => {
                 attempts += 1;
@@ -74,74 +98,44 @@ pub fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
             Err(err) => return Err(err.to_string()),
         }
     };
-    temp_file
-        .write_all(contents.as_bytes())
-        .and_then(|_| temp_file.sync_all())
-        .map_err(|err| err.to_string())?;
-    drop(temp_file);
 
-    let backup_path = if path.exists() {
-        let mut attempts = 0_u32;
-        loop {
-            let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let backup_name = format!("{base_name}.{counter}.bak");
-            let candidate = if parent.as_os_str().is_empty() {
-                PathBuf::from(&backup_name)
-            } else {
-                parent.join(&backup_name)
-            };
-            if !candidate.exists() {
-                break Some(candidate);
-            }
-            attempts += 1;
-            if attempts > 1000 {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err("impossible de créer un fichier de sauvegarde unique".to_string());
-            }
-        }
-    } else {
-        None
-    };
-
-    if let Some(backup_path) = backup_path.as_ref()
-        && let Err(err) = rename_file(path, backup_path)
-    {
-        let _ = std::fs::remove_file(&temp_path);
-        return Err(err.to_string());
-    }
-
-    match rename_file(&temp_path, path) {
-        Ok(()) => {
-            if let Some(backup_path) = backup_path
-                && let Err(err) = std::fs::remove_file(&backup_path)
-            {
-                return Err(format!("suppression sauvegarde échouée: {err}"));
-            }
-            Ok(())
-        }
-        Err(err) => {
+    // A rename replaces the target in one step (MoveFileEx with
+    // MOVEFILE_REPLACE_EXISTING on Windows), so the original is never removed
+    // before the new text is in place.
+    fill_temp_file(temp_file, contents, original.as_ref())
+        .and_then(|()| rename_file(&temp_path, &path))
+        .map_err(|err| {
             let _ = std::fs::remove_file(&temp_path);
-            if let Some(backup_path) = backup_path
-                && let Err(restore_err) = rename_file(&backup_path, path)
-            {
-                let _ = std::fs::remove_file(&backup_path);
-                return Err(format!("{err} (restauration échouée: {restore_err})"));
-            }
-            Err(err.to_string())
+            err.to_string()
+        })
+}
+
+fn fill_temp_file(
+    mut file: File,
+    contents: &str,
+    original: Option<&Metadata>,
+) -> std::io::Result<()> {
+    file.write_all(contents.as_bytes())?;
+    if let Some(original) = original {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, fchown};
+            // Only root may give a file away, but any owner may set a group
+            // they belong to, so fall back to the group alone.
+            let _ = fchown(&file, Some(original.uid()), Some(original.gid()))
+                .or_else(|_| fchown(&file, None, Some(original.gid())));
         }
+        // After the chown, which can clear the setuid and setgid bits.
+        file.set_permissions(original.permissions())?;
     }
+    file.sync_all()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-    use std::sync::Mutex;
     use tempfile::tempdir;
-
-    /// Tests that use the global rename failure target must be serialized.
-    static RENAME_TEST_LOCK: std::sync::LazyLock<Mutex<()>> =
-        std::sync::LazyLock::new(|| Mutex::new(()));
 
     fn build_text(lines: usize, line_len: usize) -> String {
         let line = "a".repeat(line_len);
@@ -191,48 +185,18 @@ mod tests {
 
     #[test]
     fn atomic_write_preserves_original_on_rename_failure() {
-        let _lock = RENAME_TEST_LOCK.lock().unwrap();
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("note.txt");
         fs::write(&path, "original").expect("write original");
 
-        set_rename_failure_target(Some(path.clone()));
+        // atomic_write renames onto the resolved path (macOS tempdirs sit
+        // behind the /var symlink).
+        set_rename_failure_target(Some(fs::canonicalize(&path).expect("canonical path")));
         let result = atomic_write(path.to_str().expect("path"), "updated");
         assert!(result.is_err(), "atomic write should fail");
 
         let contents = fs::read_to_string(&path).expect("read original");
         assert_eq!(contents, "original");
-
-        let leftovers: Vec<_> = fs::read_dir(dir.path())
-            .expect("read dir")
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .map(|name| name.ends_with(".tmp") || name.ends_with(".bak"))
-                    .unwrap_or(false)
-            })
-            .collect();
-        assert!(
-            leftovers.is_empty(),
-            "temporary files were not cleaned up: {leftovers:?}"
-        );
-    }
-
-    #[test]
-    fn atomic_write_restores_backup_after_failed_rename() {
-        let _lock = RENAME_TEST_LOCK.lock().unwrap();
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("report.txt");
-        fs::write(&path, "baseline").expect("write original");
-
-        set_rename_failure_target(Some(path.clone()));
-        let result = atomic_write(path.to_str().expect("path"), "replacement");
-        assert!(result.is_err(), "atomic write should fail");
-
-        let contents = fs::read_to_string(&path).expect("read original");
-        assert_eq!(contents, "baseline");
 
         let leftovers: Vec<_> = fs::read_dir(dir.path())
             .expect("read dir")
