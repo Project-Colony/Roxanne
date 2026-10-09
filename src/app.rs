@@ -292,6 +292,9 @@ pub struct RoxanneApp {
     minimap_enabled: bool,
     file_changed_externally: Option<String>,
     undo_group_timer: Option<Instant>,
+    /// rust-analyzer for the workspace of the last LSP request, started on
+    /// the first one.
+    lsp: Option<lsp::LspSession>,
 }
 
 impl RoxanneApp {
@@ -423,6 +426,8 @@ pub enum Message {
     FileChangedIgnore,
     ToggleLineWrap,
     ToggleMinimap,
+    LspHoverResult(Result<Option<String>, String>),
+    LspDefinitionResult(Result<Option<lsp::LspLocation>, String>),
 }
 
 #[derive(Debug, Clone)]
@@ -893,6 +898,7 @@ impl Application for RoxanneApp {
                 minimap_enabled: false,
                 file_changed_externally: None,
                 undo_group_timer: None,
+                lsp: None,
             },
             Self::editor_bounds_command(),
         )
@@ -1279,14 +1285,8 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                             Some("Symboles: fonctionnalité en cours d'implémentation.".to_string());
                         Command::none()
                     }
-                    MenuAction::LspHover => {
-                        self.perform_lsp_hover();
-                        Command::none()
-                    }
-                    MenuAction::LspGotoDefinition => {
-                        self.perform_lsp_goto_definition();
-                        Command::none()
-                    }
+                    MenuAction::LspHover => self.lsp_hover(),
+                    MenuAction::LspGotoDefinition => self.lsp_goto_definition(),
                     MenuAction::About => {
                         self.status_message =
                             Some("Roxanne MVP: éditeur inspiré de Sublime Text.".to_string());
@@ -1592,6 +1592,25 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                 let (tab_id, disk_path) = (tab.id, tab.disk_path.clone().unwrap_or(path));
                 self.read_file(tab_id, disk_path)
             }
+            Message::LspHoverResult(result) => {
+                self.status_message = Some(match result {
+                    Ok(Some(info)) => format!("LSP hover: {info}"),
+                    Ok(None) => "LSP hover: no information here.".to_string(),
+                    Err(err) => format!("LSP: {err}"),
+                });
+                Command::none()
+            }
+            Message::LspDefinitionResult(result) => match result {
+                Ok(Some(location)) => self.open_definition(location),
+                Ok(None) => {
+                    self.status_message = Some("LSP: no definition found.".to_string());
+                    Command::none()
+                }
+                Err(err) => {
+                    self.status_message = Some(format!("LSP: {err}"));
+                    Command::none()
+                }
+            },
             Message::FileChangedIgnore => {
                 self.file_changed_externally = None;
                 self.status_message = Some("Modification externe ignorée.".to_string());
@@ -3397,10 +3416,15 @@ Relancez «Enregistrer» pour confirmer l'écriture."
     }
 
     fn open_search_result(&mut self, index: usize) -> Command<Message> {
-        let Some(result) = self.search_results.get(index).cloned() else {
-            return Command::none();
-        };
+        match self.search_results.get(index).cloned() {
+            Some(result) => self.open_location(result),
+            None => Command::none(),
+        }
+    }
 
+    /// Opens `result.path` in a tab, or switches to the tab showing it, and
+    /// moves the cursor to the result.
+    fn open_location(&mut self, result: SearchResult) -> Command<Message> {
         let path = result.path.clone();
         Command::perform(
             async move {
@@ -3753,70 +3777,81 @@ Astuce: espacez les curseurs pour éviter les chevauchements."
         }
     }
 
-    fn perform_lsp_hover(&mut self) {
-        let (line, col) = self.tab().content.cursor_position();
-        let filename = self.tab().filename.clone();
-        match lsp::LspClient::new() {
-            Ok(mut client) => match client.hover_str(&filename, line as u32, col as u32) {
-                Ok(Some(info)) => {
-                    self.status_message = Some(format!("LSP Hover: {}", info));
-                }
-                Ok(None) => {
-                    self.status_message = Some("LSP Hover: aucune information.".to_string());
-                }
-                Err(e) => {
-                    self.status_message = Some(format!("LSP Hover erreur: {e}"));
-                }
-            },
-            Err(e) => {
-                self.status_message = Some(format!("LSP non disponible: {e}"));
-            }
+    fn lsp_hover(&mut self) -> Command<Message> {
+        match self.lsp_target() {
+            Some((session, path, text, line, character)) => Command::perform(
+                session.hover(path, text, line, character),
+                Message::LspHoverResult,
+            ),
+            None => Command::none(),
         }
     }
 
-    fn perform_lsp_goto_definition(&mut self) {
-        let (line, col) = self.tab().content.cursor_position();
-        let filename = self.tab().filename.clone();
-        match lsp::LspClient::new() {
-            Ok(mut client) => {
-                match client.goto_definition_str(&filename, line as u32, col as u32) {
-                    Ok(Some((file, target_line, target_col))) => {
-                        if file == filename {
-                            self.jump_to_position(target_line as usize, target_col as usize);
-                            self.status_message = Some(format!(
-                                "LSP: définition à ligne {}, colonne {}.",
-                                target_line + 1,
-                                target_col + 1
-                            ));
-                        } else {
-                            let existing = self.tabs.iter().position(|t| t.filename == file);
-                            if let Some(idx) = existing {
-                                self.active_tab = idx;
-                            } else {
-                                let new_tab = Tab::new(&file, "");
-                                self.tabs.push(new_tab);
-                                self.active_tab = self.tabs.len() - 1;
-                                self.tab_mut().filename = file;
-                            }
-                            self.status_message = Some(format!(
-                                "LSP: définition dans {} à ligne {}.",
-                                self.tab().filename,
-                                target_line + 1
-                            ));
-                        }
-                    }
-                    Ok(None) => {
-                        self.status_message = Some("LSP: aucune définition trouvée.".to_string());
-                    }
-                    Err(e) => {
-                        self.status_message = Some(format!("LSP GoTo erreur: {e}"));
-                    }
-                }
-            }
-            Err(e) => {
-                self.status_message = Some(format!("LSP non disponible: {e}"));
-            }
+    fn lsp_goto_definition(&mut self) -> Command<Message> {
+        match self.lsp_target() {
+            Some((session, path, text, line, character)) => Command::perform(
+                session.definition(path, text, line, character),
+                Message::LspDefinitionResult,
+            ),
+            None => Command::none(),
         }
+    }
+
+    /// The rust-analyzer session for the active tab's workspace, started on
+    /// first use, with the file, its text and the cursor to ask about. `None`,
+    /// with a status message, when the tab is not a saved Rust file.
+    fn lsp_target(&mut self) -> Option<(&lsp::LspSession, PathBuf, String, u32, u32)> {
+        let tab = self.tab();
+        let Some(path) = tab
+            .disk_path
+            .as_deref()
+            .map(comparable_path)
+            .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        else {
+            self.status_message =
+                Some("LSP: only saved Rust files are supported (rust-analyzer).".to_string());
+            return None;
+        };
+        // The editor counts bytes in a line, the server counts characters.
+        let (line, byte_column) = tab.content.cursor_position();
+        let character = tab
+            .buffer
+            .line(line)
+            .and_then(|text| text.get(..byte_column))
+            .map_or(byte_column, |before| before.chars().count());
+        let text = tab.buffer.text().to_string();
+        let root = lsp::workspace_root(&path);
+        if self
+            .lsp
+            .as_ref()
+            .is_none_or(|session| session.root() != root || !session.is_running())
+        {
+            // Replacing a session shuts its server down in the background.
+            self.lsp = Some(lsp::LspSession::start(root));
+        }
+        self.status_message = Some("LSP: waiting for rust-analyzer...".to_string());
+        let session = self.lsp.as_ref()?;
+        Some((session, path, text, line as u32, character as u32))
+    }
+
+    fn open_definition(&mut self, location: lsp::LspLocation) -> Command<Message> {
+        let Some(index) = self.tab_index_for_disk_path(&location.path.display().to_string()) else {
+            return self.open_location(SearchResult {
+                path: location.path,
+                line: location.line,
+                column: location.column,
+                preview: String::new(),
+            });
+        };
+        self.active_tab = index;
+        self.refresh_search_matches(false, false);
+        self.jump_to_position(location.line, location.column);
+        self.status_message = Some(format!(
+            "LSP: definition at line {}, column {}.",
+            location.line + 1,
+            location.column + 1
+        ));
+        Command::none()
     }
 
     fn track_recent_file(&mut self, path: &str) {
@@ -3975,7 +4010,9 @@ Astuce: espacez les curseurs pour éviter les chevauchements."
 
 #[cfg(test)]
 mod tests {
-    use super::{EditorContent, FileLoadResult, Message, RoxanneApp, Tab, kept_edits_message};
+    use super::{
+        EditorContent, FileLoadResult, MenuAction, Message, RoxanneApp, Tab, kept_edits_message,
+    };
     use crate::config::AppConfig;
     use crate::diagnostics;
     use crate::editor::TextBuffer;
@@ -4342,6 +4379,23 @@ mod tests {
         assert!(tab.is_modified());
         assert!(tab.buffer.undo(), "the undo history was cleared");
         assert_eq!(app.tabs[0].buffer.text(), "a");
+    }
+
+    #[test]
+    fn lsp_actions_skip_tabs_that_are_not_saved_rust_files() {
+        let mut app = app_with_tabs(vec![Tab::new("untitled.txt", "text")], 0);
+
+        let _ = app.update(Message::MenuAction(MenuAction::LspHover));
+
+        assert!(
+            app.lsp.is_none(),
+            "started rust-analyzer for a non-Rust tab"
+        );
+        assert!(
+            app.status_message
+                .as_deref()
+                .is_some_and(|m| m.contains("Rust"))
+        );
     }
 
     #[test]
