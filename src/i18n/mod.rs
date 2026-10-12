@@ -49,14 +49,12 @@ pub fn t_fmt(key: &str, args: &[(&str, &dyn Display)]) -> String {
 }
 
 /// The locale for the `language` setting: `"en"` or `"fr"`, or with no
-/// setting, the system's language from `LC_ALL`, `LC_MESSAGES` or `LANG`.
+/// setting, the system's language: `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` or
+/// `LANG` on Linux and the BSDs, the user's locale on Windows and macOS.
 pub fn resolve(language: Option<&str>) -> Locale {
     match language {
         Some(tag) => Locale::from_tag(tag),
-        None => ["LC_ALL", "LC_MESSAGES", "LANG"]
-            .iter()
-            .find_map(|var| std::env::var(var).ok().filter(|value| !value.is_empty()))
-            .map_or(Locale::En, |tag| Locale::from_tag(&tag)),
+        None => sys_locale::get_locale().map_or(Locale::En, |tag| Locale::from_tag(&tag)),
     }
 }
 

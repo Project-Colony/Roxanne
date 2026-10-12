@@ -3,11 +3,13 @@
 //! It replaces the editor below the menu bar. General, Appearance and
 //! Accessibility come from the colony-ui kit, then Roxanne's own Editor, LSP
 //! and Plugins, and About last. There is no Save button: every change applies
-//! at once and is written to the user's `config.toml`.
+//! at once and is written to the user's file that sets it (see
+//! [`store`](crate::config::store)). A setting a project file sets is not
+//! saved, and its row says so.
 
 use super::RoxanneApp;
 use super::style;
-use crate::config::store::{self, Setting};
+use crate::config::store;
 use crate::i18n::{self, t, t_fmt};
 use crate::plugins::{BUILT_IN_PLUGINS, PluginManager, built_in_label};
 use colony_ui::preferences::Change;
@@ -18,7 +20,8 @@ use colony_ui::widgets::{
 use colony_ui::{Palette, Typography};
 use iced::widget::{Column, column, text_input};
 use iced::{Element, Length, Task};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
 /// Roxanne's own categories, between Accessibility and About.
 const OWN_CATEGORIES: [&str; 3] = [
@@ -84,8 +87,13 @@ fn message(message: Message) -> super::Message {
     super::Message::Preferences(message)
 }
 
+fn set_by_project(path: &Path) -> String {
+    t_fmt("preferences_set_by_project", &[("path", &path.display())])
+}
+
 impl RoxanneApp {
     pub(super) fn preferences_update(&mut self, update: Message) -> Task<super::Message> {
+        let before = self.config.page_settings();
         match update {
             Message::Toggle => {
                 let page = &mut self.preferences;
@@ -113,42 +121,37 @@ impl RoxanneApp {
                     self.update_viewport_height(self.editor_size);
                 }
                 self.palette_changed();
-                self.save(Setting::Preferences(&self.config.preferences.clone()));
             }
             Message::DismissToast => self.preferences.toast = None,
             Message::Language(language) => {
                 self.config.language = language.map(str::to_string);
                 i18n::set_locale(i18n::resolve(language));
-                self.save(Setting::Language(language));
             }
-            Message::LineNumbers(on) => {
-                self.config.editor.line_numbers = on;
-                self.save_editor();
-            }
-            Message::WordWrap(on) => {
-                self.config.editor.word_wrap = on;
-                self.save_editor();
-            }
-            Message::Minimap(on) => {
-                self.config.editor.minimap = on;
-                self.save_editor();
-            }
+            Message::LineNumbers(on) => self.config.editor.line_numbers = on,
+            Message::WordWrap(on) => self.config.editor.word_wrap = on,
+            Message::Minimap(on) => self.config.editor.minimap = on,
             Message::KeymapProfile(profile) => {
-                self.save(Setting::KeymapProfile(profile.as_deref()));
-                // The bindings come from the files: read them again.
-                self.reload_config(false);
+                // The bindings come from the files: saved, then read again.
+                // A project's choice cannot be saved, so it stays.
+                if let Some(path) = self.project_source("keymap_profile") {
+                    self.status_message = Some(set_by_project(path));
+                    return Task::none();
+                }
+                self.config.keymap_profile = profile;
+                if self.save(&before) {
+                    self.reload_config(false);
+                }
+                return Task::none();
             }
             Message::LspEnabled(on) => {
                 self.config.lsp.enabled = on;
                 // A server that is turned off stops now.
                 self.lsp = None;
-                self.save(Setting::Lsp(&self.config.lsp.clone()));
             }
             Message::LspCommand(command) => {
                 self.config.lsp.rust_analyzer = command;
                 // The next request starts the new program.
                 self.lsp = None;
-                self.save(Setting::Lsp(&self.config.lsp.clone()));
             }
             Message::Plugin(name, on) => {
                 let enabled = &mut self.config.plugins.enabled;
@@ -160,25 +163,49 @@ impl RoxanneApp {
                 let text = self.tab().content.text();
                 plugins.on_text_changed(&text, &self.tab().filename);
                 self.plugins = plugins;
-                self.save(Setting::PluginsEnabled(
-                    &self.config.plugins.enabled.clone(),
-                ));
             }
         }
+        self.save(&before);
         Task::none()
     }
 
-    fn save_editor(&mut self) {
-        self.save(Setting::Editor(&self.config.editor.clone()));
+    /// Writes the settings that differ from `before`. The change is already
+    /// in effect; a failed write, or a setting a project file sets, is
+    /// reported, never retried behind the user's back. Returns whether every
+    /// change was written.
+    fn save(&mut self, before: &BTreeMap<String, toml::Value>) -> bool {
+        let result = crate::config::user_config_path()
+            .ok_or_else(|| t("preferences_about_no_config_dir").to_string())
+            .and_then(|user| store::save_changes(&self.config, before, &user));
+        match result {
+            Ok(skipped) => match skipped.first() {
+                Some(path) => {
+                    self.status_message = Some(set_by_project(path));
+                    false
+                }
+                None => true,
+            },
+            Err(error) => {
+                self.status_message =
+                    Some(t_fmt("status_preferences_not_saved", &[("error", &error)]));
+                false
+            }
+        }
     }
 
-    /// Writes `setting` to the user's config.toml. The change is already in
-    /// effect; a failed write is reported, never retried behind the user's
-    /// back.
-    fn save(&mut self, setting: Setting<'_>) {
-        if let Err(error) = store::save(setting) {
-            self.status_message = Some(t_fmt("status_preferences_not_saved", &[("error", &error)]));
-        }
+    /// The project file that sets `key`, if one does.
+    fn project_source(&self, key: &str) -> Option<&Path> {
+        self.config
+            .sources
+            .get(key)
+            .filter(|source| source.project)
+            .map(|source| source.path.as_path())
+    }
+
+    /// `description`, or the project file that sets `key`.
+    fn description(&self, key: &str, description: &str) -> String {
+        self.project_source(key)
+            .map_or_else(|| description.to_string(), set_by_project)
     }
 
     pub(super) fn preferences_page(&self, typo: &Typography) -> Element<'_, super::Message> {
@@ -265,21 +292,21 @@ impl RoxanneApp {
             functional_toggle(
                 typo,
                 t("preferences_line_numbers"),
-                t("preferences_line_numbers_desc"),
+                &self.description("editor.line_numbers", t("preferences_line_numbers_desc")),
                 editor.line_numbers,
                 message(Message::LineNumbers(!editor.line_numbers)),
             ),
             functional_toggle(
                 typo,
                 t("preferences_word_wrap"),
-                t("preferences_word_wrap_desc"),
+                &self.description("editor.word_wrap", t("preferences_word_wrap_desc")),
                 editor.word_wrap,
                 message(Message::WordWrap(!editor.word_wrap)),
             ),
             functional_toggle(
                 typo,
                 t("preferences_minimap"),
-                t("preferences_minimap_desc"),
+                &self.description("editor.minimap", t("preferences_minimap_desc")),
                 editor.minimap,
                 message(Message::Minimap(!editor.minimap)),
             ),
@@ -304,7 +331,7 @@ impl RoxanneApp {
             keymap = keymap.push(setting_row(
                 typo,
                 t("preferences_keymap_profile"),
-                t("preferences_keymap_profile_desc"),
+                &self.description("keymap_profile", t("preferences_keymap_profile_desc")),
                 dropdown(typo, options, &self.config.keymap_profile, |profile| {
                     message(Message::KeymapProfile(profile))
                 }),
@@ -356,6 +383,7 @@ impl RoxanneApp {
 
     fn plugins_category(&self, typo: &Typography) -> Column<'_, super::Message> {
         let enabled = &self.config.plugins.enabled;
+        let description = self.description("plugins.enabled", t("preferences_plugin_status_bar"));
         let built_in = BUILT_IN_PLUGINS.iter().fold(
             column![section_description(typo, t("preferences_built_in_desc"))],
             |list, &name| {
@@ -363,7 +391,7 @@ impl RoxanneApp {
                 list.push(functional_toggle(
                     typo,
                     built_in_label(name),
-                    t("preferences_plugin_status_bar"),
+                    &description,
                     on,
                     message(Message::Plugin(name, !on)),
                 ))

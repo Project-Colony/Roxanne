@@ -38,9 +38,13 @@ use tabs::Tab;
 /// registers the Colony fonts and opens the window.
 pub fn run() -> iced::Result {
     let migrated = config::migrate_legacy_config();
-    let config = AppConfig::load();
+    let mut config = AppConfig::load();
     config.preferences.apply();
     i18n::set_locale(i18n::resolve(config.language.as_deref()));
+    if !config.load_warnings.is_empty() {
+        // Written before the language was known: again, in that language.
+        config = AppConfig::load();
+    }
     colony_ui::fonts::BYTES
         .into_iter()
         .fold(
@@ -234,23 +238,23 @@ fn format_duration(duration: Duration) -> String {
 }
 
 impl RoxanneApp {
-    fn new(config: AppConfig, migrated: Option<String>) -> (Self, Task<Message>) {
+    fn new(config: AppConfig, migrated: Option<config::Migrated>) -> (Self, Task<Message>) {
         let startup_start = Instant::now();
         let tab = Tab::new(UNTITLED, "");
         let (mut plugins, plugin_warnings) = PluginManager::new(&config.plugins);
         plugins.on_text_changed("", UNTITLED);
         let warnings = config.load_warnings.len() + plugin_warnings.len();
         let startup_duration = startup_start.elapsed();
-        let status_message = migrated.or_else(|| {
-            Some(if warnings > 0 {
-                t_fmt("status_config_warnings", &[("count", &warnings)])
-            } else {
-                t_fmt(
-                    "status_started",
-                    &[("duration", &format_duration(startup_duration))],
-                )
-            })
-        });
+        let warnings =
+            (warnings > 0).then(|| t_fmt("status_config_warnings", &[("count", &warnings)]));
+        let status_message = match (migrated.map(|migrated| migrated.message()), warnings) {
+            (Some(migrated), Some(warnings)) => format!("{migrated} {warnings}"),
+            (Some(message), None) | (None, Some(message)) => message,
+            (None, None) => t_fmt(
+                "status_started",
+                &[("duration", &format_duration(startup_duration))],
+            ),
+        };
         let app = Self {
             tabs: vec![tab],
             active_tab: 0,
@@ -273,7 +277,7 @@ impl RoxanneApp {
             file_tree_open: false,
             file_tree: None,
             file_tree_filter: String::new(),
-            status_message,
+            status_message: Some(status_message),
             config,
             config_watch_paths: config::watch_paths(),
             theme: style::iced_theme(),
@@ -606,6 +610,9 @@ impl RoxanneApp {
     fn reload_config(&mut self, asked: bool) {
         let config = AppConfig::load();
         if config == self.config && !asked {
+            // A file may now set what it did not, such as the key a save
+            // just wrote.
+            self.config.sources = config.sources;
             return;
         }
         let plugins_changed = config.plugins != self.config.plugins;

@@ -106,7 +106,9 @@ impl Menu {
                 A(PerformanceReport),
             ],
             Menu::Project => &[A(FindInFiles), A(ToggleFileTree)],
-            Menu::Help => &[A(Preferences), A(About)],
+            // The Roxanne button is the way into Preferences; the command
+            // palette also lists it.
+            Menu::Help => &[A(About)],
         }
     }
 }

@@ -8,10 +8,15 @@ use iced::{Task, clipboard, keyboard};
 
 impl RoxanneApp {
     /// A key press no widget used: runs the keymap's action for it, if any.
+    /// Not while Preferences hides the editor: the action would change a file
+    /// the user cannot see.
     pub(super) fn on_key(&mut self, event: keyboard::Event) -> Task<Message> {
         let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
             return Task::none();
         };
+        if self.preferences.open {
+            return Task::none();
+        }
         let Some(action) = self.config.keymap.match_event(&key, modifiers, self.mode) else {
             return Task::none();
         };
