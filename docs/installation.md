@@ -1,4 +1,4 @@
-# Installation – Roxanne
+# Installation: Roxanne
 
 Ce document décrit les options d'installation et d'exécution de Roxanne.
 

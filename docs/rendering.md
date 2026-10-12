@@ -1,4 +1,4 @@
-# Rendering – Pipeline de rendu
+# Rendering: Pipeline de rendu
 
 ## Objectifs
 - Rendu fluide à 60+ FPS sur des fichiers moyens.

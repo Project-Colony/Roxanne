@@ -1,4 +1,4 @@
-# UI – Interactions et composants
+# UI: Interactions et composants
 
 ## Principes UX
 - Flux clavier prioritaire.

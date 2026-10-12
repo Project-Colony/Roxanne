@@ -1,4 +1,4 @@
-# Benchmarks – Scénarios & exécution
+# Benchmarks: Scénarios & exécution
 
 ## Objectif
 Poser une base reproductible pour mesurer la performance du core (TextBuffer),

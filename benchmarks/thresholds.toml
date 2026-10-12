@@ -1,5 +1,5 @@
-# Valeurs initiales (à ajuster après quelques mesures sur la machine de référence).
-# max_mean_ms = seuil de temps moyen par itération (en millisecondes).
+# Starting values, to adjust after a few runs on the reference machine.
+# max_mean_ms = the maximum mean time per iteration, in milliseconds.
 
 [benchmarks."text_buffer_build/1000"]
 max_mean_ms = 8.0

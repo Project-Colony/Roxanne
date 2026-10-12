@@ -1,4 +1,4 @@
-# Tests – Stratégie
+# Tests: Stratégie
 
 ## Types de tests
 - Unitaires pour le core.

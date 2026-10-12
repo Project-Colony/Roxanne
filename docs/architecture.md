@@ -1,4 +1,4 @@
-# Architecture – Vue d’ensemble
+# Architecture: Vue d’ensemble
 
 ## Modules principaux
 - **Core** : gestion du buffer, opérations d’édition, undo/redo, sélection.

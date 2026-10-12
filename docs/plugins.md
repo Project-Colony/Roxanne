@@ -1,4 +1,4 @@
-# Plugins – Extensibilité
+# Plugins: Extensibilité
 
 ## Objectifs
 - API stable et documentée.

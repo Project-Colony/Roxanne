@@ -167,7 +167,7 @@ pub fn analyze(buffer: &TextBuffer) -> Vec<Diagnostic> {
                                 line: line_index,
                                 column,
                                 message: format!(
-                                    "Fermeture inattendue '{ch}' (ouverture '{open}' ligne {}).",
+                                    "Unexpected closing '{ch}' (opened by '{open}' on line {}).",
                                     position.line + 1
                                 ),
                                 severity: DiagnosticSeverity::Error,
@@ -177,7 +177,7 @@ pub fn analyze(buffer: &TextBuffer) -> Vec<Diagnostic> {
                         diagnostics.push(Diagnostic {
                             line: line_index,
                             column,
-                            message: format!("Fermeture inattendue '{ch}'."),
+                            message: format!("Unexpected closing '{ch}'."),
                             severity: DiagnosticSeverity::Error,
                         });
                     }
@@ -192,7 +192,7 @@ pub fn analyze(buffer: &TextBuffer) -> Vec<Diagnostic> {
         diagnostics.push(Diagnostic {
             line: position.line,
             column: position.column,
-            message: "Chaîne non terminée.".to_string(),
+            message: "Unterminated string.".to_string(),
             severity: DiagnosticSeverity::Warning,
         });
     }
@@ -202,7 +202,7 @@ pub fn analyze(buffer: &TextBuffer) -> Vec<Diagnostic> {
         diagnostics.push(Diagnostic {
             line: position.line,
             column: position.column,
-            message: "Chaîne non terminée.".to_string(),
+            message: "Unterminated string.".to_string(),
             severity: DiagnosticSeverity::Warning,
         });
     }
@@ -212,7 +212,7 @@ pub fn analyze(buffer: &TextBuffer) -> Vec<Diagnostic> {
         diagnostics.push(Diagnostic {
             line: position.line,
             column: position.column,
-            message: "Caractère non terminé.".to_string(),
+            message: "Unterminated character literal.".to_string(),
             severity: DiagnosticSeverity::Warning,
         });
     }
@@ -221,7 +221,7 @@ pub fn analyze(buffer: &TextBuffer) -> Vec<Diagnostic> {
         diagnostics.push(Diagnostic {
             line: position.line,
             column: position.column,
-            message: format!("Ouverture '{open}' sans fermeture."),
+            message: format!("Unclosed '{open}'."),
             severity: DiagnosticSeverity::Warning,
         });
     }

@@ -94,7 +94,7 @@ pub fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
             Err(err) if err.kind() == ErrorKind::AlreadyExists => {
                 attempts += 1;
                 if attempts > 1000 {
-                    return Err("impossible de créer un fichier temporaire unique".to_string());
+                    return Err("could not create a unique temporary file".to_string());
                 }
             }
             Err(err) => return Err(err.to_string()),

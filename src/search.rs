@@ -22,7 +22,7 @@ pub enum SearchScope {
 impl SearchScope {
     pub fn label(self) -> &'static str {
         match self {
-            SearchScope::CurrentFile => "Fichier",
+            SearchScope::CurrentFile => "File",
             SearchScope::Workspace => "Workspace",
         }
     }
@@ -188,7 +188,7 @@ fn build_matcher(needle: &str, options: SearchOptions) -> Result<SearchMatcher, 
             .case_insensitive(!options.case_sensitive)
             .build()
             .map(SearchMatcher::Regex)
-            .map_err(|err| format!("regex invalide ({err})"))
+            .map_err(|err| format!("invalid regex ({err})"))
     } else {
         Ok(SearchMatcher::Plain {
             needle: needle.to_string(),
@@ -357,7 +357,7 @@ pub fn replace_with_captures(
         let re = RegexBuilder::new(pattern)
             .case_insensitive(!case_sensitive)
             .build()
-            .map_err(|e| format!("regex invalide: {e}"))?;
+            .map_err(|e| format!("invalid regex: {e}"))?;
         // The regex crate supports $1, $2, ${name} in replacement strings
         Ok(re.replace_all(text, replacement).to_string())
     }
