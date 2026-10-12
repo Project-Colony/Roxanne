@@ -1,5 +1,6 @@
 use crate::editor::TextBuffer;
 use crate::editor::highlight::MatchPosition;
+use crate::i18n::{t, t_fmt};
 use regex::{Regex, RegexBuilder};
 use std::path::{Path, PathBuf};
 use walkdir::{DirEntry, WalkDir};
@@ -22,8 +23,8 @@ pub enum SearchScope {
 impl SearchScope {
     pub fn label(self) -> &'static str {
         match self {
-            SearchScope::CurrentFile => "Fichier",
-            SearchScope::Workspace => "Workspace",
+            SearchScope::CurrentFile => t("search_scope_file"),
+            SearchScope::Workspace => t("search_scope_workspace"),
         }
     }
 }
@@ -188,7 +189,7 @@ fn build_matcher(needle: &str, options: SearchOptions) -> Result<SearchMatcher, 
             .case_insensitive(!options.case_sensitive)
             .build()
             .map(SearchMatcher::Regex)
-            .map_err(|err| format!("regex invalide ({err})"))
+            .map_err(|err| t_fmt("search_error_regex", &[("error", &err)]))
     } else {
         Ok(SearchMatcher::Plain {
             needle: needle.to_string(),
@@ -350,14 +351,14 @@ pub fn replace_with_captures(
             let re = RegexBuilder::new(&regex::escape(pattern))
                 .case_insensitive(true)
                 .build()
-                .map_err(|e| format!("regex: {e}"))?;
+                .map_err(|e| t_fmt("search_error_regex", &[("error", &e)]))?;
             Ok(re.replace_all(text, replacement).to_string())
         }
     } else {
         let re = RegexBuilder::new(pattern)
             .case_insensitive(!case_sensitive)
             .build()
-            .map_err(|e| format!("regex invalide: {e}"))?;
+            .map_err(|e| t_fmt("search_error_regex", &[("error", &e)]))?;
         // The regex crate supports $1, $2, ${name} in replacement strings
         Ok(re.replace_all(text, replacement).to_string())
     }

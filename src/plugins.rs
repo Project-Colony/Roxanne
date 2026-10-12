@@ -1,3 +1,4 @@
+use crate::i18n::{t, t_fmt};
 use libloading::Library;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
@@ -28,13 +29,26 @@ pub struct PluginManager {
     plugins: Vec<Box<dyn Plugin>>,
 }
 
-const KNOWN_PLUGINS: &[&str] = &[
+/// The built-in plugins, by the name `plugins.enabled` lists them under.
+pub const BUILT_IN_PLUGINS: &[&str] = &[
     "word_count",
     "line_count",
     "character_count",
     "byte_count",
     "longest_line",
 ];
+
+/// The name of a built-in plugin as the interface shows it.
+pub fn built_in_label(name: &str) -> &'static str {
+    match name {
+        "word_count" => t("plugin_words"),
+        "line_count" => t("plugin_lines"),
+        "character_count" => t("plugin_characters"),
+        "byte_count" => t("plugin_bytes"),
+        "longest_line" => t("plugin_longest_line"),
+        _ => t("plugin_unknown"),
+    }
+}
 
 impl std::fmt::Debug for PluginManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -64,14 +78,18 @@ impl PluginManager {
             // A relative path would resolve against the working directory, so
             // opening a project could load a library from inside it.
             if !Path::new(plugin_path).is_absolute() {
-                warnings.push(format!(
-                    "Plugins: {plugin_path}: chemin absolu requis pour un plugin natif."
+                warnings.push(t_fmt(
+                    "config_warn_plugin_relative",
+                    &[("path", plugin_path)],
                 ));
                 continue;
             }
             match DynamicPlugin::load(plugin_path) {
                 Ok(plugin) => manager.register(Box::new(plugin)),
-                Err(err) => warnings.push(format!("Plugins: {plugin_path}: {err}")),
+                Err(err) => warnings.push(t_fmt(
+                    "config_warn_plugin_load",
+                    &[("path", plugin_path), ("error", &err)],
+                )),
             }
         }
         (manager, warnings)
@@ -116,7 +134,7 @@ impl PluginManager {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PluginConfig {
     #[serde(default = "default_plugins")]
     pub enabled: Vec<String>,
@@ -128,8 +146,8 @@ impl PluginConfig {
     pub fn warnings(&self) -> Vec<String> {
         self.enabled
             .iter()
-            .filter(|plugin| !KNOWN_PLUGINS.contains(&plugin.as_str()))
-            .map(|plugin| format!("Plugins: plugin inconnu '{plugin}'"))
+            .filter(|plugin| !BUILT_IN_PLUGINS.contains(&plugin.as_str()))
+            .map(|plugin| t_fmt("config_warn_plugin_unknown", &[("plugin", plugin)]))
             .collect()
     }
 }
@@ -186,11 +204,11 @@ impl DynamicPlugin {
         .map(Library::from);
         #[cfg(not(windows))]
         let library = unsafe { Library::new(Path::new(path)) };
-        let library = library.map_err(|err| format!("chargement impossible: {err}"))?;
+        let library = library.map_err(|err| t_fmt("plugin_error_load", &[("error", &err)]))?;
         let symbol: libloading::Symbol<unsafe extern "C" fn() -> PluginApiV1> = unsafe {
             library
                 .get(b"roxanne_plugin_api_v1")
-                .map_err(|err| format!("symbole manquant: {err}"))?
+                .map_err(|err| t_fmt("plugin_error_symbol", &[("error", &err)]))?
         };
         let api = unsafe { symbol() };
         let name = cstr_to_string(unsafe { (api.name)() })?;
@@ -207,11 +225,11 @@ impl DynamicPlugin {
             Err(_) => {
                 let sanitized = value.replace('\0', "�");
                 eprintln!(
-                    "Plugin {}: {label} contient des caractères NUL, remplacement avant callback.",
+                    "Plugin {}: the {label} holds NUL characters, replaced before the call.",
                     self.name
                 );
                 CString::new(sanitized).unwrap_or_else(|_| {
-                    CString::new("�").expect("CString de secours valide pour plugin")
+                    CString::new("�").expect("a replacement character is a valid C string")
                 })
             }
         }
@@ -225,9 +243,8 @@ impl Plugin for DynamicPlugin {
 
     fn on_file_opened(&mut self, text: &str, context: &PluginContext) {
         if let Some(callback) = self.api.on_file_opened {
-            let text = self.to_cstring_with_warning(text, "texte");
-            let filename =
-                self.to_cstring_with_warning(context.filename.as_str(), "nom de fichier");
+            let text = self.to_cstring_with_warning(text, "text");
+            let filename = self.to_cstring_with_warning(context.filename.as_str(), "file name");
             unsafe {
                 callback(text.as_ptr(), filename.as_ptr());
             }
@@ -236,9 +253,8 @@ impl Plugin for DynamicPlugin {
 
     fn on_file_saved(&mut self, text: &str, context: &PluginContext) {
         if let Some(callback) = self.api.on_file_saved {
-            let text = self.to_cstring_with_warning(text, "texte");
-            let filename =
-                self.to_cstring_with_warning(context.filename.as_str(), "nom de fichier");
+            let text = self.to_cstring_with_warning(text, "text");
+            let filename = self.to_cstring_with_warning(context.filename.as_str(), "file name");
             unsafe {
                 callback(text.as_ptr(), filename.as_ptr());
             }
@@ -247,9 +263,8 @@ impl Plugin for DynamicPlugin {
 
     fn on_text_changed(&mut self, text: &str, context: &PluginContext) {
         if let Some(callback) = self.api.on_text_changed {
-            let text = self.to_cstring_with_warning(text, "texte");
-            let filename =
-                self.to_cstring_with_warning(context.filename.as_str(), "nom de fichier");
+            let text = self.to_cstring_with_warning(text, "text");
+            let filename = self.to_cstring_with_warning(context.filename.as_str(), "file name");
             unsafe {
                 callback(text.as_ptr(), filename.as_ptr());
             }
@@ -267,13 +282,13 @@ impl Plugin for DynamicPlugin {
 
 fn cstr_to_string(ptr: *const std::ffi::c_char) -> Result<String, String> {
     if ptr.is_null() {
-        return Err("chaîne nulle".to_string());
+        return Err(t("plugin_error_null").to_string());
     }
     let value = unsafe { CStr::from_ptr(ptr) };
     value
         .to_str()
         .map(|value| value.to_string())
-        .map_err(|err| format!("chaîne invalide: {err}"))
+        .map_err(|err| t_fmt("plugin_error_utf8", &[("error", &err)]))
 }
 
 #[derive(Default)]
@@ -292,7 +307,7 @@ impl Plugin for WordCountPlugin {
 
     fn status(&self) -> Option<PluginStatus> {
         Some(PluginStatus {
-            label: "Mots".to_string(),
+            label: t("plugin_words").to_string(),
             value: self.words.to_string(),
         })
     }
@@ -314,7 +329,7 @@ impl Plugin for LineCountPlugin {
 
     fn status(&self) -> Option<PluginStatus> {
         Some(PluginStatus {
-            label: "Lignes".to_string(),
+            label: t("plugin_lines").to_string(),
             value: self.lines.to_string(),
         })
     }
@@ -336,7 +351,7 @@ impl Plugin for CharacterCountPlugin {
 
     fn status(&self) -> Option<PluginStatus> {
         Some(PluginStatus {
-            label: "Caractères".to_string(),
+            label: t("plugin_characters").to_string(),
             value: self.characters.to_string(),
         })
     }
@@ -358,7 +373,7 @@ impl Plugin for ByteCountPlugin {
 
     fn status(&self) -> Option<PluginStatus> {
         Some(PluginStatus {
-            label: "Octets".to_string(),
+            label: t("plugin_bytes").to_string(),
             value: self.bytes.to_string(),
         })
     }
@@ -391,8 +406,14 @@ impl Plugin for LongestLinePlugin {
 
     fn status(&self) -> Option<PluginStatus> {
         Some(PluginStatus {
-            label: "Ligne max".to_string(),
-            value: format!("{} (L{})", self.longest_line, self.longest_line_index + 1),
+            label: t("plugin_longest_line").to_string(),
+            value: t_fmt(
+                "plugin_longest_line_value",
+                &[
+                    ("length", &self.longest_line),
+                    ("line", &(self.longest_line_index + 1)),
+                ],
+            ),
         })
     }
 }
@@ -424,13 +445,19 @@ mod tests {
             .map(|status| (status.label, status.value))
             .collect::<std::collections::HashMap<_, _>>();
 
-        assert_eq!(statuses.get("Mots").map(String::as_str), Some("2"));
-        assert_eq!(statuses.get("Lignes").map(String::as_str), Some("2"));
-        assert_eq!(statuses.get("Caractères").map(String::as_str), Some("10"));
-        assert_eq!(statuses.get("Octets").map(String::as_str), Some("10"));
-        assert_eq!(
-            statuses.get("Ligne max").map(String::as_str),
-            Some("7 (L2)")
+        let status = |name| {
+            statuses
+                .get(super::built_in_label(name))
+                .map(String::as_str)
+        };
+        assert_eq!(status("word_count"), Some("2"));
+        assert_eq!(status("line_count"), Some("2"));
+        assert_eq!(status("character_count"), Some("10"));
+        assert_eq!(status("byte_count"), Some("10"));
+        let longest = status("longest_line").expect("longest line");
+        assert!(
+            longest.starts_with("7 ") && longest.contains('2'),
+            "{longest}"
         );
     }
 
@@ -443,7 +470,7 @@ mod tests {
         let (manager, warnings) = PluginManager::new(&config);
         assert!(manager.plugins.is_empty());
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("chemin absolu"));
+        assert!(warnings[0].contains("target/release/libroxanne_sample.so"));
     }
 
     #[test]

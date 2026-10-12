@@ -1,4 +1,5 @@
 use crate::editor::{Position, TextBuffer};
+use crate::i18n::{t, t_fmt};
 
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
@@ -8,7 +9,7 @@ pub struct Diagnostic {
     pub severity: DiagnosticSeverity,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticSeverity {
     Error,
     Warning,
@@ -166,9 +167,13 @@ pub fn analyze(buffer: &TextBuffer) -> Vec<Diagnostic> {
                             diagnostics.push(Diagnostic {
                                 line: line_index,
                                 column,
-                                message: format!(
-                                    "Fermeture inattendue '{ch}' (ouverture '{open}' ligne {}).",
-                                    position.line + 1
+                                message: t_fmt(
+                                    "diag_mismatched_close",
+                                    &[
+                                        ("close", &ch),
+                                        ("open", &open),
+                                        ("line", &(position.line + 1)),
+                                    ],
                                 ),
                                 severity: DiagnosticSeverity::Error,
                             });
@@ -177,7 +182,7 @@ pub fn analyze(buffer: &TextBuffer) -> Vec<Diagnostic> {
                         diagnostics.push(Diagnostic {
                             line: line_index,
                             column,
-                            message: format!("Fermeture inattendue '{ch}'."),
+                            message: t_fmt("diag_unexpected_close", &[("close", &ch)]),
                             severity: DiagnosticSeverity::Error,
                         });
                     }
@@ -192,7 +197,7 @@ pub fn analyze(buffer: &TextBuffer) -> Vec<Diagnostic> {
         diagnostics.push(Diagnostic {
             line: position.line,
             column: position.column,
-            message: "Chaîne non terminée.".to_string(),
+            message: t("diag_unterminated_string").to_string(),
             severity: DiagnosticSeverity::Warning,
         });
     }
@@ -202,7 +207,7 @@ pub fn analyze(buffer: &TextBuffer) -> Vec<Diagnostic> {
         diagnostics.push(Diagnostic {
             line: position.line,
             column: position.column,
-            message: "Chaîne non terminée.".to_string(),
+            message: t("diag_unterminated_string").to_string(),
             severity: DiagnosticSeverity::Warning,
         });
     }
@@ -212,7 +217,7 @@ pub fn analyze(buffer: &TextBuffer) -> Vec<Diagnostic> {
         diagnostics.push(Diagnostic {
             line: position.line,
             column: position.column,
-            message: "Caractère non terminé.".to_string(),
+            message: t("diag_unterminated_char").to_string(),
             severity: DiagnosticSeverity::Warning,
         });
     }
@@ -221,7 +226,7 @@ pub fn analyze(buffer: &TextBuffer) -> Vec<Diagnostic> {
         diagnostics.push(Diagnostic {
             line: position.line,
             column: position.column,
-            message: format!("Ouverture '{open}' sans fermeture."),
+            message: t_fmt("diag_unclosed", &[("open", &open)]),
             severity: DiagnosticSeverity::Warning,
         });
     }
