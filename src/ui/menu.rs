@@ -662,7 +662,9 @@ impl overlay::Overlay<Message, Theme, Renderer> for MenuLayer<'_, '_> {
             renderer,
             &layout::Limits::new(Size::ZERO, below),
         );
-        layout::Node::with_children(below, vec![menu.move_to(Point::new(self.left, 0.0))])
+        // Kept inside the window when the button is near its right edge.
+        let left = self.left.min((bounds.width - menu.size().width).max(0.0));
+        layout::Node::with_children(below, vec![menu.move_to(Point::new(left, 0.0))])
             .move_to(Point::new(0.0, self.bar_bottom))
     }
 
