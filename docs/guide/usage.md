@@ -21,9 +21,9 @@ From top to bottom:
 
 Roxanne starts with an empty tab and has no file dialog. To open a file, type
 its path in the file name field of the status bar and choose **File → Open
-File** (`Ctrl+O`, `Cmd+O` on macOS), or click it in the file tree (**View →
-File Tree**, `Ctrl+B`). A file that is already open gets its tab back instead
-of a second copy.
+File…** (`Ctrl+O`, `Cmd+O` on macOS), or click it in the file tree
+(**View → Toggle File Tree**, `Ctrl+B`). A file that is already open gets its
+tab back instead of a second copy.
 
 Files larger than 5 MiB are refused. Bytes that are not valid UTF-8 are
 replaced when the file loads, and the first save after that asks you to save
@@ -47,12 +47,12 @@ paste.
 
 **Selection → Add Cursor to Next Match** and **Add Cursors to All Matches**
 place extra cursors on the occurrences of the search text; typing, deleting and
-pasting then happen at every cursor. **Remove Extra Cursors** goes back to one.
+pasting then happen at every cursor. **Clear Cursors** goes back to one.
 
 `Ctrl+Space` lists completions for the word before the cursor: Rust keywords
 and types, and the words already in the file. `Escape` closes the list.
 
-**Go → Go to Line** takes a line, or `line:column`.
+**Go → Go to Line…** takes a line, or `line:column`.
 
 ### Normal mode
 
@@ -80,7 +80,7 @@ options for case sensitivity and regular expressions and the replace field.
 open file only. With regular expressions on, the replacement can use capture
 groups such as `$1`. Both can be undone.
 
-Set the scope to the workspace, or choose **Project → Find in Files**, to search
+Set the scope to the workspace, or choose **Project → Find in Files…**, to search
 every file under the workspace: the folder of the nearest `.roxanne.toml` above
 the open file, or the file's own folder. That search runs in the background and
 lists up to 500 matches; click one to open it. It does not replace. Hidden files
@@ -103,8 +103,8 @@ than 5 MiB and files that are not valid UTF-8.
 
 - **View → Command Palette** (`Ctrl+Shift+P`) lists every action; type to
   filter, click to run.
-- **View → Line Numbers**, **Word Wrap** and **Minimap** turn these on and
-  off, and save the choice like Preferences → Editor does.
+- **View → Toggle Line Numbers**, **Toggle Word Wrap** and **Toggle Minimap**
+  turn these on and off, and save the choice like Preferences → Editor does.
 - **Tools → Reload Config** reads the settings files again.
 - **Tools → Performance Report** shows in the status bar how long the last
   start, open, save, search and viewport refresh took.
