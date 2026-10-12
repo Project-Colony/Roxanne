@@ -43,6 +43,10 @@ harness = false
 name = "viewport"
 harness = false
 
+[[example]]
+name = "sample_plugin"
+crate-type = ["cdylib"]
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
