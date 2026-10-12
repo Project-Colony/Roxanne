@@ -168,3 +168,20 @@ impl RoxanneApp {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn code_and_its_lines_follow_the_text_scale() {
+        let at = |scale| Typography {
+            scale,
+            ..Typography::current()
+        };
+        assert_eq!(code_metrics(&at(1.0)), (14.0, 18.0));
+        // The two extremes of font size times text size.
+        assert_eq!(code_metrics(&at(0.7225)), (10.0, 13.0));
+        assert_eq!(code_metrics(&at(1.68)), (24.0, 31.0));
+    }
+}

@@ -9,9 +9,14 @@ use crate::editor::{Position, TextBuffer, ViewportCache};
 use crate::i18n::t;
 use colony_ui::{Palette, Typography};
 use iced::widget::text_editor::Content as EditorContent;
-use iced::widget::{button, container, row, tooltip};
+use iced::widget::{button, container, row};
 use iced::{Alignment, Element, Length};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// A filled dot after the name: the usual mark of unsaved changes.
+const MODIFIED: &str = "\u{25cf}";
+/// Font Awesome's plus, which the Nerd Font carries too.
+const PLUS: &str = "\u{f067}";
 
 #[derive(Debug)]
 pub struct Tab {
@@ -164,12 +169,10 @@ impl RoxanneApp {
                 .spacing(6)
                 .align_y(Alignment::Center);
             if tab.is_modified() {
-                // A filled dot, the usual mark of unsaved changes.
-                name = name.push(
-                    style::label(typo, "\u{25cf}", 10, Palette::ACCENT()).font(style::code_font()),
-                );
+                name = name.push(style::button_label(typo, MODIFIED, 10).font(style::code_font()));
             }
-            let close = tooltip(
+            let close = style::tip(
+                typo,
                 button(
                     style::button_label(typo, colony_ui::widgets::icons::CLOSE, 11)
                         .font(colony_ui::fonts::glyph_font()),
@@ -177,21 +180,14 @@ impl RoxanneApp {
                 .padding([4, 6])
                 .style(style::flat)
                 .on_press(Message::TabClosed(index)),
-                container(style::label(
-                    typo,
-                    t("tab_close"),
-                    11,
-                    Palette::TEXT_PRIMARY(),
-                ))
-                .padding([2, 6])
-                .style(style::surface(Palette::BG_CARD())),
-                tooltip::Position::Bottom,
+                t("tab_close"),
             );
             tabs = tabs.push(
                 row![
+                    // Marked like any selected item: on the accent.
                     button(name)
                         .padding([6, 12])
-                        .style(style::tab(active))
+                        .style(colony_ui::widgets::selection_style(active))
                         .on_press(Message::TabSelected(index)),
                     close,
                 ]
@@ -199,12 +195,14 @@ impl RoxanneApp {
             );
         }
 
-        tabs = tabs.push(
-            button(style::button_label(typo, "+", 14).font(style::code_font()))
+        tabs = tabs.push(style::tip(
+            typo,
+            button(style::button_label(typo, PLUS, 12).font(colony_ui::fonts::glyph_font()))
                 .padding([4, 8])
                 .style(style::flat)
                 .on_press(Message::NewTab),
-        );
+            t("action_new_file"),
+        ));
 
         container(tabs)
             .width(Length::Fill)

@@ -1,7 +1,7 @@
 //! The status bar: the file name, quick search, the cursor and the last
 //! message.
 
-use super::search_panel::{SEARCH_INPUT, toggle_button};
+use super::search_panel::SEARCH_INPUT;
 use super::style;
 use super::{Message, RoxanneApp};
 use crate::i18n::{t, t_fmt};
@@ -59,13 +59,7 @@ impl RoxanneApp {
             )
             .id(SEARCH_INPUT)
             .on_submit(Message::SearchNext),
-            toggle_button(
-                typo,
-                "Aa",
-                self.search_case_sensitive,
-                Message::SearchToggleCaseSensitive
-            ),
-            toggle_button(typo, ".*", self.search_regex, Message::SearchToggleRegex),
+            self.match_toggles(typo),
             arrow(
                 typo,
                 CHEVRON_LEFT,

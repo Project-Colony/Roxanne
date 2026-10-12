@@ -445,4 +445,13 @@ mod tests {
         assert_eq!(category_index(ABOUT_CATEGORY), all.len() - 1);
         assert_eq!(category_index("no-such-category"), 0);
     }
+
+    #[test]
+    fn reduced_motion_turns_the_effects_off() {
+        let mut preferences = colony_ui::preferences::StandardPreferences::default();
+        preferences.update(Change::ReduceMotion(true));
+        assert!(!colony_ui::effects_enabled());
+        preferences.update(Change::ReduceMotion(false));
+        assert!(colony_ui::effects_enabled());
+    }
 }

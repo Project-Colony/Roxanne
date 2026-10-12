@@ -6,8 +6,8 @@
 
 use colony_ui::{Palette, Typography};
 use iced::widget::text::IntoFragment;
-use iced::widget::{Text, button, container, text, text_editor, text_input};
-use iced::{Background, Border, Color, Font, Theme};
+use iced::widget::{Text, button, container, text, text_editor, text_input, tooltip};
+use iced::{Background, Border, Color, Element, Font, Theme};
 
 /// The iced theme for the widgets Roxanne does not style itself (scroll bars),
 /// built from the active palette.
@@ -49,6 +49,30 @@ pub fn label<'a>(
 /// A label that takes its colour from the button it sits in.
 pub fn button_label<'a>(typo: &Typography, content: impl IntoFragment<'a>, size: u16) -> Text<'a> {
     text(content).size(typo.sz(size)).font(typo.regular)
+}
+
+/// `content` with `tip` shown below it on hover: the words for a control
+/// drawn as a symbol.
+pub fn tip<'a, M: 'a>(
+    typo: &Typography,
+    content: impl Into<Element<'a, M>>,
+    tip: &'a str,
+) -> Element<'a, M> {
+    tooltip(
+        content,
+        container(label(typo, tip, 11, Palette::TEXT_PRIMARY()))
+            .padding([2, 6])
+            .style(|_| container::Style {
+                background: Some(Palette::BG_CARD().into()),
+                border: Border::default()
+                    .rounded(4)
+                    .width(1)
+                    .color(Palette::BORDER_SUBTLE()),
+                ..container::Style::default()
+            }),
+        tooltip::Position::Bottom,
+    )
+    .into()
 }
 
 /// A surface filled with `background`.
@@ -98,27 +122,6 @@ pub fn card(_: &Theme, status: button::Status) -> button::Style {
         text_color,
         border: Border::default().rounded(4),
         ..button::Style::default()
-    }
-}
-
-/// An open tab: the editor's own background, so the tab joins the text below.
-pub fn tab(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_, status| {
-        let background = match status {
-            _ if active => Palette::BG_PRIMARY(),
-            button::Status::Hovered | button::Status::Pressed => Palette::BG_CARD_HOVER(),
-            _ => Color::TRANSPARENT,
-        };
-        button::Style {
-            background: Some(background.into()),
-            text_color: if active {
-                Palette::TEXT_PRIMARY()
-            } else {
-                Palette::TEXT_MUTED()
-            },
-            border: Border::default().rounded(4),
-            ..button::Style::default()
-        }
     }
 }
 

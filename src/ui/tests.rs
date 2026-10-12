@@ -462,3 +462,38 @@ fn the_cursor_moves_by_characters_on_lines_with_multibyte_text() {
     app.jump_to_position(5, 99);
     assert_eq!(app.cursor_position(), (1, 2));
 }
+
+/// Colours come from the palette, fonts and sizes from the typography kit:
+/// no widget writes its own, or the theme, the dyslexia font and the text
+/// scale would miss it.
+#[test]
+fn widgets_take_colours_fonts_and_sizes_from_the_kit() {
+    // Split, so this file does not match itself.
+    let forbidden = [
+        concat!("Color::from", "_rgb"),
+        concat!("Color", "::new("),
+        concat!("color", "!("),
+        concat!("Font::", "MONOSPACE"),
+        concat!("Font::", "with_name"),
+    ];
+    let raw_size = regex::Regex::new(r"\.(size|text_size)\(\s*[0-9]").expect("regex");
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for entry in walkdir::WalkDir::new(src)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let text = fs::read_to_string(path).expect("source");
+        for pattern in forbidden {
+            assert!(!text.contains(pattern), "{}: {pattern}", path.display());
+        }
+        assert!(
+            !raw_size.is_match(&text),
+            "{}: a size without sz()",
+            path.display()
+        );
+    }
+}

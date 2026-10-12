@@ -13,8 +13,40 @@ use std::time::Instant;
 
 /// The status bar's search field, which Find puts the cursor in.
 pub(super) const SEARCH_INPUT: &str = "roxanne-search";
+/// Match case and regular expression, written as the symbols every editor
+/// uses and named in their tooltips.
+const CASE_SYMBOL: &str = "Aa";
+const REGEX_SYMBOL: &str = ".*";
 
 impl RoxanneApp {
+    /// The match case and regular expression toggles.
+    pub(super) fn match_toggles(&self, typo: &Typography) -> Element<'_, Message> {
+        row![
+            style::tip(
+                typo,
+                toggle_button(
+                    typo,
+                    CASE_SYMBOL,
+                    self.search_case_sensitive,
+                    Message::SearchToggleCaseSensitive,
+                ),
+                t("search_match_case"),
+            ),
+            style::tip(
+                typo,
+                toggle_button(
+                    typo,
+                    REGEX_SYMBOL,
+                    self.search_regex,
+                    Message::SearchToggleRegex
+                ),
+                t("search_regex"),
+            ),
+        ]
+        .spacing(8)
+        .into()
+    }
+
     pub(super) fn search_options(&self) -> SearchOptions {
         SearchOptions {
             regex: self.search_regex,
@@ -321,13 +353,7 @@ impl RoxanneApp {
                 .size(typo.sz(12))
                 .font(typo.regular)
                 .style(style::input),
-            toggle_button(
-                typo,
-                "Aa",
-                self.search_case_sensitive,
-                Message::SearchToggleCaseSensitive
-            ),
-            toggle_button(typo, ".*", self.search_regex, Message::SearchToggleRegex),
+            self.match_toggles(typo),
             toggle_button(
                 typo,
                 t("search_hidden_files"),
