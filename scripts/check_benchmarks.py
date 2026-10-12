@@ -10,7 +10,7 @@ import tomllib
 
 
 DEFAULT_CRITERION_DIR = Path("target/criterion")
-DEFAULT_THRESHOLDS = Path("benchmarks/thresholds.toml")
+DEFAULT_THRESHOLDS = Path("scripts/benchmark-thresholds.toml")
 ESTIMATES_FILE = Path("new/estimates.json")
 
 

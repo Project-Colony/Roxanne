@@ -36,12 +36,15 @@ marked as done, and the next start tries again.
 
 ## Order
 
-Each layer overrides the one before:
+Each layer overrides the one before, key by key:
 
 1. Built-in defaults.
 2. Your `config.toml`.
 3. The profile it selects, if any.
 4. The project's `.roxanne.toml`, then the profile it selects.
+
+A file sets only the keys it names. A project's `[editor]` with `tab_size = 2`
+changes the tab size and keeps your line numbers, word wrap and minimap.
 
 A project file never changes your theme, your other preferences or the
 interface language, and it never loads code: `[preferences]`, `[theme]` and
@@ -55,11 +58,14 @@ to the editor. The page has the three categories every Colony program starts
 with (General, Appearance, Accessibility), then Editor, Language server and
 Plugins, and About last.
 
-There is no Save button. A change applies at once and is written into your
-`config.toml`. Roxanne edits the file rather than rewriting it, so your
-comments, the order of your keys and the keys it does not know all stay. A
-`config.toml` that does not parse is left alone: the change still applies until
-you quit, and the status bar says it could not be saved.
+There is no Save button. A change applies at once, and only the key that
+changed is written: into your profile when the profile sets that key, else into
+your `config.toml`. A key the project sets is never written into your files:
+its row in Preferences names the project file, the change lasts until the
+settings reload, and the status bar says it was not saved. Roxanne edits a file
+rather than rewriting it, so your comments, the order of your keys and the keys
+it does not know all stay. A file that does not parse is left alone: the change
+still applies until you quit, and the status bar says it could not be saved.
 
 ## Live reload
 
@@ -124,7 +130,7 @@ enter_normal_mode = "escape"
 
 [plugins]
 enabled = ["word_count", "line_count"]
-dynamic = ["/opt/roxanne/plugins/libroxanne_sample.so"]
+dynamic = ["/opt/roxanne/plugins/libsample_plugin.so"]
 ```
 
 ## Keys
@@ -134,8 +140,9 @@ dynamic = ["/opt/roxanne/plugins/libroxanne_sample.so"]
 - `config_version`: the schema version, currently `1`. A file without it, or
   with an older one, is migrated in memory when it loads.
 - `profile`: the profile to load from `profiles/<profile>.toml`.
-- `language`: `"en"` or `"fr"`. Without it, Roxanne follows `LC_ALL`,
-  `LC_MESSAGES` or `LANG`, and falls back to English.
+- `language`: `"en"` or `"fr"`. Without it, Roxanne follows the system
+  language (`LANGUAGE`, `LC_ALL`, `LC_MESSAGES` or `LANG` on Linux, the user's
+  language on Windows and macOS), and falls back to English.
 - `keymap_profile`: the profile from `[keymap_profiles]` to use.
 
 ### `[preferences]`
@@ -177,6 +184,22 @@ Your own files only.
 
 - `enabled`: `false` stops rust-analyzer and turns the LSP actions off.
 - `rust_analyzer`: the program to run, a name looked up in `PATH` or a path.
+
+The language server support is experimental and covers Rust only. **Tools →
+Hover Information** and **Tools → Go to Definition** work on a saved `.rs`
+file: Roxanne starts rust-analyzer on the first of them, in the nearest folder
+above the file that holds a `Cargo.lock`, else a `Cargo.toml`, else the file's
+own folder. Asking about a file in another workspace replaces the server. The
+request runs in the background and its answer shows in the status bar, or opens
+the definition; a server that does not answer in time gives an error there
+instead of freezing the editor.
+
+Roxanne asks rust-analyzer not to run build scripts, proc macros or
+`cargo check`, since all three run code from the project. It still runs
+`cargo metadata`, and a project's own files can change what it runs:
+`rust-analyzer.toml`, Cargo configuration, and `rust-toolchain.toml`, which can
+point to a toolchain stored inside the project. Use the LSP actions only on code
+you trust.
 
 ### `[keymap]`
 

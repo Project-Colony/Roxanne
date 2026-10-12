@@ -1,8 +1,7 @@
 use crate::editor::highlight::{HighlightToken, Language};
 use std::ops::Range;
 use std::sync::LazyLock;
-use streaming_iterator::StreamingIterator;
-use tree_sitter::{InputEdit, Parser, Point, Query, QueryCursor, Tree};
+use tree_sitter::{InputEdit, Parser, Point, Query, QueryCursor, StreamingIterator, Tree};
 
 struct LangDef {
     ts_language: tree_sitter::Language,
@@ -146,7 +145,7 @@ impl GenericHighlighter {
         let mut highlights = Vec::new();
         let mut captures = cursor.captures(&self.query, tree.root_node(), self.text.as_bytes());
         while let Some((query_match, capture_index)) = captures.next() {
-            let capture = query_match.captures[*capture_index];
+            let capture = query_match.captures()[*capture_index];
             let range = capture.node.byte_range();
             if range.end <= start_byte || range.start >= end_byte {
                 continue;

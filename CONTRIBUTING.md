@@ -8,7 +8,7 @@ good pull request looks like.
 
 - Rust stable, installed with [rustup](https://rustup.rs).
 - The minimum supported Rust version (MSRV) is the `rust-version` in
-  `Cargo.toml`, currently 1.88. CI checks it, so do not use language or library
+  `Cargo.toml`, currently 1.90. CI checks it, so do not use language or library
   features newer than that.
 
 ## Build and run
