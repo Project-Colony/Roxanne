@@ -321,25 +321,25 @@ impl PerformanceMetrics {
     fn summary(&self) -> String {
         let mut parts = Vec::new();
         if let Some(duration) = self.startup {
-            parts.push(format!("Démarrage {}", format_duration(duration)));
+            parts.push(format!("Startup {}", format_duration(duration)));
         }
         if let Some(duration) = self.last_viewport_refresh {
-            parts.push(format!("Rendu {}", format_duration(duration)));
+            parts.push(format!("Render {}", format_duration(duration)));
         }
         if let Some(duration) = self.last_search {
-            parts.push(format!("Recherche {}", format_duration(duration)));
+            parts.push(format!("Search {}", format_duration(duration)));
         }
         if let Some(duration) = self.last_search_files {
-            parts.push(format!("Recherche fichiers {}", format_duration(duration)));
+            parts.push(format!("Find in files {}", format_duration(duration)));
         }
         if let Some(duration) = self.last_file_open {
-            parts.push(format!("Ouverture {}", format_duration(duration)));
+            parts.push(format!("Open {}", format_duration(duration)));
         }
         if let Some(duration) = self.last_file_save {
-            parts.push(format!("Sauvegarde {}", format_duration(duration)));
+            parts.push(format!("Save {}", format_duration(duration)));
         }
         if parts.is_empty() {
-            "Performance: aucune mesure.".to_string()
+            "Performance: nothing measured yet.".to_string()
         } else {
             format!("Performance: {}.", parts.join(" | "))
         }
@@ -832,20 +832,16 @@ impl Application for RoxanneApp {
 
     fn new(flags: config::AppConfig) -> (Self, Command<Message>) {
         let startup_start = Instant::now();
-        let initial_text = "Roxanne – éditeur en mode Iced\n\n\
-            Objectif: MVP inspiré de Sublime Text\n\
-            - Menu bar, tabs, status bar\n\
-            - Zone d'édition monospace";
-        let tab = Tab::new("untitled.txt", initial_text);
+        let tab = Tab::new("untitled.txt", "");
         let (mut plugins, plugin_warnings) = PluginManager::new(&flags.plugins);
-        plugins.on_text_changed(initial_text, "untitled.txt");
+        plugins.on_text_changed("", "untitled.txt");
         let mut warnings = flags.load_warnings.clone();
         warnings.extend(plugin_warnings);
         let mut status_message = if warnings.is_empty() {
             None
         } else {
             Some(format!(
-                "Config: {} alerte(s) lors du chargement.",
+                "Config: {} warning(s) while loading.",
                 warnings.len()
             ))
         };
@@ -855,7 +851,7 @@ impl Application for RoxanneApp {
             ..PerformanceMetrics::default()
         };
         if status_message.is_none() {
-            status_message = Some(format!("Démarrage: {}.", format_duration(startup_duration)));
+            status_message = Some(format!("Started in {}.", format_duration(startup_duration)));
         }
         highlight::set_syntax_palette(flags.theme.syntax);
         (
@@ -1093,37 +1089,31 @@ impl Application for RoxanneApp {
                         let skipped_note = if skipped_total > 0 {
                             let mut details = Vec::new();
                             if summary.skipped_too_large > 0 {
-                                details
-                                    .push(format!("{} trop volumineux", summary.skipped_too_large));
+                                details.push(format!("{} too large", summary.skipped_too_large));
                             }
                             if summary.skipped_invalid_utf8 > 0 {
-                                details.push(format!("{} non UTF-8", summary.skipped_invalid_utf8));
+                                details.push(format!("{} not UTF-8", summary.skipped_invalid_utf8));
                             }
                             if summary.skipped_read_errors > 0 {
-                                details.push(format!(
-                                    "{} erreur(s) de lecture",
-                                    summary.skipped_read_errors
-                                ));
+                                details
+                                    .push(format!("{} read error(s)", summary.skipped_read_errors));
                             }
-                            format!(
-                                ", {skipped_total} fichier(s) ignoré(s) : {}",
-                                details.join(", ")
-                            )
+                            format!(", {skipped_total} file(s) skipped: {}", details.join(", "))
                         } else {
                             String::new()
                         };
                         let truncated_note = if summary.truncated {
-                            " résultats partiels / limite atteinte"
+                            ", partial results (limit reached)"
                         } else {
                             ""
                         };
                         self.status_message = Some(format!(
-                            "Recherche fichiers: {} résultat(s) ({duration}){skipped_note}{truncated_note}.",
+                            "Find in files: {} result(s) ({duration}){skipped_note}{truncated_note}.",
                             self.search_results.len()
                         ));
                     }
                     Err(message) => {
-                        self.status_message = Some(format!("Recherche fichiers: {message}"));
+                        self.status_message = Some(format!("Find in files: {message}"));
                     }
                 }
                 Command::none()
@@ -1155,7 +1145,7 @@ impl Application for RoxanneApp {
                         self.refresh_viewport_cache();
                         self.jump_to_position(nav.line, nav.column);
                         let opened_message = format!(
-                            "Recherche: ouvert {} (ligne {}, colonne {})",
+                            "Search: opened {} (line {}, column {})",
                             nav.path.display(),
                             nav.line + 1,
                             nav.column + 1
@@ -1164,22 +1154,22 @@ impl Application for RoxanneApp {
                             self.status_message = Some(kept_edits_message(&path_str));
                         } else if load.lossy {
                             self.status_message = Some(format!(
-                                "{opened_message} (caractères invalides remplacés). Sauvegarde \
-bloquée tant qu'une confirmation explicite n'est pas donnée."
+                                "{opened_message} (invalid characters replaced). Saving is \
+blocked until you confirm it with a second save."
                             ));
                         } else {
                             self.status_message = Some(format!("{opened_message}."));
                         }
                     }
                     Err(message) => {
-                        self.status_message = Some(format!("Recherche fichiers: {message}"));
+                        self.status_message = Some(format!("Find in files: {message}"));
                     }
                 }
                 Command::none()
             }
             Message::SearchResultsCleared => {
                 self.search_results.clear();
-                self.status_message = Some("Recherche fichiers: résultats effacés.".to_string());
+                self.status_message = Some("Find in files: results cleared.".to_string());
                 Command::none()
             }
             Message::FilenameChanged(value) => {
@@ -1204,10 +1194,8 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                     MenuAction::ExportTheme => self.export_theme(),
                     MenuAction::ImportTheme => self.import_theme(),
                     MenuAction::Find => {
-                        self.status_message = Some(
-                            "Recherche: utilisez le champ de recherche dans la barre d'état."
-                                .to_string(),
-                        );
+                        self.status_message =
+                            Some("Search: use the search field in the status bar.".to_string());
                         Command::none()
                     }
                     MenuAction::FindNext => self.find_next_match(true),
@@ -1218,8 +1206,9 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                         Command::batch([Self::editor_bounds_command(), self.search_in_files()])
                     }
                     MenuAction::SelectAll => {
-                        self.status_message =
-                            Some("Sélection: Ctrl+A ou Cmd+A pour tout sélectionner.".to_string());
+                        self.status_message = Some(
+                            "Selection: press Ctrl+A or Cmd+A to select everything.".to_string(),
+                        );
                         Command::none()
                     }
                     MenuAction::AddCursorNextMatch => {
@@ -1232,8 +1221,7 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                     }
                     MenuAction::ClearMultiCursors => {
                         self.tab_mut().multi_cursors.clear();
-                        self.status_message =
-                            Some("Multi-curseurs: positions effacées.".to_string());
+                        self.status_message = Some("Multi-cursor: positions cleared.".to_string());
                         Command::none()
                     }
                     MenuAction::ToggleDiagnosticsPanel => {
@@ -1242,7 +1230,7 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                     }
                     MenuAction::ToggleStatusBar => {
                         self.status_message =
-                            Some("Affichage: options avancées à venir.".to_string());
+                            Some("View: the status bar cannot be hidden yet.".to_string());
                         Command::none()
                     }
                     MenuAction::ToggleSearchPanel => {
@@ -1282,14 +1270,16 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                     MenuAction::ToggleMinimap => self.update(Message::ToggleMinimap),
                     MenuAction::GoToSymbol => {
                         self.status_message =
-                            Some("Symboles: fonctionnalité en cours d'implémentation.".to_string());
+                            Some("Go to Symbol: not implemented yet.".to_string());
                         Command::none()
                     }
                     MenuAction::LspHover => self.lsp_hover(),
                     MenuAction::LspGotoDefinition => self.lsp_goto_definition(),
                     MenuAction::About => {
-                        self.status_message =
-                            Some("Roxanne MVP: éditeur inspiré de Sublime Text.".to_string());
+                        self.status_message = Some(
+                            "Roxanne: a lightweight code editor inspired by Sublime Text."
+                                .to_string(),
+                        );
                         Command::none()
                     }
                 }
@@ -1329,15 +1319,15 @@ bloquée tant qu'une confirmation explicite n'est pas donnée."
                             .unwrap_or_else(|| "-".to_string());
                         if load.lossy {
                             self.status_message = Some(format!(
-                                "Fichier chargé ({duration}, caractères invalides remplacés). \
-Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
+                                "File loaded ({duration}, invalid characters replaced). \
+Saving is blocked until you confirm it with a second save."
                             ));
                         } else {
-                            self.status_message = Some(format!("Fichier chargé ({duration})."));
+                            self.status_message = Some(format!("File loaded ({duration})."));
                         }
                     }
                     Err(message) => {
-                        self.status_message = Some(format!("Erreur d'ouverture: {message}"));
+                        self.status_message = Some(format!("Open failed: {message}"));
                     }
                 }
                 Command::none()
@@ -1362,10 +1352,10 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                             .last_file_save
                             .map(format_duration)
                             .unwrap_or_else(|| "-".to_string());
-                        self.status_message = Some(format!("Fichier sauvegardé ({duration})."));
+                        self.status_message = Some(format!("File saved ({duration})."));
                     }
                     Err(message) => {
-                        self.status_message = Some(format!("Erreur de sauvegarde: {message}"));
+                        self.status_message = Some(format!("Save failed: {message}"));
                     }
                 }
                 Command::none()
@@ -1374,10 +1364,10 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                 match result {
                     Ok(path) => {
                         self.status_message =
-                            Some(format!("Thème exporté vers {}.", path.display()));
+                            Some(format!("Theme exported to {}.", path.display()));
                     }
                     Err(message) => {
-                        self.status_message = Some(format!("Export thème: {message}"));
+                        self.status_message = Some(format!("Theme export: {message}"));
                     }
                 }
                 Command::none()
@@ -1390,13 +1380,13 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                         highlight::set_syntax_palette(palette.syntax);
                         self.theme = palette;
                         self.status_message = Some(if warnings.is_empty() {
-                            "Thème importé.".to_string()
+                            "Theme imported.".to_string()
                         } else {
-                            format!("Thème importé avec {} alerte(s).", warnings.len())
+                            format!("Theme imported with {} warning(s).", warnings.len())
                         });
                     }
                     Err(message) => {
-                        self.status_message = Some(format!("Import thème: {message}"));
+                        self.status_message = Some(format!("Theme import: {message}"));
                     }
                 }
                 Command::none()
@@ -1411,7 +1401,7 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
             }
             Message::TabClosed(index) => {
                 if index < self.tabs.len() {
-                    // Don't close the last tab — create a new empty one instead
+                    // Don't close the last tab: create a new empty one instead
                     if self.tabs.len() == 1 {
                         self.tabs[0] = Tab::new("untitled.txt", "");
                         self.active_tab = 0;
@@ -1526,8 +1516,7 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
             Message::SaveAsSubmit => {
                 let new_name = self.save_as_input.trim().to_string();
                 if new_name.is_empty() {
-                    self.status_message =
-                        Some("Enregistrer sous: nom de fichier manquant.".to_string());
+                    self.status_message = Some("Save As: enter a file name.".to_string());
                     return Command::none();
                 }
                 // Ask about replaced characters while the panel is still open
@@ -1571,7 +1560,7 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
             Message::FileChangedExternally(path) => {
                 self.file_changed_externally = Some(path);
                 self.status_message =
-                    Some("Fichier modifié par un programme externe. Recharger?".to_string());
+                    Some("The file was changed by another program. Reload it?".to_string());
                 Command::none()
             }
             Message::FileChangedReload => {
@@ -1613,18 +1602,14 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
             },
             Message::FileChangedIgnore => {
                 self.file_changed_externally = None;
-                self.status_message = Some("Modification externe ignorée.".to_string());
+                self.status_message = Some("External change ignored.".to_string());
                 Command::none()
             }
             Message::ToggleLineWrap => {
                 self.line_wrap_enabled = !self.line_wrap_enabled;
                 self.status_message = Some(format!(
-                    "Retour à la ligne: {}.",
-                    if self.line_wrap_enabled {
-                        "activé"
-                    } else {
-                        "désactivé"
-                    }
+                    "Line wrap: {}.",
+                    if self.line_wrap_enabled { "on" } else { "off" }
                 ));
                 Command::none()
             }
@@ -1632,11 +1617,7 @@ Sauvegarde bloquée tant qu'une confirmation explicite n'est pas donnée."
                 self.minimap_enabled = !self.minimap_enabled;
                 self.status_message = Some(format!(
                     "Minimap: {}.",
-                    if self.minimap_enabled {
-                        "activée"
-                    } else {
-                        "désactivée"
-                    }
+                    if self.minimap_enabled { "on" } else { "off" }
                 ));
                 Command::none()
             }
@@ -1752,7 +1733,7 @@ impl RoxanneApp {
     fn open_file(&mut self) -> Command<Message> {
         let filename = self.tab().filename.clone();
         if filename.trim().is_empty() {
-            self.status_message = Some("Nom de fichier manquant.".to_string());
+            self.status_message = Some("Enter a file name.".to_string());
             return Command::none();
         }
         // If file is already open in another tab, just switch
@@ -1775,7 +1756,7 @@ impl RoxanneApp {
                 let metadata = std::fs::metadata(&path).map_err(|err| err.to_string())?;
                 if metadata.len() > MAX_OPEN_FILE_SIZE {
                     return Err(format!(
-                        "fichier trop volumineux ({} octets, limite {} octets)",
+                        "file too large ({} bytes, limit {} bytes)",
                         metadata.len(),
                         MAX_OPEN_FILE_SIZE
                     ));
@@ -1839,8 +1820,8 @@ impl RoxanneApp {
         }
         self.tab_mut().lossy_save_acknowledged = true;
         self.status_message = Some(
-            "Sauvegarde bloquée: le fichier contient des caractères invalides remplacés. \
-Relancez «Enregistrer» pour confirmer l'écriture."
+            "Save blocked: invalid characters in the file were replaced. \
+Save again to confirm the write."
                 .to_string(),
         );
         true
@@ -1869,7 +1850,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         let path = match Self::theme_file_path() {
             Ok(path) => path,
             Err(message) => {
-                self.status_message = Some(format!("Export thème: {message}"));
+                self.status_message = Some(format!("Theme export: {message}"));
                 return Command::none();
             }
         };
@@ -1888,7 +1869,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         let path = match Self::theme_file_path() {
             Ok(path) => path,
             Err(message) => {
-                self.status_message = Some(format!("Import thème: {message}"));
+                self.status_message = Some(format!("Theme import: {message}"));
                 return Command::none();
             }
         };
@@ -1914,9 +1895,8 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             KeyAction::Save => self.save_file(),
             KeyAction::Open => self.open_file(),
             KeyAction::Find => {
-                self.status_message = Some(
-                    "Recherche: utilisez le champ de recherche dans la barre d'état.".to_string(),
-                );
+                self.status_message =
+                    Some("Search: use the search field in the status bar.".to_string());
                 Command::none()
             }
             KeyAction::FindNext => self.find_next_match(true),
@@ -1995,12 +1975,12 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             KeyAction::ToggleFileTree => self.update(Message::FileTreeToggle),
             KeyAction::EnterInsertMode => {
                 self.mode = KeymapMode::Insert;
-                self.status_message = Some("Mode insertion.".to_string());
+                self.status_message = Some("Insert mode.".to_string());
                 Command::none()
             }
             KeyAction::EnterNormalMode => {
                 self.mode = KeymapMode::Normal;
-                self.status_message = Some("Mode normal.".to_string());
+                self.status_message = Some("Normal mode.".to_string());
                 Command::none()
             }
             KeyAction::MoveLeft => {
@@ -2112,7 +2092,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                     .content
                     .perform(EditorAction::Move(Motion::Right));
                 self.mode = KeymapMode::Insert;
-                self.status_message = Some("Mode insertion (après).".to_string());
+                self.status_message = Some("Insert mode (after the cursor).".to_string());
                 Command::none()
             }
             KeyAction::InsertLineBelow => {
@@ -2127,7 +2107,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                 self.tab_mut().buffer.replace(&t);
                 self.sync_highlight_buffer();
                 self.mode = KeymapMode::Insert;
-                self.status_message = Some("Mode insertion (nouvelle ligne).".to_string());
+                self.status_message = Some("Insert mode (new line below).".to_string());
                 self.refresh_viewport_cache();
                 Command::none()
             }
@@ -2146,7 +2126,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                 self.tab_mut().buffer.replace(&t);
                 self.sync_highlight_buffer();
                 self.mode = KeymapMode::Insert;
-                self.status_message = Some("Mode insertion (ligne au-dessus).".to_string());
+                self.status_message = Some("Insert mode (new line above).".to_string());
                 self.refresh_viewport_cache();
                 Command::none()
             }
@@ -2200,12 +2180,12 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             Menu::File => (
                 "File",
                 vec![
-                    MenuEntry::action("New File — Ctrl+N", MenuAction::NewFile),
-                    MenuEntry::action("Open File… — Ctrl+O", MenuAction::Open),
+                    MenuEntry::action("New File - Ctrl+N", MenuAction::NewFile),
+                    MenuEntry::action("Open File… - Ctrl+O", MenuAction::Open),
                     MenuEntry::Separator,
-                    MenuEntry::action("Save — Ctrl+S", MenuAction::Save),
-                    MenuEntry::action("Save As… — Ctrl+Shift+S", MenuAction::SaveAs),
-                    MenuEntry::action("Close File — Ctrl+W", MenuAction::CloseFile),
+                    MenuEntry::action("Save - Ctrl+S", MenuAction::Save),
+                    MenuEntry::action("Save As… - Ctrl+Shift+S", MenuAction::SaveAs),
+                    MenuEntry::action("Close File - Ctrl+W", MenuAction::CloseFile),
                     MenuEntry::Separator,
                     MenuEntry::action("Export Theme", MenuAction::ExportTheme),
                     MenuEntry::action("Import Theme", MenuAction::ImportTheme),
@@ -2214,17 +2194,17 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             Menu::Edit => (
                 "Edit",
                 vec![
-                    MenuEntry::action("Undo — Ctrl+Z", MenuAction::Undo),
-                    MenuEntry::action("Redo — Ctrl+Shift+Z", MenuAction::Redo),
+                    MenuEntry::action("Undo - Ctrl+Z", MenuAction::Undo),
+                    MenuEntry::action("Redo - Ctrl+Shift+Z", MenuAction::Redo),
                     MenuEntry::Separator,
-                    MenuEntry::action("Cut — Ctrl+X", MenuAction::Cut),
-                    MenuEntry::action("Copy — Ctrl+C", MenuAction::Copy),
-                    MenuEntry::action("Paste — Ctrl+V", MenuAction::Paste),
+                    MenuEntry::action("Cut - Ctrl+X", MenuAction::Cut),
+                    MenuEntry::action("Copy - Ctrl+C", MenuAction::Copy),
+                    MenuEntry::action("Paste - Ctrl+V", MenuAction::Paste),
                     MenuEntry::Separator,
-                    MenuEntry::action("Find — Ctrl+F", MenuAction::Find),
-                    MenuEntry::action("Find Next — F3", MenuAction::FindNext),
-                    MenuEntry::action("Find Previous — Shift+F3", MenuAction::FindPrevious),
-                    MenuEntry::action("Find in Files… — Ctrl+Shift+F", MenuAction::FindInFiles),
+                    MenuEntry::action("Find - Ctrl+F", MenuAction::Find),
+                    MenuEntry::action("Find Next - F3", MenuAction::FindNext),
+                    MenuEntry::action("Find Previous - Shift+F3", MenuAction::FindPrevious),
+                    MenuEntry::action("Find in Files… - Ctrl+Shift+F", MenuAction::FindInFiles),
                     MenuEntry::Separator,
                     MenuEntry::action("Search Panel", MenuAction::ToggleSearchPanel),
                     MenuEntry::action("Diagnostics Panel", MenuAction::ToggleDiagnosticsPanel),
@@ -2233,16 +2213,16 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             Menu::Selection => (
                 "Selection",
                 vec![
-                    MenuEntry::action("Select All — Ctrl+A", MenuAction::SelectAll),
+                    MenuEntry::action("Select All - Ctrl+A", MenuAction::SelectAll),
                     MenuEntry::action(
-                        "Add Cursor to Next Match — Ctrl+D",
+                        "Add Cursor to Next Match - Ctrl+D",
                         MenuAction::AddCursorNextMatch,
                     ),
                     MenuEntry::action(
-                        "Add Cursors to All Matches — Alt+F3",
+                        "Add Cursors to All Matches - Alt+F3",
                         MenuAction::AddCursorsAllMatches,
                     ),
-                    MenuEntry::action("Clear Cursors — Esc", MenuAction::ClearMultiCursors),
+                    MenuEntry::action("Clear Cursors - Esc", MenuAction::ClearMultiCursors),
                     MenuEntry::Separator,
                 ],
             ),
@@ -2250,7 +2230,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                 "View",
                 vec![
                     MenuEntry::action("Toggle Status Bar", MenuAction::ToggleStatusBar),
-                    MenuEntry::action("Toggle File Tree — Ctrl+B", MenuAction::ToggleFileTree),
+                    MenuEntry::action("Toggle File Tree - Ctrl+B", MenuAction::ToggleFileTree),
                     MenuEntry::action("Toggle Line Wrap", MenuAction::ToggleLineWrap),
                     MenuEntry::action("Toggle Minimap", MenuAction::ToggleMinimap),
                 ],
@@ -2258,7 +2238,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             Menu::Goto => (
                 "Goto",
                 vec![
-                    MenuEntry::action("Go to Line… — Ctrl+G", MenuAction::GoToLine),
+                    MenuEntry::action("Go to Line… - Ctrl+G", MenuAction::GoToLine),
                     MenuEntry::action("Go to Symbol…", MenuAction::GoToSymbol),
                 ],
             ),
@@ -2275,8 +2255,8 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             Menu::Project => (
                 "Project",
                 vec![
-                    MenuEntry::action("Find in Files… — Ctrl+Shift+F", MenuAction::FindInFiles),
-                    MenuEntry::action("Toggle File Tree — Ctrl+B", MenuAction::ToggleFileTree),
+                    MenuEntry::action("Find in Files… - Ctrl+Shift+F", MenuAction::FindInFiles),
+                    MenuEntry::action("Toggle File Tree - Ctrl+B", MenuAction::ToggleFileTree),
                 ],
             ),
             Menu::Preferences => (
@@ -2489,11 +2469,11 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         }
 
         let header = row![
-            text("Recherche avancée")
+            text("Advanced Search")
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(220, 220, 220)),
-            text(format!("{} résultat(s)", self.search_results.len()))
+            text(format!("{} result(s)", self.search_results.len()))
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(160, 160, 160)),
@@ -2502,7 +2482,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         .align_items(Alignment::Center);
 
         let query_row = row![
-            TextInput::new("Recherche globale…", &self.search_query)
+            TextInput::new("Search the workspace…", &self.search_query)
                 .on_input(Message::SearchChanged)
                 .padding([4, 8])
                 .size(12),
@@ -2513,7 +2493,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             ),
             self.toggle_button(".*", self.search_regex, Message::SearchToggleRegex),
             self.toggle_button(
-                "Cachés",
+                "Hidden",
                 self.search_include_hidden,
                 Message::SearchToggleIncludeHidden
             ),
@@ -2522,15 +2502,15 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         .align_items(Alignment::Center);
 
         let replace_row = row![
-            TextInput::new("Remplacer par…", &self.replace_text)
+            TextInput::new("Replace with…", &self.replace_text)
                 .on_input(Message::ReplaceChanged)
                 .padding([4, 8])
                 .size(12),
-            Button::new(text("Remplacer").size(12).font(Font::MONOSPACE))
+            Button::new(text("Replace").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
                 .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::ReplaceCurrent),
-            Button::new(text("Tout remplacer").size(12).font(Font::MONOSPACE))
+            Button::new(text("Replace All").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
                 .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::ReplaceAll),
@@ -2546,11 +2526,11 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         .align_items(Alignment::Center);
 
         let action_row = row![
-            Button::new(text("Rechercher fichiers").size(12).font(Font::MONOSPACE))
+            Button::new(text("Search Files").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
                 .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::SearchInFiles),
-            Button::new(text("Effacer résultats").size(12).font(Font::MONOSPACE))
+            Button::new(text("Clear Results").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
                 .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::SearchResultsCleared),
@@ -2559,7 +2539,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         .align_items(Alignment::Center);
 
         let results: Element<Message> = if self.search_results.is_empty() {
-            text("Aucun résultat. Lancez une recherche pour le workspace.")
+            text("No results. Run a search across the workspace.")
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(theme::Text::Color(Color::from_rgb8(150, 150, 150)))
@@ -2628,11 +2608,11 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         }
 
         let header = row![
-            text("Aller à")
+            text("Go to Line")
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(220, 220, 220)),
-            text("Ligne[:Colonne]")
+            text("Line[:Column]")
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(160, 160, 160)),
@@ -2640,18 +2620,18 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         .spacing(12)
         .align_items(Alignment::Center);
 
-        let input = TextInput::new("ex: 42:5", &self.goto_line_input)
+        let input = TextInput::new("e.g. 42:5", &self.goto_line_input)
             .on_input(Message::GotoLineChanged)
             .on_submit(Message::GotoLineSubmit)
             .padding([4, 8])
             .size(12);
 
         let actions = row![
-            Button::new(text("Aller").size(12).font(Font::MONOSPACE))
+            Button::new(text("Go").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
                 .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::GotoLineSubmit),
-            Button::new(text("Fermer").size(12).font(Font::MONOSPACE))
+            Button::new(text("Close").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
                 .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::GotoLineClosed),
@@ -2679,7 +2659,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(220, 220, 220)),
-            text(format!("{} élément(s)", self.tab().diagnostics.len()))
+            text(format!("{} item(s)", self.tab().diagnostics.len()))
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(160, 160, 160)),
@@ -2688,7 +2668,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         .align_items(Alignment::Center);
 
         let content: Element<Message> = if self.tab().diagnostics.is_empty() {
-            text("Aucun diagnostic.")
+            text("No diagnostics.")
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(theme::Text::Color(Color::from_rgb8(150, 150, 150)))
@@ -2741,11 +2721,11 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         }
 
         let header = row![
-            text("Complétions (mots-clés)")
+            text("Completions (keywords)")
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(220, 220, 220)),
-            text(format!("Préfixe: {}", self.tab().completion_prefix))
+            text(format!("Prefix: {}", self.tab().completion_prefix))
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(Color::from_rgb8(160, 160, 160)),
@@ -2754,7 +2734,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         .align_items(Alignment::Center);
 
         let list: Element<Message> = if self.tab().completion_items.is_empty() {
-            text("Aucune suggestion.")
+            text("No suggestions.")
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(theme::Text::Color(Color::from_rgb8(150, 150, 150)))
@@ -2837,7 +2817,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                 .padding([2, 6])
                 .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press_maybe(has_matches.then_some(Message::SearchNext)),
-            TextInput::new("fichier…", &tab.filename)
+            TextInput::new("file…", &tab.filename)
                 .on_input(Message::FilenameChanged)
                 .padding([2, 8])
                 .size(12),
@@ -2870,7 +2850,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             segments.push(format!("Diag: {diagnostics_count}"));
         }
 
-        // Line/Col — always shown
+        // Line/Col - always shown
         segments.push(format!(
             "Ln {}/{}, Col {}",
             cursor_position.0 + 1,
@@ -2967,9 +2947,9 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         self.plugins = plugins;
 
         self.status_message = Some(if warnings.is_empty() {
-            "Config: rechargée.".to_string()
+            "Config: reloaded.".to_string()
         } else {
-            format!("Config: rechargée avec {} alerte(s).", warnings.len())
+            format!("Config: reloaded with {} warning(s).", warnings.len())
         });
 
         Command::none()
@@ -3017,7 +2997,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
 
     fn search_in_files(&mut self) -> Command<Message> {
         if self.search_query.trim().is_empty() {
-            self.status_message = Some("Recherche fichiers: saisissez un terme.".to_string());
+            self.status_message = Some("Find in files: enter a search term.".to_string());
             return Command::none();
         }
 
@@ -3031,7 +3011,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                 .map(format_duration)
                 .unwrap_or_else(|| "-".to_string());
             self.status_message = Some(format!(
-                "Recherche fichier: {} occurrence(s) ({duration}).",
+                "Search in file: {} match(es) ({duration}).",
                 self.tab().search_matches.len(),
             ));
             return Command::none();
@@ -3042,7 +3022,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         let root = match self.resolve_workspace_root() {
             Ok(path) => path,
             Err(err) => {
-                self.status_message = Some(format!("Recherche fichiers: {err}"));
+                self.status_message = Some(format!("Find in files: {err}"));
                 return Command::none();
             }
         };
@@ -3064,7 +3044,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                 self.tab_mut().search_matches.clear();
                 self.tab_mut().highlight_settings.search_matches.clear();
                 if update_status && !self.search_query.is_empty() {
-                    self.status_message = Some(format!("Recherche: {message}"));
+                    self.status_message = Some(format!("Search: {message}"));
                 }
                 return;
             }
@@ -3074,7 +3054,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         if self.tab().search_matches.is_empty() {
             self.tab_mut().current_match_index = None;
             if update_status && !self.search_query.is_empty() {
-                self.status_message = Some("Recherche: aucune occurrence.".to_string());
+                self.status_message = Some("Search: no matches.".to_string());
             }
             return;
         }
@@ -3087,18 +3067,18 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         };
 
         if update_status && !self.search_query.is_empty() {
-            self.status_message = Some(format!("Recherche: {} occurrence(s).", len));
+            self.status_message = Some(format!("Search: {} match(es).", len));
         }
     }
 
     fn find_next_match(&mut self, forward: bool) -> Command<Message> {
         if self.search_query.trim().is_empty() {
-            self.status_message = Some("Recherche: saisissez un terme.".to_string());
+            self.status_message = Some("Search: enter a search term.".to_string());
             return Command::none();
         }
 
         if self.tab().search_matches.is_empty() {
-            self.status_message = Some("Recherche: aucune occurrence.".to_string());
+            self.status_message = Some("Search: no matches.".to_string());
             return Command::none();
         }
 
@@ -3131,7 +3111,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             let column = match_position.column;
             self.jump_to_position(line, column);
             self.status_message = Some(format!(
-                "Recherche: {}/{} (ligne {}, colonne {}).",
+                "Search: {}/{} (line {}, column {}).",
                 index + 1,
                 self.tab().search_matches.len(),
                 line + 1,
@@ -3142,21 +3122,21 @@ Relancez «Enregistrer» pour confirmer l'écriture."
 
     fn all_commands() -> Vec<(&'static str, MenuAction)> {
         vec![
-            ("New File — Ctrl+N", MenuAction::NewFile),
-            ("Open File — Ctrl+O", MenuAction::Open),
-            ("Save — Ctrl+S", MenuAction::Save),
-            ("Save As — Ctrl+Shift+S", MenuAction::SaveAs),
-            ("Close File — Ctrl+W", MenuAction::CloseFile),
-            ("Undo — Ctrl+Z", MenuAction::Undo),
-            ("Redo — Ctrl+Shift+Z", MenuAction::Redo),
-            ("Cut — Ctrl+X", MenuAction::Cut),
-            ("Copy — Ctrl+C", MenuAction::Copy),
-            ("Paste — Ctrl+V", MenuAction::Paste),
-            ("Find — Ctrl+F", MenuAction::Find),
-            ("Find Next — F3", MenuAction::FindNext),
-            ("Find Previous — Shift+F3", MenuAction::FindPrevious),
+            ("New File - Ctrl+N", MenuAction::NewFile),
+            ("Open File - Ctrl+O", MenuAction::Open),
+            ("Save - Ctrl+S", MenuAction::Save),
+            ("Save As - Ctrl+Shift+S", MenuAction::SaveAs),
+            ("Close File - Ctrl+W", MenuAction::CloseFile),
+            ("Undo - Ctrl+Z", MenuAction::Undo),
+            ("Redo - Ctrl+Shift+Z", MenuAction::Redo),
+            ("Cut - Ctrl+X", MenuAction::Cut),
+            ("Copy - Ctrl+C", MenuAction::Copy),
+            ("Paste - Ctrl+V", MenuAction::Paste),
+            ("Find - Ctrl+F", MenuAction::Find),
+            ("Find Next - F3", MenuAction::FindNext),
+            ("Find Previous - Shift+F3", MenuAction::FindPrevious),
             ("Find in Files", MenuAction::FindInFiles),
-            ("Select All — Ctrl+A", MenuAction::SelectAll),
+            ("Select All - Ctrl+A", MenuAction::SelectAll),
             ("Add Cursor Next Match", MenuAction::AddCursorNextMatch),
             ("Add Cursors All Matches", MenuAction::AddCursorsAllMatches),
             ("Clear Multi Cursors", MenuAction::ClearMultiCursors),
@@ -3164,7 +3144,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             ("Toggle Search Panel", MenuAction::ToggleSearchPanel),
             ("Toggle Line Wrap", MenuAction::ToggleLineWrap),
             ("Toggle Minimap", MenuAction::ToggleMinimap),
-            ("Go To Line — Ctrl+G", MenuAction::GoToLine),
+            ("Go To Line - Ctrl+G", MenuAction::GoToLine),
             ("Go To Symbol", MenuAction::GoToSymbol),
             ("LSP Hover Info", MenuAction::LspHover),
             ("LSP Go to Definition", MenuAction::LspGotoDefinition),
@@ -3172,7 +3152,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             ("Export Theme", MenuAction::ExportTheme),
             ("Import Theme", MenuAction::ImportTheme),
             ("Performance Report", MenuAction::PerformanceReport),
-            ("Toggle File Tree — Ctrl+B", MenuAction::ToggleFileTree),
+            ("Toggle File Tree - Ctrl+B", MenuAction::ToggleFileTree),
             ("About", MenuAction::About),
         ]
     }
@@ -3196,7 +3176,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
 
         let commands = self.filtered_commands();
 
-        let input = TextInput::new("Commande…", &self.command_palette_query)
+        let input = TextInput::new("Command…", &self.command_palette_query)
             .on_input(Message::CommandPaletteChanged)
             .padding([6, 12])
             .size(14);
@@ -3223,7 +3203,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             .collect();
 
         let list: Element<Message> = if entries.is_empty() {
-            text("Aucune commande.")
+            text("No commands.")
                 .size(12)
                 .font(Font::MONOSPACE)
                 .style(theme::Text::Color(Color::from_rgb8(150, 150, 150)))
@@ -3255,7 +3235,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         let mut items: Vec<Element<'_, Message>> = Vec::new();
 
         // Filter bar
-        let filter_input = TextInput::new("Filtrer…", &self.file_tree_filter)
+        let filter_input = TextInput::new("Filter…", &self.file_tree_filter)
             .on_input(Message::FileTreeFilterChanged)
             .padding([2, 6])
             .size(11);
@@ -3315,8 +3295,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         let match_index = match self.tab().current_match_index {
             Some(idx) => idx,
             None => {
-                self.status_message =
-                    Some("Remplacement: aucune occurrence sélectionnée.".to_string());
+                self.status_message = Some("Replace: no match selected.".to_string());
                 return;
             }
         };
@@ -3349,18 +3328,18 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             self.tab_mut().current_match_index = Some(next_idx);
             self.jump_to_match(next_idx);
             self.status_message = Some(format!(
-                "Remplacement: 1 occurrence remplacée. Suivant: {}/{}.",
+                "Replace: 1 match replaced. Next: {}/{}.",
                 next_idx + 1,
                 self.tab().search_matches.len()
             ));
         } else {
-            self.status_message = Some("Remplacement: dernière occurrence remplacée.".to_string());
+            self.status_message = Some("Replace: last match replaced.".to_string());
         }
     }
 
     fn replace_all_matches(&mut self) {
         if self.tab().search_matches.is_empty() {
-            self.status_message = Some("Remplacement: aucune occurrence.".to_string());
+            self.status_message = Some("Replace: no matches.".to_string());
             return;
         }
         self.record_undo_snapshot();
@@ -3383,7 +3362,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                     self.tab_mut().content = EditorContent::with_text(&new_text);
                 }
                 Err(e) => {
-                    self.status_message = Some(format!("Remplacement erreur: {e}"));
+                    self.status_message = Some(format!("Replace failed: {e}"));
                     return;
                 }
             }
@@ -3409,10 +3388,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         let cf = self.tab().filename.clone();
         self.plugins.on_text_changed(&ct, &cf);
         self.refresh_viewport_cache();
-        self.status_message = Some(format!(
-            "Remplacement: {} occurrence(s) remplacée(s).",
-            count
-        ));
+        self.status_message = Some(format!("Replace: {} match(es) replaced.", count));
     }
 
     fn open_search_result(&mut self, index: usize) -> Command<Message> {
@@ -3431,7 +3407,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
                 let metadata = std::fs::metadata(&path).map_err(|err| err.to_string())?;
                 if metadata.len() > MAX_OPEN_FILE_SIZE {
                     return Err(format!(
-                        "fichier trop volumineux ({} octets, limite {} octets)",
+                        "file too large ({} bytes, limit {} bytes)",
                         metadata.len(),
                         MAX_OPEN_FILE_SIZE
                     ));
@@ -3500,7 +3476,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
     fn handle_goto_line(&mut self) {
         let input = self.goto_line_input.trim();
         if input.is_empty() {
-            self.status_message = Some("Aller à: saisissez une ligne.".to_string());
+            self.status_message = Some("Go to Line: enter a line number.".to_string());
             return;
         }
 
@@ -3508,21 +3484,21 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             Ok((line, column)) => {
                 self.jump_to_position(line, column);
                 self.status_message = Some(format!(
-                    "Aller à: ligne {}, colonne {}.",
+                    "Go to Line: line {}, column {}.",
                     line + 1,
                     column + 1
                 ));
                 self.goto_panel_open = false;
             }
             Err(message) => {
-                self.status_message = Some(format!("Aller à: {message}"));
+                self.status_message = Some(format!("Go to Line: {message}"));
             }
         }
     }
 
     fn add_cursor_next_match(&mut self) {
         if self.tab().search_matches.is_empty() {
-            self.status_message = Some("Multi-curseurs: aucune occurrence.".to_string());
+            self.status_message = Some("Multi-cursor: no matches.".to_string());
             return;
         }
 
@@ -3543,13 +3519,13 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             if !self.tab().multi_cursors.contains(&position) {
                 self.tab_mut().multi_cursors.push(position);
             }
-            self.status_message = Some("Multi-curseurs: ajout d'une position.".to_string());
+            self.status_message = Some("Multi-cursor: position added.".to_string());
         }
     }
 
     fn add_cursors_all_matches(&mut self) {
         if self.tab().search_matches.is_empty() {
-            self.status_message = Some("Multi-curseurs: aucune occurrence.".to_string());
+            self.status_message = Some("Multi-cursor: no matches.".to_string());
             return;
         }
         let (line, column) = self.tab().content.cursor_position();
@@ -3563,7 +3539,7 @@ Relancez «Enregistrer» pour confirmer l'écriture."
             .collect();
         let count = cursors.len();
         self.tab_mut().multi_cursors = cursors;
-        self.status_message = Some(format!("Multi-curseurs: {} position(s).", count));
+        self.status_message = Some(format!("Multi-cursor: {} position(s).", count));
     }
 
     fn apply_multi_cursor_edit(&mut self, edit: &EditorEdit) {
@@ -3633,13 +3609,13 @@ Relancez «Enregistrer» pour confirmer l'écriture."
         let applied_cursors = self.tab().multi_cursors.len() + 1;
         if ignored_operations > 0 {
             self.status_message = Some(format!(
-                "Multi-curseurs: édition sur {applied_cursors} curseur(s). \
-{ignored_operations} curseur(s) fusionné(s) (positions trop proches). \
-Astuce: espacez les curseurs pour éviter les chevauchements."
+                "Multi-cursor: edited at {applied_cursors} cursor(s). \
+{ignored_operations} cursor(s) merged (positions too close). \
+Tip: space the cursors out to avoid overlaps."
             ));
         } else {
             self.status_message = Some(format!(
-                "Multi-curseurs: édition sur {applied_cursors} curseur(s)."
+                "Multi-cursor: edited at {applied_cursors} cursor(s)."
             ));
         }
     }
@@ -3698,7 +3674,7 @@ Astuce: espacez les curseurs pour éviter les chevauchements."
     fn resync_widget_scroll(&mut self) {
         let (cursor_line, cursor_col) = self.tab().content.cursor_position();
 
-        // Jump to top – this resets widget scroll to 0.
+        // Jump to top: this resets widget scroll to 0.
         self.tab_mut()
             .content
             .perform(EditorAction::Move(Motion::DocumentStart));
@@ -3771,9 +3747,9 @@ Astuce: espacez les curseurs pour éviter les chevauchements."
         tab.completion_prefix = prefix;
         tab.completion_items = items;
         if count == 0 {
-            self.status_message = Some("Complétions: aucune suggestion.".to_string());
+            self.status_message = Some("Completions: no suggestions.".to_string());
         } else {
-            self.status_message = Some(format!("Complétions: {} suggestion(s).", count));
+            self.status_message = Some(format!("Completions: {} suggestion(s).", count));
         }
     }
 
@@ -3870,25 +3846,25 @@ Astuce: espacez les curseurs pour éviter les chevauchements."
             return None;
         }
 
-        let header = text("Enregistrer sous")
+        let header = text("Save As")
             .size(12)
             .font(Font::MONOSPACE)
             .style(Color::from_rgb8(220, 220, 220));
 
-        let input = TextInput::new("Nom du fichier…", &self.save_as_input)
+        let input = TextInput::new("File name…", &self.save_as_input)
             .on_input(Message::SaveAsChanged)
             .on_submit(Message::SaveAsSubmit)
             .padding([4, 8])
             .size(12);
 
         let confirming = self.save_as_overwrite.as_deref() == Some(self.save_as_input.trim());
-        let save_label = if confirming { "Replace" } else { "Enregistrer" };
+        let save_label = if confirming { "Replace" } else { "Save" };
         let actions = row![
             Button::new(text(save_label).size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
                 .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::SaveAsSubmit),
-            Button::new(text("Annuler").size(12).font(Font::MONOSPACE))
+            Button::new(text("Cancel").size(12).font(Font::MONOSPACE))
                 .padding([4, 10])
                 .style(theme::Button::Custom(styles::submenu_button(&self.theme)))
                 .on_press(Message::SaveAsClosed),
@@ -3943,7 +3919,7 @@ Astuce: espacez les curseurs pour éviter les chevauchements."
             minimap_text.push('\n');
         }
 
-        let info = format!("{}/{} lignes", cursor_line + 1, total_lines);
+        let info = format!("{}/{} lines", cursor_line + 1, total_lines);
         let content = column![
             text("Minimap")
                 .size(10)
@@ -4040,7 +4016,7 @@ mod tests {
         let diagnostics = diagnostics::analyze(&buffer);
         let diagnostic = diagnostics
             .iter()
-            .find(|item| item.message.contains("Fermeture inattendue"))
+            .find(|item| item.message.contains("Unexpected closing"))
             .expect("diagnostic");
         assert_eq!(diagnostic.line, 1);
         assert_eq!(diagnostic.column, 1);
@@ -4091,7 +4067,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .all(|item| item.message != "Chaîne non terminée."),
+                .all(|item| item.message != "Unterminated string."),
             "escaped quote should not trigger unterminated string diagnostic"
         );
     }
@@ -4156,7 +4132,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .all(|item| item.message != "Chaîne non terminée."),
+                .all(|item| item.message != "Unterminated string."),
             "multiline strings should not trigger unterminated string diagnostic"
         );
     }
@@ -4602,25 +4578,25 @@ fn parse_goto_input(input: &str) -> Result<(usize, usize), String> {
     let column_part = parts.next().map(str::trim);
 
     if parts.next().is_some() {
-        return Err("format invalide (utilisez ligne[:colonne])".to_string());
+        return Err("invalid format (use line[:column])".to_string());
     }
 
     let line = line_part
         .parse::<usize>()
-        .map_err(|_| "ligne invalide".to_string())?;
+        .map_err(|_| "invalid line".to_string())?;
     if line == 0 {
-        return Err("la ligne commence à 1".to_string());
+        return Err("lines start at 1".to_string());
     }
 
     let column = match column_part {
         Some(value) if !value.is_empty() => value
             .parse::<usize>()
-            .map_err(|_| "colonne invalide".to_string())?,
+            .map_err(|_| "invalid column".to_string())?,
         _ => 1,
     };
 
     if column == 0 {
-        return Err("la colonne commence à 1".to_string());
+        return Err("columns start at 1".to_string());
     }
 
     Ok((line - 1, column - 1))

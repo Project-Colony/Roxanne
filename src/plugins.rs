@@ -65,7 +65,7 @@ impl PluginManager {
             // opening a project could load a library from inside it.
             if !Path::new(plugin_path).is_absolute() {
                 warnings.push(format!(
-                    "Plugins: {plugin_path}: chemin absolu requis pour un plugin natif."
+                    "Plugins: {plugin_path}: a native plugin needs an absolute path."
                 ));
                 continue;
             }
@@ -129,7 +129,7 @@ impl PluginConfig {
         self.enabled
             .iter()
             .filter(|plugin| !KNOWN_PLUGINS.contains(&plugin.as_str()))
-            .map(|plugin| format!("Plugins: plugin inconnu '{plugin}'"))
+            .map(|plugin| format!("Plugins: unknown plugin '{plugin}'"))
             .collect()
     }
 }
@@ -186,11 +186,11 @@ impl DynamicPlugin {
         .map(Library::from);
         #[cfg(not(windows))]
         let library = unsafe { Library::new(Path::new(path)) };
-        let library = library.map_err(|err| format!("chargement impossible: {err}"))?;
+        let library = library.map_err(|err| format!("could not load: {err}"))?;
         let symbol: libloading::Symbol<unsafe extern "C" fn() -> PluginApiV1> = unsafe {
             library
                 .get(b"roxanne_plugin_api_v1")
-                .map_err(|err| format!("symbole manquant: {err}"))?
+                .map_err(|err| format!("missing symbol: {err}"))?
         };
         let api = unsafe { symbol() };
         let name = cstr_to_string(unsafe { (api.name)() })?;
@@ -207,11 +207,11 @@ impl DynamicPlugin {
             Err(_) => {
                 let sanitized = value.replace('\0', "�");
                 eprintln!(
-                    "Plugin {}: {label} contient des caractères NUL, remplacement avant callback.",
+                    "Plugin {}: {label} contains NUL characters, replaced before the callback.",
                     self.name
                 );
                 CString::new(sanitized).unwrap_or_else(|_| {
-                    CString::new("�").expect("CString de secours valide pour plugin")
+                    CString::new("�").expect("the replacement character contains no NUL")
                 })
             }
         }
@@ -225,9 +225,8 @@ impl Plugin for DynamicPlugin {
 
     fn on_file_opened(&mut self, text: &str, context: &PluginContext) {
         if let Some(callback) = self.api.on_file_opened {
-            let text = self.to_cstring_with_warning(text, "texte");
-            let filename =
-                self.to_cstring_with_warning(context.filename.as_str(), "nom de fichier");
+            let text = self.to_cstring_with_warning(text, "text");
+            let filename = self.to_cstring_with_warning(context.filename.as_str(), "file name");
             unsafe {
                 callback(text.as_ptr(), filename.as_ptr());
             }
@@ -236,9 +235,8 @@ impl Plugin for DynamicPlugin {
 
     fn on_file_saved(&mut self, text: &str, context: &PluginContext) {
         if let Some(callback) = self.api.on_file_saved {
-            let text = self.to_cstring_with_warning(text, "texte");
-            let filename =
-                self.to_cstring_with_warning(context.filename.as_str(), "nom de fichier");
+            let text = self.to_cstring_with_warning(text, "text");
+            let filename = self.to_cstring_with_warning(context.filename.as_str(), "file name");
             unsafe {
                 callback(text.as_ptr(), filename.as_ptr());
             }
@@ -247,9 +245,8 @@ impl Plugin for DynamicPlugin {
 
     fn on_text_changed(&mut self, text: &str, context: &PluginContext) {
         if let Some(callback) = self.api.on_text_changed {
-            let text = self.to_cstring_with_warning(text, "texte");
-            let filename =
-                self.to_cstring_with_warning(context.filename.as_str(), "nom de fichier");
+            let text = self.to_cstring_with_warning(text, "text");
+            let filename = self.to_cstring_with_warning(context.filename.as_str(), "file name");
             unsafe {
                 callback(text.as_ptr(), filename.as_ptr());
             }
@@ -267,13 +264,13 @@ impl Plugin for DynamicPlugin {
 
 fn cstr_to_string(ptr: *const std::ffi::c_char) -> Result<String, String> {
     if ptr.is_null() {
-        return Err("chaîne nulle".to_string());
+        return Err("null string".to_string());
     }
     let value = unsafe { CStr::from_ptr(ptr) };
     value
         .to_str()
         .map(|value| value.to_string())
-        .map_err(|err| format!("chaîne invalide: {err}"))
+        .map_err(|err| format!("invalid string: {err}"))
 }
 
 #[derive(Default)]
@@ -292,7 +289,7 @@ impl Plugin for WordCountPlugin {
 
     fn status(&self) -> Option<PluginStatus> {
         Some(PluginStatus {
-            label: "Mots".to_string(),
+            label: "Words".to_string(),
             value: self.words.to_string(),
         })
     }
@@ -314,7 +311,7 @@ impl Plugin for LineCountPlugin {
 
     fn status(&self) -> Option<PluginStatus> {
         Some(PluginStatus {
-            label: "Lignes".to_string(),
+            label: "Lines".to_string(),
             value: self.lines.to_string(),
         })
     }
@@ -336,7 +333,7 @@ impl Plugin for CharacterCountPlugin {
 
     fn status(&self) -> Option<PluginStatus> {
         Some(PluginStatus {
-            label: "Caractères".to_string(),
+            label: "Characters".to_string(),
             value: self.characters.to_string(),
         })
     }
@@ -358,7 +355,7 @@ impl Plugin for ByteCountPlugin {
 
     fn status(&self) -> Option<PluginStatus> {
         Some(PluginStatus {
-            label: "Octets".to_string(),
+            label: "Bytes".to_string(),
             value: self.bytes.to_string(),
         })
     }
@@ -391,7 +388,7 @@ impl Plugin for LongestLinePlugin {
 
     fn status(&self) -> Option<PluginStatus> {
         Some(PluginStatus {
-            label: "Ligne max".to_string(),
+            label: "Longest line".to_string(),
             value: format!("{} (L{})", self.longest_line, self.longest_line_index + 1),
         })
     }
@@ -416,7 +413,7 @@ mod tests {
         let (mut manager, warnings) = PluginManager::new(&config);
         assert!(warnings.is_empty());
 
-        manager.on_text_changed("hi\nBonjour", "demo.txt");
+        manager.on_text_changed("hi\nmorning", "demo.txt");
 
         let statuses = manager
             .statuses()
@@ -424,12 +421,12 @@ mod tests {
             .map(|status| (status.label, status.value))
             .collect::<std::collections::HashMap<_, _>>();
 
-        assert_eq!(statuses.get("Mots").map(String::as_str), Some("2"));
-        assert_eq!(statuses.get("Lignes").map(String::as_str), Some("2"));
-        assert_eq!(statuses.get("Caractères").map(String::as_str), Some("10"));
-        assert_eq!(statuses.get("Octets").map(String::as_str), Some("10"));
+        assert_eq!(statuses.get("Words").map(String::as_str), Some("2"));
+        assert_eq!(statuses.get("Lines").map(String::as_str), Some("2"));
+        assert_eq!(statuses.get("Characters").map(String::as_str), Some("10"));
+        assert_eq!(statuses.get("Bytes").map(String::as_str), Some("10"));
         assert_eq!(
-            statuses.get("Ligne max").map(String::as_str),
+            statuses.get("Longest line").map(String::as_str),
             Some("7 (L2)")
         );
     }
@@ -443,7 +440,7 @@ mod tests {
         let (manager, warnings) = PluginManager::new(&config);
         assert!(manager.plugins.is_empty());
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("chemin absolu"));
+        assert!(warnings[0].contains("absolute path"));
     }
 
     #[test]

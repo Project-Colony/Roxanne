@@ -1,4 +1,4 @@
-# LSP – Intégration future
+# LSP: Intégration future
 
 ## Objectifs
 - Diagnostics en temps réel.

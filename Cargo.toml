@@ -42,3 +42,8 @@ harness = false
 [[bench]]
 name = "viewport"
 harness = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

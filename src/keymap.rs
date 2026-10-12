@@ -331,7 +331,7 @@ impl KeymapConfig {
                 true
             } else {
                 warnings.push(format!(
-                    "Keymap: action {:?} non autorisée en mode {}",
+                    "Keymap: action {:?} is not allowed in {} mode",
                     entry.action,
                     mode.label()
                 ));
@@ -394,14 +394,14 @@ impl KeyCombo {
                 "" => {}
                 _ => {
                     if key.is_some() {
-                        return Err(format!("raccourci invalide '{input}'"));
+                        return Err(format!("invalid shortcut '{input}'"));
                     }
                     key = Some(KeySpec::parse(&part)?);
                 }
             }
         }
 
-        let key = key.ok_or_else(|| format!("raccourci invalide '{input}'"))?;
+        let key = key.ok_or_else(|| format!("invalid shortcut '{input}'"))?;
         Ok(Self { modifiers, key })
     }
 
@@ -443,7 +443,7 @@ impl KeySpec {
     fn parse(input: &str) -> Result<Self, String> {
         let input = input.trim();
         if input.is_empty() {
-            return Err("touche manquante".to_string());
+            return Err("missing key".to_string());
         }
         let normalized = input.replace(['-', '_'], "");
         let named_key = match normalized.as_str() {
@@ -484,7 +484,7 @@ impl KeySpec {
         if input.chars().count() == 1 {
             Ok(Self::Character(input.chars().next().unwrap()))
         } else {
-            Err(format!("touche inconnue '{input}'"))
+            Err(format!("unknown key '{input}'"))
         }
     }
 

@@ -96,7 +96,7 @@ impl ThemeConfig {
         if let Some(name) = &self.name {
             match ThemePalette::from_name(name) {
                 Some(theme) => *palette = theme,
-                None => warnings.push(format!("Thème: nom inconnu '{name}'")),
+                None => warnings.push(format!("Theme: unknown name '{name}'")),
             }
         }
 
@@ -194,7 +194,7 @@ fn apply_color(
     if let Some(value) = value {
         match parse_color(value) {
             Ok(color) => *target = color,
-            Err(err) => warnings.push(format!("Thème: {label}: {err}")),
+            Err(err) => warnings.push(format!("Theme: {label}: {err}")),
         }
     }
 }
@@ -300,15 +300,15 @@ impl ThemePalette {
 fn parse_color(value: &str) -> Result<Color, String> {
     let trimmed = value.trim().trim_start_matches('#');
     if trimmed.len() != 6 {
-        return Err(format!("couleur invalide '{value}'"));
+        return Err(format!("invalid color '{value}'"));
     }
 
-    let red = u8::from_str_radix(&trimmed[0..2], 16)
-        .map_err(|_| format!("couleur invalide '{value}'"))?;
-    let green = u8::from_str_radix(&trimmed[2..4], 16)
-        .map_err(|_| format!("couleur invalide '{value}'"))?;
-    let blue = u8::from_str_radix(&trimmed[4..6], 16)
-        .map_err(|_| format!("couleur invalide '{value}'"))?;
+    let red =
+        u8::from_str_radix(&trimmed[0..2], 16).map_err(|_| format!("invalid color '{value}'"))?;
+    let green =
+        u8::from_str_radix(&trimmed[2..4], 16).map_err(|_| format!("invalid color '{value}'"))?;
+    let blue =
+        u8::from_str_radix(&trimmed[4..6], 16).map_err(|_| format!("invalid color '{value}'"))?;
 
     Ok(Color::from_rgb8(red, green, blue))
 }
