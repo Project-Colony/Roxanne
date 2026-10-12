@@ -2,7 +2,7 @@
 
 ## The build fails
 
-Roxanne needs Rust 1.88 or newer. Check the version and update the toolchain:
+Roxanne needs Rust 1.90 or newer. Check the version and update the toolchain:
 
 ```bash
 rustc --version

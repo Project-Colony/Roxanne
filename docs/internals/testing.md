@@ -10,9 +10,11 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all
 ```
 
-`cargo test` also builds `examples/sample_plugin.rs`, so a change to the plugin
-API that breaks the example fails the tests. A second CI job runs
-`cargo check --all-targets` with Rust 1.88, the `rust-version` in `Cargo.toml`.
+`cargo test` also builds `examples/sample_plugin.rs`, and `tests/native_plugin.rs`
+loads the library it produces, so a change to the plugin API or to plugin
+loading that breaks the example fails the tests. That test needs the example
+built: run it through `cargo test`, not `cargo test --test native_plugin` alone. A second CI job runs
+`cargo check --all-targets` with Rust 1.90, the `rust-version` in `Cargo.toml`.
 
 For the benchmarks and their limits, see [performance.md](performance.md).
 
@@ -48,6 +50,7 @@ binary:
 | `cli.rs` | `--version` prints the version without opening a window |
 | `config_loading.rs` | profiles, workspace overrides, editor defaults, refused native plugins in a project, the watched paths |
 | `config_migration.rs` | old `[keybindings]` sections become `[keymap]` |
+| `native_plugin.rs` | the sample plugin loads and its status reaches the status bar |
 
 ## Writing tests
 
