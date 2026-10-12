@@ -17,7 +17,7 @@ any file without a project, highlights eight languages with tree-sitter, and
 asks rust-analyzer about Rust code only when you use an LSP action.
 
 > **Status:** early development, not ready for everyday use. CI builds and
-> tests Roxanne on Linux at every change and checks it against Rust 1.88; the
+> tests Roxanne on Linux at every change and checks it against Rust 1.90; the
 > release workflow builds the Linux, Windows and macOS binaries, which have not
 > seen daily use yet. Language server support is experimental and covers Rust
 > only, through rust-analyzer: hover and go to definition.
@@ -45,7 +45,11 @@ asks rust-analyzer about Rust code only when you use an LSP action.
   diagnostics panel for unbalanced brackets and unterminated strings.
 - Experimental Language Server Protocol support for Rust: hover and go to
   definition through `rust-analyzer` from your `PATH`, started for the Cargo
-  workspace of the file you ask about and answering in the background.
+  workspace of the file you ask about and answering in the background. It runs
+  with build scripts, proc macros and `cargo check` turned off, but a project's
+  own `rust-analyzer.toml`, Cargo configuration and `rust-toolchain.toml` still
+  change what it runs: use the LSP actions only on code you trust. See
+  [Language server](docs/guide/configuration.md#lsp).
 - Preferences, opened by clicking **Roxanne** in the top-left corner: the
   Colony themes and accents, text size, high contrast, the OpenDyslexic font,
   reduced motion, English or French, and the editor's own options. A change
@@ -90,7 +94,7 @@ cargo build --release
 ./target/release/roxanne
 ```
 
-Requires Rust 1.88 or newer, from [rustup](https://rustup.rs).
+Requires Rust 1.90 or newer, from [rustup](https://rustup.rs).
 
 ## Documentation
 
@@ -142,7 +146,7 @@ network connection of its own.
 | Older settings | read, copied | `config.toml` and `profiles/` from `~/.config/roxanne/`, copied once into `Colony/Roxanne/` when that has no `config.toml` yet. A `.migrated-from-legacy-config` file there marks the copy as done. The old folder is never changed. |
 | Project settings | read | the first `.roxanne.toml` found in the working directory or one of its parents |
 | Your files | stored | where you save them. A save writes a temporary file next to the file and renames it over the file, which keeps its permissions, and a symlink stays a link. |
-| Text of the open file | sent to rust-analyzer | only when you use an LSP action on a saved Rust file. rust-analyzer is started from your `PATH`, or the program set in your own `config.toml`, and runs on this machine with build scripts and proc macros turned off. It runs `cargo metadata`, so Cargo or rustup can download the project's dependencies or toolchain. |
+| Text of the open file | sent to rust-analyzer | only when you use an LSP action on a saved Rust file. rust-analyzer is started from your `PATH`, or as the program set in Preferences (`[lsp]` in your own `config.toml`), and runs on this machine with build scripts and proc macros turned off. It runs `cargo metadata`, so Cargo or rustup can download the project's dependencies or toolchain. |
 | Text and name of the open file | sent to native plugins | only the plugins listed in your own `config.toml` or a profile it selects. They run with your rights, and Roxanne does not limit what they do with it. |
 
 This program will not transfer any information to other networked systems

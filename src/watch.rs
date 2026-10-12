@@ -8,13 +8,12 @@
 
 use iced::Subscription;
 use iced::futures::channel::mpsc;
-use iced::futures::{SinkExt, StreamExt};
+use iced::futures::{SinkExt, Stream, StreamExt};
 use notify::event::ModifyKind;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::Metadata;
-use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -22,51 +21,44 @@ use std::time::SystemTime;
 /// The files Roxanne saved, with the modification time and length of each one.
 static OWN_WRITES: Mutex<BTreeMap<PathBuf, (SystemTime, u64)>> = Mutex::new(BTreeMap::new());
 
-/// Watches `paths` and sends `on_change(path)` for each one that changes.
+/// Watches `paths` and reports each one that changes.
 ///
-/// A path named `*.toml` stands for every TOML file in its directory. `paths`
-/// is called once, when the subscription starts, so `id` must change whenever
-/// the paths do. A directory that does not exist yet, or that is removed, is
+/// A path named `*.toml` stands for every TOML file in its directory. The
+/// paths are part of the subscription's identity: a new list restarts the
+/// watcher. A directory that does not exist yet, or that is removed, is
 /// watched from its parent until it is created. With `ignore_own_writes`, for
 /// open files, a file that is still the one Roxanne last saved, or that is no
 /// longer there, is not reported: the open text stays. Without it, a removed
 /// file is reported too, so a config reload sees it gone.
-pub fn subscription<I, M>(
-    id: I,
-    paths: impl FnOnce() -> Vec<PathBuf> + Send + 'static,
-    ignore_own_writes: bool,
-    on_change: fn(PathBuf) -> M,
-) -> Subscription<M>
-where
-    I: Hash + 'static,
-    M: Send + 'static,
-{
-    iced::subscription::channel(id, 16, move |mut output| async move {
+pub fn subscription(paths: Vec<PathBuf>, ignore_own_writes: bool) -> Subscription<PathBuf> {
+    Subscription::run_with((paths, ignore_own_writes), |(paths, ignore_own_writes)| {
+        watch(paths.clone(), *ignore_own_writes)
+    })
+}
+
+fn watch(paths: Vec<PathBuf>, ignore_own_writes: bool) -> impl Stream<Item = PathBuf> {
+    iced::stream::channel(16, async move |mut output: mpsc::Sender<PathBuf>| {
         let (sender, mut events) = mpsc::unbounded();
         let Ok(mut watcher) = notify::recommended_watcher(move |event| {
             let _ = sender.unbounded_send(event);
         }) else {
-            loop {
-                std::future::pending::<()>().await;
-            }
+            return std::future::pending().await;
         };
 
-        let files = paths().iter().map(|path| normalize(path)).collect();
+        let files = paths.iter().map(|path| normalize(path)).collect();
         let mut watched = Watched::new(&mut watcher, files, ignore_own_writes);
         while let Some(event) = events.next().await {
             // One save often raises several events: take all that are queued.
             let mut batch = vec![event];
-            while let Ok(Some(event)) = events.try_next() {
+            while let Ok(event) = events.try_recv() {
                 batch.push(event);
             }
             for path in watched.changed(&mut watcher, batch) {
-                let _ = output.send(on_change(path)).await;
+                let _ = output.send(path).await;
             }
         }
         // The watcher holds the sender, so the events never end.
-        loop {
-            std::future::pending::<()>().await;
-        }
+        std::future::pending().await
     })
 }
 

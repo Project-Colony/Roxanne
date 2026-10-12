@@ -7,6 +7,7 @@
 //! own `rust-analyzer.toml` can still override some of these settings, and
 //! its `rust-toolchain.toml` picks the toolchain that runs `cargo metadata`.
 
+use crate::i18n::{t, t_fmt};
 use iced::futures::channel::oneshot;
 use serde_json::{Value, json};
 use std::fmt::Write as _;
@@ -88,11 +89,8 @@ struct Job {
 }
 
 impl LspSession {
-    pub fn start(root: PathBuf) -> Self {
-        Self::with_command(SERVER, root)
-    }
-
-    fn with_command(command: &str, root: PathBuf) -> Self {
+    /// A session for `root` that runs `command`, the rust-analyzer program.
+    pub fn start(command: &str, root: PathBuf) -> Self {
         let (jobs, receiver) = mpsc::channel();
         let (command, worker_root) = (command.to_string(), root.clone());
         let worker = thread::spawn(move || serve(&command, &worker_root, receiver));
@@ -158,7 +156,7 @@ impl LspSession {
         async move {
             answer
                 .await
-                .unwrap_or_else(|_| Err(format!("{SERVER} stopped")))
+                .unwrap_or_else(|_| Err(t_fmt("lsp_error_stopped", &[("server", &SERVER)])))
         }
     }
 }
@@ -206,8 +204,10 @@ impl Server {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|err| match err.kind() {
-                std::io::ErrorKind::NotFound => format!("{command} was not found in PATH."),
-                _ => format!("could not start {command}: {err}"),
+                std::io::ErrorKind::NotFound => {
+                    t_fmt("lsp_error_not_found", &[("command", &command)])
+                }
+                _ => t_fmt("lsp_error_start", &[("command", &command), ("error", &err)]),
             })?;
         let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
             unreachable!("both pipes are requested above");
@@ -246,7 +246,10 @@ impl Server {
         self.request("initialize", initialize_params(root))
             .and_then(|id| self.response(id, INITIALIZE_TIMEOUT))
             .map_err(|err| {
-                format!("{err} while starting. Check that `{SERVER} --version` works.")
+                t_fmt(
+                    "lsp_error_initialize",
+                    &[("error", &err), ("server", &SERVER)],
+                )
             })?;
         self.notify("initialized", json!({}))
     }
@@ -328,9 +331,9 @@ impl Server {
         let deadline = Instant::now() + timeout;
         loop {
             let Some(message) = self.next_message(deadline)? else {
-                return Err(format!(
-                    "{SERVER} did not answer within {} s",
-                    timeout.as_secs()
+                return Err(t_fmt(
+                    "lsp_error_timeout",
+                    &[("server", &SERVER), ("seconds", &timeout.as_secs())],
                 ));
             };
             // Notifications, requests from the server and late answers to
@@ -339,7 +342,9 @@ impl Server {
                 continue;
             }
             if let Some(error) = message.get("error") {
-                let reason = error["message"].as_str().unwrap_or("request failed");
+                let reason = error["message"]
+                    .as_str()
+                    .unwrap_or_else(|| t("lsp_error_request_failed"));
                 return Err(format!("{SERVER}: {reason}"));
             }
             return Ok(message["result"].clone());
@@ -356,7 +361,7 @@ impl Server {
             Err(RecvTimeoutError::Timeout) => return Ok(None),
             Err(RecvTimeoutError::Disconnected) => {
                 self.closed = true;
-                return Err(format!("{SERVER} exited"));
+                return Err(t_fmt("lsp_error_exited", &[("server", &SERVER)]));
             }
         };
         if let Some(method) = message.get("method").and_then(Value::as_str) {
@@ -395,7 +400,7 @@ impl Server {
             .and_then(|()| self.writer.flush());
         written.map_err(|err| {
             self.closed = true;
-            format!("could not write to {SERVER}: {err}")
+            t_fmt("lsp_error_write", &[("server", &SERVER), ("error", &err)])
         })
     }
 }
@@ -592,7 +597,7 @@ mod tests {
     #[test]
     fn missing_server_fails_quickly() {
         let started = Instant::now();
-        let session = LspSession::with_command("roxanne-missing-language-server", PathBuf::new());
+        let session = LspSession::start("roxanne-missing-language-server", PathBuf::new());
         let answer = block_on(session.hover(PathBuf::from("main.rs"), String::new(), 0, 0));
         let error = answer.expect_err("a missing server cannot answer");
         assert!(error.contains("not found in PATH"), "{error}");

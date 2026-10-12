@@ -1,8 +1,6 @@
 // A GUI program: no console window opens next to the editor on Windows.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use roxanne::{app, config};
-
 fn main() -> iced::Result {
     // Answered before the config is read and before any window opens, so it
     // works headless: the release workflow smoke-tests every binary with it.
@@ -14,6 +12,5 @@ fn main() -> iced::Result {
         return Ok(());
     }
 
-    let config = config::AppConfig::load();
-    app::RoxanneApp::run_with_config(config)
+    roxanne::ui::run()
 }

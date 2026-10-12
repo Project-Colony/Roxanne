@@ -1,7 +1,6 @@
 use iced::keyboard;
 use roxanne::config::AppConfig;
 use roxanne::keymap::{KeyAction, KeymapMode};
-use roxanne::theme::ThemePalette;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -12,6 +11,7 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct EnvGuard {
     original_home: Option<String>,
+    original_xdg: Option<String>,
     original_dir: PathBuf,
     _lock: MutexGuard<'static, ()>,
 }
@@ -22,13 +22,17 @@ impl EnvGuard {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let original_home = std::env::var("HOME").ok();
+        let original_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         let original_dir = std::env::current_dir().expect("current dir");
         unsafe {
             std::env::set_var("HOME", home);
+            // The config directory follows XDG_CONFIG_HOME when it is set.
+            std::env::remove_var("XDG_CONFIG_HOME");
         }
         std::env::set_current_dir(dir).expect("set current dir");
         Self {
             original_home,
+            original_xdg,
             original_dir,
             _lock: lock,
         }
@@ -42,8 +46,18 @@ impl Drop for EnvGuard {
                 std::env::set_var("HOME", home);
             }
         }
+        if let Some(xdg) = &self.original_xdg {
+            unsafe {
+                std::env::set_var("XDG_CONFIG_HOME", xdg);
+            }
+        }
         std::env::set_current_dir(&self.original_dir).expect("restore current dir");
     }
+}
+
+/// `Colony/Roxanne` in the config directory of the HOME set by `EnvGuard`.
+fn config_dir() -> PathBuf {
+    roxanne::config::user_config_dir().expect("config dir")
 }
 
 fn write_file(path: &Path, contents: &str) {
@@ -61,7 +75,7 @@ fn loads_profile_and_workspace_overrides() {
     fs::create_dir_all(&workspace).expect("create workspace");
     let _guard = EnvGuard::new(&home, &workspace);
 
-    let user_config = home.join(".config/roxanne/config.toml");
+    let user_config = config_dir().join("config.toml");
     write_file(
         &user_config,
         r#"
@@ -72,7 +86,7 @@ name = "light"
 "#,
     );
 
-    let profile_config = home.join(".config/roxanne/profiles/dev.toml");
+    let profile_config = config_dir().join("profiles/dev.toml");
     write_file(
         &profile_config,
         r#"
@@ -97,8 +111,9 @@ save = "alt+s"
 
     let config = AppConfig::load();
 
-    let dark = ThemePalette::from_name("dark").expect("dark theme");
-    assert_eq!(config.theme.app_background, dark.app_background);
+    // The user's light theme stays: a project does not pick the theme.
+    assert_eq!(config.preferences.selected_variant, "light");
+    assert_eq!(config.keymap_profile.as_deref(), Some("workspace"));
 
     let key = keyboard::Key::Character("s".into());
     let save_action = config
@@ -169,14 +184,14 @@ fn project_config_never_lists_native_plugins() {
     let _guard = EnvGuard::new(&home, &nested);
 
     write_file(
-        &home.join(".config/roxanne/config.toml"),
+        &config_dir().join("config.toml"),
         r#"
 [plugins]
 dynamic = ["/opt/roxanne/libtrusted.so"]
 "#,
     );
     write_file(
-        &home.join(".config/roxanne/profiles/rogue.toml"),
+        &config_dir().join("profiles/rogue.toml"),
         r#"
 [plugins]
 dynamic = ["/opt/roxanne/libprofile.so"]
@@ -213,10 +228,10 @@ fn watch_paths_cover_profiles_and_files_not_yet_created() {
     let src = project.join("src");
     fs::create_dir_all(&home).expect("create home");
     fs::create_dir_all(&src).expect("create src");
-    let config_dir = home.join(".config/roxanne");
-
     {
         let _env = EnvGuard::new(&home, &src);
+        let config_dir = config_dir();
+        assert!(config_dir.starts_with(&home) && config_dir.ends_with("Colony/Roxanne"));
         // Nothing exists yet: every location is watched for a new file.
         assert_eq!(
             roxanne::config::watch_paths(),
