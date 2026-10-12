@@ -124,7 +124,7 @@ enter_normal_mode = "escape"
 
 [plugins]
 enabled = ["word_count", "line_count"]
-dynamic = ["/opt/roxanne/plugins/libroxanne_sample.so"]
+dynamic = ["/opt/roxanne/plugins/libsample_plugin.so"]
 ```
 
 ## Keys
@@ -177,6 +177,22 @@ Your own files only.
 
 - `enabled`: `false` stops rust-analyzer and turns the LSP actions off.
 - `rust_analyzer`: the program to run, a name looked up in `PATH` or a path.
+
+The language server support is experimental and covers Rust only. **Tools →
+Hover Information** and **Tools → Go to Definition** work on a saved `.rs`
+file: Roxanne starts rust-analyzer on the first of them, in the nearest folder
+above the file that holds a `Cargo.lock`, else a `Cargo.toml`, else the file's
+own folder. Asking about a file in another workspace replaces the server. The
+request runs in the background and its answer shows in the status bar, or opens
+the definition; a server that does not answer in time gives an error there
+instead of freezing the editor.
+
+Roxanne asks rust-analyzer not to run build scripts, proc macros or
+`cargo check`, since all three run code from the project. It still runs
+`cargo metadata`, and a project's own files can change what it runs:
+`rust-analyzer.toml`, Cargo configuration, and `rust-toolchain.toml`, which can
+point to a toolchain stored inside the project. Use the LSP actions only on code
+you trust.
 
 ### `[keymap]`
 

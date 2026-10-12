@@ -1,21 +1,64 @@
+<div align="center">
+
 # Roxanne
 
-A lightweight, extensible code editor built with Rust and [iced](https://iced.rs).
+**A lightweight code editor for developers who want a fast, keyboard-first editor without an IDE around it.**
 
-> **Status:** early development, not ready for everyday use. CI builds and tests it on Linux; release binaries are built for Linux, Windows and macOS.
+</div>
+
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](LICENSE)
+[![Colony app](https://img.shields.io/badge/Colony-development-purple)](https://github.com/Project-Colony/Colony)
+[![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20windows%20%7C%20macOS-lightgrey)](#installation)
+
+Roxanne is a native desktop code editor written in Rust with [iced](https://iced.rs).
+An IDE wants a project before it opens a file and runs that project's code to
+understand it, while a plain text editor knows nothing about code. Roxanne opens
+any file without a project, highlights eight languages with tree-sitter, and
+asks rust-analyzer about Rust code only when you use an LSP action.
+
+> **Status:** early development, not ready for everyday use. CI builds and
+> tests Roxanne on Linux at every change and checks it against Rust 1.90; the
+> release workflow builds the Linux, Windows and macOS binaries, which have not
+> seen daily use yet. Language server support is experimental and covers Rust
+> only, through rust-analyzer: hover and go to definition.
+
+## Why Roxanne
+
+- **No project needed.** Type a path and open the file. A `.roxanne.toml` in a
+  folder adds project settings, but nothing requires one.
+- **Opening a folder runs nothing.** A project's settings can never load a
+  plugin or start a program. rust-analyzer starts only when you ask for an LSP
+  action, with build scripts and proc macros turned off.
+- **Saves you can trust.** Every save replaces the file in one rename, keeps its
+  permissions and symlinks, and reloading never discards unsaved edits.
+- **Keyboard first.** Menus, a command palette and shortcuts you can rebind,
+  with keymap profiles and an optional vim-like normal mode.
 
 ## What it does
 
-- Rope-based text buffer with undo and redo, tabs and multiple cursors.
-- Syntax highlighting with tree-sitter for Rust, C, Go, JavaScript, JSON, Markdown, Python and TOML.
-- File tree and workspace-wide search and replace.
-- Experimental Language Server Protocol support, for Rust only: hover and go to definition through `rust-analyzer` from your `PATH`. It starts on the first LSP action, one server per Cargo workspace, and answers in the background without freezing the editor. Roxanne asks it not to run build scripts, proc macros or `cargo check`. It still runs `cargo metadata`, and a project's own files can change what it runs: `rust-analyzer.toml`, Cargo configuration, and `rust-toolchain.toml`, which can point to a toolchain stored inside the project. Use the LSP actions only on code you trust.
-- Preferences, opened by clicking **Roxanne** in the top-left corner: the Colony themes and accents, text size, high contrast, the OpenDyslexic font, reduced motion, the interface language (English or French), and the editor's own options. A change applies at once and is saved in your `config.toml`; there is no Save button.
-- TOML configuration in `Colony/Roxanne/` under your config directory (`~/.config/Colony/Roxanne/` on Linux), with keymap profiles and live reload. Settings from an older `~/.config/roxanne/` are copied there once, and the old folder is left as it was. See [Configuration](docs/configuration.md).
-- Built-in plugins and native plugins loaded from shared libraries (see `plugins/roxanne_sample`).
-- Safe saving: the text goes to a temporary file next to the real one, which it replaces in a single rename, so a file is never left half written. The file keeps its permissions and a symlink stays a link. A new tab asks for a file name before its first save, Save As asks before replacing an existing file, and reloading a file never discards unsaved edits.
-
-Native plugins run with your rights, so Roxanne loads only the ones listed in your own `config.toml` (or a profile it selects), and only by absolute path. A project's `.roxanne.toml`, found in the working directory or any parent, can set the keymap, editor options and built-in plugins, but not your theme or language, and its `plugins.dynamic` and `[lsp]` are ignored: opening a folder never loads or runs code from it.
+- Tabs, undo and redo, and multiple cursors.
+- Syntax highlighting with tree-sitter for Rust, C, Go, JavaScript, JSON,
+  Markdown, Python and TOML.
+- Find and replace in the open file, with regular expressions and capture
+  groups, and find in files across the workspace.
+- A file tree, a command palette, go to line, a minimap, word wrap and a
+  diagnostics panel for unbalanced brackets and unterminated strings.
+- Experimental Language Server Protocol support for Rust: hover and go to
+  definition through `rust-analyzer` from your `PATH`, started for the Cargo
+  workspace of the file you ask about and answering in the background. It runs
+  with build scripts, proc macros and `cargo check` turned off, but a project's
+  own `rust-analyzer.toml`, Cargo configuration and `rust-toolchain.toml` still
+  change what it runs: use the LSP actions only on code you trust. See
+  [Language server](docs/guide/configuration.md#lsp).
+- Preferences, opened by clicking **Roxanne** in the top-left corner: the
+  Colony themes and accents, text size, high contrast, the OpenDyslexic font,
+  reduced motion, English or French, and the editor's own options. A change
+  applies at once and is saved in your `config.toml`.
+- TOML configuration with keymap profiles and live reload, and built-in and
+  native plugins for the status bar.
+- Safe saving: the text goes to a temporary file next to the real one, which
+  replaces it in a single rename. When another program changes an open file,
+  Roxanne asks before reloading it.
 
 ## Installation
 
@@ -44,14 +87,19 @@ chmod +x roxanne-linux && ./roxanne-linux
 
 ### Build from source
 
-You need a stable Rust toolchain, Rust 1.88 or newer, from [rustup](https://rustup.rs).
-
 ```bash
 git clone https://github.com/Project-Colony/Roxanne.git
 cd Roxanne
 cargo build --release
 ./target/release/roxanne
 ```
+
+Requires Rust 1.90 or newer, from [rustup](https://rustup.rs).
+
+## Documentation
+
+Full documentation is in [docs/](docs/). Start at
+[docs/README.md](docs/README.md).
 
 ## Code signing policy
 
@@ -94,11 +142,11 @@ network connection of its own.
 
 | Data | Stored or sent | Where, and why |
 |---|---|---|
-| Settings | stored | `config.toml` and the profiles in `profiles/`, in `Colony/Roxanne/` under this machine's config directory (`~/.config/Colony/Roxanne/` on Linux). The Preferences page writes your changes into `config.toml`. |
-| Older settings | read once | `~/.config/roxanne/`, copied to `Colony/Roxanne/` on the first start that finds no `config.toml` there. Roxanne never changes or deletes the old folder. |
+| Settings | stored | `config.toml` and the profiles in `profiles/`, in `Colony/Roxanne/` under your config directory (`~/.config/Colony/Roxanne/` on Linux). Roxanne reads them, and the Preferences page writes the settings you change into `config.toml`. |
+| Older settings | read, copied | `config.toml` and `profiles/` from `~/.config/roxanne/`, copied once into `Colony/Roxanne/` when that has no `config.toml` yet. A `.migrated-from-legacy-config` file there marks the copy as done. The old folder is never changed. |
 | Project settings | read | the first `.roxanne.toml` found in the working directory or one of its parents |
 | Your files | stored | where you save them. A save writes a temporary file next to the file and renames it over the file, which keeps its permissions, and a symlink stays a link. |
-| Text of the open file | sent to rust-analyzer | only when you use an LSP action on a saved Rust file. rust-analyzer is started from your `PATH`, or as the program set in Preferences, and runs on this machine, with build scripts and proc macros turned off. It runs `cargo metadata`, so Cargo or rustup can download the project's dependencies or toolchain. |
+| Text of the open file | sent to rust-analyzer | only when you use an LSP action on a saved Rust file. rust-analyzer is started from your `PATH`, or as the program set in Preferences (`[lsp]` in your own `config.toml`), and runs on this machine with build scripts and proc macros turned off. It runs `cargo metadata`, so Cargo or rustup can download the project's dependencies or toolchain. |
 | Text and name of the open file | sent to native plugins | only the plugins listed in your own `config.toml` or a profile it selects. They run with your rights, and Roxanne does not limit what they do with it. |
 
 This program will not transfer any information to other networked systems
@@ -109,4 +157,6 @@ operating it.
 
 Roxanne is licensed under the [GNU General Public License v3.0 or later](LICENSE).
 
-Roxanne embeds the Colony fonts through [colony-ui](https://crates.io/crates/colony-ui): JetBrainsMono Nerd Font, OpenDyslexic and Font Awesome 6 Free, each under the SIL Open Font License 1.1.
+Roxanne embeds the Colony fonts through [colony-ui](https://crates.io/crates/colony-ui):
+JetBrainsMono Nerd Font, OpenDyslexic and Font Awesome 6 Free, each under the
+SIL Open Font License 1.1.
