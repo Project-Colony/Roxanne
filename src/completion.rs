@@ -1,3 +1,4 @@
+use crate::i18n::t;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone)]
@@ -50,7 +51,7 @@ pub fn build_items_with_buffer(prefix: &str, buffer_text: Option<&str>) -> Vec<C
             {
                 items.push(CompletionItem {
                     label: word.to_string(),
-                    detail: "Buffer".to_string(),
+                    detail: t("completion_from_buffer").to_string(),
                 });
             }
         }

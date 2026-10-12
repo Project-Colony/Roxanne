@@ -1,3 +1,4 @@
+use crate::i18n::{t, t_fmt};
 use iced::keyboard;
 use serde::{Deserialize, Serialize};
 
@@ -51,13 +52,13 @@ pub enum KeymapMode {
 impl KeymapMode {
     pub fn label(self) -> &'static str {
         match self {
-            KeymapMode::Insert => "Insert",
-            KeymapMode::Normal => "Normal",
+            KeymapMode::Insert => t("keymap_mode_insert"),
+            KeymapMode::Normal => t("keymap_mode_normal"),
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Keymap {
     insert: Vec<KeyBinding>,
     normal: Vec<KeyBinding>,
@@ -86,7 +87,6 @@ impl Default for Keymap {
             (KeyAction::Paste, "ctrl+v"),
             (KeyAction::Undo, "cmd+z"),
             (KeyAction::Undo, "ctrl+z"),
-            (KeyAction::Undo, "ctrl+w"),
             (KeyAction::Redo, "cmd+shift+z"),
             (KeyAction::Redo, "ctrl+shift+z"),
             (KeyAction::Redo, "ctrl+y"),
@@ -156,7 +156,7 @@ impl Keymap {
         for entry in insert_entries {
             match KeyCombo::parse(entry.shortcut) {
                 Ok(combo) => self.set_binding(KeymapMode::Insert, entry.action, combo),
-                Err(err) => warnings.push(format!("Keymap: action {:?}: {err}", entry.action)),
+                Err(err) => warnings.push(binding_warning(entry.action, &err)),
             }
         }
         let (normal_entries, normal_warnings) = config.entries_for_mode(KeymapMode::Normal);
@@ -164,10 +164,24 @@ impl Keymap {
         for entry in normal_entries {
             match KeyCombo::parse(entry.shortcut) {
                 Ok(combo) => self.set_binding(KeymapMode::Normal, entry.action, combo),
-                Err(err) => warnings.push(format!("Keymap: action {:?}: {err}", entry.action)),
+                Err(err) => warnings.push(binding_warning(entry.action, &err)),
             }
         }
         warnings
+    }
+
+    /// The shortcut for `action` in `mode` as the user types it, such as
+    /// `Ctrl+Shift+S`, for the hints next to menu entries. The first binding
+    /// wins; `None` when the action has no shortcut.
+    pub fn shortcut_label(&self, action: KeyAction, mode: KeymapMode) -> Option<String> {
+        let bindings = match mode {
+            KeymapMode::Insert => &self.insert,
+            KeymapMode::Normal => &self.normal,
+        };
+        bindings
+            .iter()
+            .find(|binding| binding.action == action)
+            .map(|binding| binding.combo.label())
     }
 
     fn set_binding(&mut self, mode: KeymapMode, action: KeyAction, combo: KeyCombo) {
@@ -330,10 +344,12 @@ impl KeymapConfig {
             if action_allowed_in_mode(entry.action, mode) {
                 true
             } else {
-                warnings.push(format!(
-                    "Keymap: action {:?} is not allowed in {} mode",
-                    entry.action,
-                    mode.label()
+                warnings.push(t_fmt(
+                    "config_warn_keymap_mode",
+                    &[
+                        ("action", &format!("{:?}", entry.action)),
+                        ("mode", &mode.label()),
+                    ],
                 ));
                 false
             }
@@ -394,21 +410,53 @@ impl KeyCombo {
                 "" => {}
                 _ => {
                     if key.is_some() {
-                        return Err(format!("invalid shortcut '{input}'"));
+                        return Err(t_fmt("keymap_error_shortcut", &[("shortcut", &input)]));
                     }
                     key = Some(KeySpec::parse(&part)?);
                 }
             }
         }
 
-        let key = key.ok_or_else(|| format!("invalid shortcut '{input}'"))?;
-        Ok(Self { modifiers, key })
+        let key = key.ok_or_else(|| t_fmt("keymap_error_shortcut", &[("shortcut", &input)]))?;
+        Ok(Self {
+            modifiers: modifiers.normalized(),
+            key,
+        })
+    }
+
+    fn label(&self) -> String {
+        let modifiers = self.modifiers;
+        let mut parts = Vec::new();
+        if modifiers.command {
+            parts.push(
+                if cfg!(target_os = "macos") {
+                    "Cmd"
+                } else {
+                    "Ctrl"
+                }
+                .to_string(),
+            );
+        }
+        if modifiers.control {
+            parts.push("Ctrl".to_string());
+        }
+        if modifiers.alt {
+            parts.push("Alt".to_string());
+        }
+        if modifiers.shift {
+            parts.push("Shift".to_string());
+        }
+        parts.push(match self.key {
+            KeySpec::Character(ch) => ch.to_uppercase().to_string(),
+            KeySpec::Named(named) => format!("{named:?}"),
+        });
+        parts.join("+")
     }
 
     fn from_event(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> Option<Self> {
         let key = KeySpec::from_key(key)?;
         Some(Self {
-            modifiers: Modifiers::from_event(modifiers),
+            modifiers: Modifiers::from_event(modifiers).normalized(),
             key,
         })
     }
@@ -423,6 +471,21 @@ struct Modifiers {
 }
 
 impl Modifiers {
+    /// Off macOS the command key is Ctrl: iced reports Ctrl as both `command`
+    /// and `control` there. `cmd` and `ctrl` in a shortcut then mean the same
+    /// key, so both are kept as `command`.
+    fn normalized(self) -> Self {
+        if cfg!(target_os = "macos") {
+            self
+        } else {
+            Self {
+                command: self.command || self.control,
+                control: false,
+                ..self
+            }
+        }
+    }
+
     fn from_event(modifiers: keyboard::Modifiers) -> Self {
         Self {
             command: modifiers.command(),
@@ -443,7 +506,7 @@ impl KeySpec {
     fn parse(input: &str) -> Result<Self, String> {
         let input = input.trim();
         if input.is_empty() {
-            return Err("missing key".to_string());
+            return Err(t("keymap_error_key_missing").to_string());
         }
         let normalized = input.replace(['-', '_'], "");
         let named_key = match normalized.as_str() {
@@ -484,7 +547,7 @@ impl KeySpec {
         if input.chars().count() == 1 {
             Ok(Self::Character(input.chars().next().unwrap()))
         } else {
-            Err(format!("unknown key '{input}'"))
+            Err(t_fmt("keymap_error_key_unknown", &[("key", &input)]))
         }
     }
 
@@ -509,9 +572,49 @@ fn action_allowed_in_mode(action: KeyAction, mode: KeymapMode) -> bool {
     }
 }
 
+fn binding_warning(action: KeyAction, error: &str) -> String {
+    t_fmt(
+        "config_warn_keymap_binding",
+        &[("action", &format!("{action:?}")), ("error", &error)],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ctrl_shortcuts_match_ctrl_and_their_labels_say_so() {
+        let keymap = Keymap::default();
+        let key = keyboard::Key::Character("s".into());
+        // What iced reports for Ctrl+S on Linux and Windows, Cmd+S on macOS.
+        let command = if cfg!(target_os = "macos") {
+            keyboard::Modifiers::LOGO
+        } else {
+            keyboard::Modifiers::CTRL
+        };
+        assert_eq!(
+            keymap.match_event(&key, command, KeymapMode::Insert),
+            Some(KeyAction::Save)
+        );
+        let label = keymap
+            .shortcut_label(KeyAction::Save, KeymapMode::Insert)
+            .expect("save has a shortcut");
+        assert_eq!(
+            label,
+            if cfg!(target_os = "macos") {
+                "Cmd+S"
+            } else {
+                "Ctrl+S"
+            }
+        );
+        assert_eq!(
+            keymap
+                .shortcut_label(KeyAction::FindPrevious, KeymapMode::Insert)
+                .as_deref(),
+            Some("Shift+F3")
+        );
+    }
 
     #[test]
     fn parse_multibyte_character() {

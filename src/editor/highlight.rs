@@ -1,9 +1,8 @@
 use crate::editor::syntax;
-use crate::theme::SyntaxPalette;
 use iced::advanced::text::highlighter::{self, Highlighter};
-use iced::{Font, Theme};
+use iced::{Color, Font, Theme, font};
 use std::ops::Range;
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -35,11 +34,15 @@ impl Language {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub language: Language,
     pub search_matches: Vec<MatchPosition>,
     pub buffer_text: Arc<str>,
+    /// The colours of the theme in use. They are part of the settings so a
+    /// theme change counts as new settings, and every line is highlighted
+    /// again in the new colours.
+    pub colors: SyntaxColors,
 }
 
 impl Default for Settings {
@@ -48,6 +51,34 @@ impl Default for Settings {
             language: Language::Rust,
             search_matches: Vec::new(),
             buffer_text: Arc::from(""),
+            colors: SyntaxColors::current(),
+        }
+    }
+}
+
+/// Syntax colours, derived from the active Colony palette rather than kept
+/// in a table: keywords take the accent, and the status colours give strings,
+/// types and numbers hues that every theme already keeps apart.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SyntaxColors {
+    pub keyword: Color,
+    pub r#type: Color,
+    pub string: Color,
+    pub comment: Color,
+    pub number: Color,
+    pub search_match: Color,
+}
+
+impl SyntaxColors {
+    pub fn current() -> Self {
+        let palette = colony_ui::active_palette();
+        Self {
+            keyword: colony_ui::effective_accent(),
+            r#type: palette.warning,
+            string: palette.success,
+            comment: palette.text_dimmer,
+            number: palette.error_light,
+            search_match: palette.error,
         }
     }
 }
@@ -178,36 +209,26 @@ impl Highlighter for RoxanneHighlighter {
 }
 
 pub fn highlight_format(token: &HighlightToken, _theme: &Theme) -> highlighter::Format<Font> {
-    let palette = current_syntax_palette();
+    let colors = SyntaxColors::current();
     let color = match token {
-        HighlightToken::Keyword => palette.keyword,
-        HighlightToken::Type => palette.r#type,
-        HighlightToken::String => palette.string,
-        HighlightToken::Comment => palette.comment,
-        HighlightToken::Number => palette.number,
-        HighlightToken::SearchMatch => palette.search_match,
+        HighlightToken::Keyword => colors.keyword,
+        HighlightToken::Type => colors.r#type,
+        HighlightToken::String => colors.string,
+        HighlightToken::Comment => colors.comment,
+        HighlightToken::Number => colors.number,
+        HighlightToken::SearchMatch => colors.search_match,
     };
+    // A search match is also bold, so it stays apart from a number in a
+    // theme where the two colours are close.
+    let font = (*token == HighlightToken::SearchMatch).then(|| Font {
+        weight: font::Weight::Bold,
+        ..colony_ui::fonts::glyph_font()
+    });
 
     highlighter::Format {
         color: Some(color),
-        font: None,
+        font,
     }
-}
-
-static SYNTAX_PALETTE: LazyLock<RwLock<SyntaxPalette>> =
-    LazyLock::new(|| RwLock::new(SyntaxPalette::default()));
-
-pub fn set_syntax_palette(palette: SyntaxPalette) {
-    if let Ok(mut current) = SYNTAX_PALETTE.write() {
-        *current = palette;
-    }
-}
-
-fn current_syntax_palette() -> SyntaxPalette {
-    SYNTAX_PALETTE
-        .read()
-        .map(|palette| *palette)
-        .unwrap_or_else(|_| SyntaxPalette::default())
 }
 
 fn highlight_rust_line(line: &str) -> Vec<(Range<usize>, HighlightToken)> {

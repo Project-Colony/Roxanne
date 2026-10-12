@@ -21,8 +21,10 @@
 Les plugins sont activés via la clé `plugins.enabled` dans la configuration TOML.
 Plugins disponibles : `word_count`, `line_count`, `character_count`, `byte_count`, `longest_line`.
 Native plugins are loaded from `plugins.dynamic`. They run with the user's rights,
-so they are read only from `~/.config/roxanne/config.toml` (or a profile it selects), never
-from a project's `.roxanne.toml`, and only by absolute path.
+so they are read only from your own `config.toml` in `Colony/Roxanne/` (or a profile it
+selects; see [configuration.md](configuration.md#where-the-files-are)), never from a project's
+`.roxanne.toml`, and only by absolute path. Preferences → Plugins lists them and turns the
+built-in plugins on and off.
 
 ## API dynamique (v1)
 Les plugins dynamiques exposent un symbole `roxanne_plugin_api_v1` qui retourne une
@@ -59,7 +61,8 @@ Le binaire dynamique produit se trouve dans :
 - `target/release/libroxanne_sample.dylib` (macOS)
 - `target/release/roxanne_sample.dll` (Windows)
 
-Then add its absolute path to `plugins.dynamic` in `~/.config/roxanne/config.toml`.
+Then add its absolute path to `plugins.dynamic` in your own `config.toml`, in `Colony/Roxanne/`
+under your config directory (`~/.config/Colony/Roxanne/` on Linux).
 
 ## Hooks actuels
 - `on_text_changed` : après toute modification du contenu.

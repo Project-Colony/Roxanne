@@ -1,3 +1,4 @@
+use crate::i18n::t;
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -94,7 +95,7 @@ pub fn atomic_write(path: &str, contents: &str) -> Result<(), String> {
             Err(err) if err.kind() == ErrorKind::AlreadyExists => {
                 attempts += 1;
                 if attempts > 1000 {
-                    return Err("could not create a unique temporary file".to_string());
+                    return Err(t("file_error_temp_name").to_string());
                 }
             }
             Err(err) => return Err(err.to_string()),
