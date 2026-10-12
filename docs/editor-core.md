@@ -1,4 +1,4 @@
-# Editor Core – Buffer et opérations
+# Editor Core: Buffer et opérations
 
 ## Concepts clés
 - Buffer de texte central.

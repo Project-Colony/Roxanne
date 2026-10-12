@@ -208,9 +208,12 @@ impl RoxanneApp {
         );
         if !details.is_empty() {
             message.push(' ');
+            let skipped = summary.skipped_too_large
+                + summary.skipped_invalid_utf8
+                + summary.skipped_read_errors;
             message.push_str(&t_fmt(
                 "status_search_files_skipped",
-                &[("details", &details.join(", "))],
+                &[("count", &skipped), ("details", &details.join(", "))],
             ));
         }
         if summary.truncated {
@@ -255,7 +258,7 @@ impl RoxanneApp {
     pub(super) fn replace_all_matches(&mut self) {
         let count = self.tab().search_matches.len();
         if count == 0 {
-            self.status_message = Some(t("status_search_none").to_string());
+            self.status_message = Some(t("status_replace_none").to_string());
             return;
         }
         self.record_undo_snapshot();

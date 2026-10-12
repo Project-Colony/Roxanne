@@ -592,14 +592,14 @@ mod tests {
 
     #[test]
     fn tree_sitter_keeps_multiline_comments_coherent() {
-        let text = "/* bloc\ncommentaire */\nlet value = 42;";
+        let text = "/* block\ncomment */\nlet value = 42;";
         let settings = Settings {
             buffer_text: text.into(),
             ..Settings::default()
         };
         let mut highlighter = RoxanneHighlighter::new(&settings);
-        let first_line_highlights: Vec<_> = highlighter.highlight_line("/* bloc").collect();
-        let second_line_highlights: Vec<_> = highlighter.highlight_line("commentaire */").collect();
+        let first_line_highlights: Vec<_> = highlighter.highlight_line("/* block").collect();
+        let second_line_highlights: Vec<_> = highlighter.highlight_line("comment */").collect();
 
         assert!(
             first_line_highlights

@@ -1,4 +1,4 @@
-# Performance – Objectifs et mesures
+# Performance: Objectifs et mesures
 
 ## Objectifs
 - Démarrage < 200 ms sur machine modeste.

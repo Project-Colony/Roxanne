@@ -1,4 +1,4 @@
-# Overview – Vision produit
+# Overview: Vision produit
 
 ## Vision
 Roxanne est un éditeur de texte moderne, rapide et extensible, centré sur la

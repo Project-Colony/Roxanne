@@ -34,7 +34,7 @@ fn state() -> &'static Mutex<PluginState> {
         Mutex::new(PluginState {
             words: 0,
             lines: 0,
-            value: CString::new("0 mots, 0 lignes").unwrap(),
+            value: CString::new("0 words, 0 lines").unwrap(),
         })
     })
 }
@@ -42,7 +42,7 @@ fn state() -> &'static Mutex<PluginState> {
 fn update_counts(text: &str) {
     let words = text.split_whitespace().count();
     let lines = text.lines().count().max(1);
-    let value = CString::new(format!("{words} mots, {lines} lignes")).unwrap_or_default();
+    let value = CString::new(format!("{words} words, {lines} lines")).unwrap_or_default();
     if let Ok(mut state) = state().lock() {
         state.words = words;
         state.lines = lines;

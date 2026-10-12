@@ -1,13 +1,14 @@
-# Description
-Expliquez le changement et le contexte.
+## What changed
 
-# Checklist
-- [ ] J'ai mis à jour la documentation si nécessaire.
-- [ ] J'ai ajouté/ajusté les tests si nécessaire.
-- [ ] J'ai vérifié que le style et les conventions sont respectés.
+Describe the change and why it is needed. Link the issue it fixes, if any.
 
-# Type de changement
-- [ ] Bug fix
-- [ ] Nouvelle fonctionnalité
-- [ ] Refactoring
-- [ ] Documentation
+## How it was verified
+
+The commands you ran and what you tested by hand.
+
+## Checklist
+
+- [ ] The title is a Conventional Commit that reads as the changelog entry (`feat: ...`, `fix: ...`).
+- [ ] `cargo fmt -- --check`, `cargo clippy --all-targets --all-features -- -D warnings` and `cargo test --all` pass.
+- [ ] Tests were added or updated for the changed logic.
+- [ ] `docs/` is updated if behaviour, paths or commands changed.

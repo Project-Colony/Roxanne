@@ -1,4 +1,4 @@
-# Standards de code – Roxanne
+# Standards de code: Roxanne
 
 Ce document définit les conventions de code et les standards de qualité pour le
 projet Roxanne.

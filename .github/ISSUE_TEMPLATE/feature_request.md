@@ -1,20 +1,25 @@
 ---
 name: Feature request
-about: Proposer une nouvelle fonctionnalité
+about: Suggest a new feature
 labels: enhancement
 ---
 
-# Résumé
-Décrivez la fonctionnalité souhaitée.
+## Summary
 
-# Motivation
-Pourquoi cette fonctionnalité est-elle importante ?
+What would you like Roxanne to do?
 
-# Proposition
-Comment imaginez-vous la solution ?
+## Motivation
 
-# Alternatives
-Quelles alternatives avez-vous envisagées ?
+Why does it matter to you?
 
-# Contexte supplémentaire
-Liens, exemples ou références utiles.
+## Proposal
+
+How do you picture it working?
+
+## Alternatives
+
+What else did you consider?
+
+## Additional context
+
+Links, examples or references.

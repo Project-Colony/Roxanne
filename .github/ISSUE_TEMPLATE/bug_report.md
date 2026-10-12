@@ -1,27 +1,32 @@
 ---
 name: Bug report
-about: Signaler un bug ou une régression
+about: Report a bug or a regression
 labels: bug
 ---
 
-# Description
-Décrivez clairement le problème rencontré.
+## Description
 
-# Étapes pour reproduire
-1. 
-2. 
-3. 
+What went wrong?
 
-# Comportement attendu
-Décrivez ce que vous attendiez.
+## Steps to reproduce
 
-# Comportement observé
-Décrivez ce qui se produit réellement.
+1.
+2.
+3.
 
-# Environnement
-- OS :
-- Version de Roxanne :
-- Branche/commit :
+## Expected behaviour
 
-# Informations supplémentaires
-Logs, captures d'écran, ou autres informations utiles.
+What did you expect to happen?
+
+## Actual behaviour
+
+What happened instead?
+
+## Environment
+
+- OS:
+- Roxanne version or commit:
+
+## Additional information
+
+Logs, screenshots, or anything else that helps.
