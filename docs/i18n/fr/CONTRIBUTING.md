@@ -1,4 +1,4 @@
-<!-- roxanne-i18n: source=CONTRIBUTING.md sha=a0b4c36bd201a9a13f8709cb1f1492c6e7cdb21a -->
+<!-- roxanne-i18n: source=CONTRIBUTING.md sha=3ae214809c3a62e658229fc1ff299bbf47d03f3e -->
 
 # Contribuer à Roxanne
 
@@ -85,9 +85,13 @@ python scripts/check_benchmarks.py
   explicites (`struct`, `enum`, `trait`) ; gardez tout le reste privé.
 - Évitez les singletons et l'état global partagé : l'état vit dans la struct qui
   le détient, comme `RoxanneApp` ou un onglet, et il est transmis là où on en a
-  besoin. Les rares statics du code sont des tables en lecture seule construites
-  une fois, comme les définitions de langages tree-sitter, ou un compteur qui
-  garde les noms de fichiers temporaires uniques.
+  besoin. En dehors des tests, les statics du code sont des tables en lecture
+  seule construites une fois, comme les définitions de langages tree-sitter et
+  les tables de traduction, et des compteurs qui gardent uniques les
+  identifiants d'onglets et les noms de fichiers temporaires. La seule
+  exception est `OWN_WRITES` dans `src/watch.rs`, qui note les fichiers que
+  Roxanne a elle-même enregistrés pour que la surveillance des fichiers les
+  ignore.
 
 ## Sécurité
 

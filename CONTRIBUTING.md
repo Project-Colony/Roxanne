@@ -77,9 +77,12 @@ python scripts/check_benchmarks.py
 - Modules talk through small, explicit public types and functions (`struct`,
   `enum`, `trait`); keep everything else private.
 - Avoid singletons and shared global state: state lives in the struct that owns
-  it, such as `RoxanneApp` or a tab, and is passed where it is needed. The few
-  statics in the code are read-only tables built once, such as the tree-sitter
-  language definitions, or a counter that keeps temporary file names unique.
+  it, such as `RoxanneApp` or a tab, and is passed where it is needed. Outside
+  the tests, the statics in the code are read-only tables built once, such as
+  the tree-sitter language definitions and the translation tables, and
+  counters that keep tab ids and temporary file names unique. The one
+  exception is `OWN_WRITES` in `src/watch.rs`, which records the files Roxanne
+  saved itself so the file watcher ignores them.
 
 ## Security
 
