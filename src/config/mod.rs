@@ -293,9 +293,8 @@ impl AppConfig {
                     .warnings
                     .push(t("config_warn_project_dynamic").to_string());
             }
-            if layer.overlay(&mut self.plugins, "plugins", &plugins)
-                && plugins.contains_key("enabled")
-            {
+            layer.overlay(&mut self.plugins, "plugins", &plugins);
+            if layer.set.iter().any(|key| key == "plugins.enabled") {
                 layer.warnings.extend(self.plugins.warnings());
             }
         }
@@ -321,29 +320,38 @@ struct Layer<'a> {
 }
 
 impl Layer<'_> {
-    /// Sets the keys `table` names on `value`, keeping the others, and notes
-    /// them as `name.key`. A value of the wrong type leaves `value` as it was.
+    /// Sets the keys `table` names on `value`, one at a time, keeping the
+    /// others, and notes each as `name.key`. A key with an invalid value is
+    /// skipped with a warning and keeps the value it had.
     fn overlay<T: Serialize + DeserializeOwned>(
         &mut self,
         value: &mut T,
         name: &str,
         table: &toml::Table,
-    ) -> bool {
-        let mut merged = toml::Table::try_from(&*value).unwrap_or_default();
-        merged.extend(table.clone());
-        match merged.try_into() {
-            Ok(merged) => {
-                *value = merged;
-                self.set
-                    .extend(table.keys().map(|key| format!("{name}.{key}")));
-                true
-            }
-            Err(err) => {
-                self.warnings.push(t_fmt(
-                    "config_warn_file",
-                    &[("path", &self.path.display()), ("error", &err)],
-                ));
-                false
+    ) {
+        for (key, item) in table {
+            let mut merged = toml::Table::try_from(&*value).unwrap_or_default();
+            let known = merged.contains_key(key);
+            merged.insert(key.clone(), item.clone());
+            // `StandardPreferences` reads a bad value as its default instead
+            // of failing, so a value must also read back as written.
+            let applied = merged.try_into::<T>().ok().filter(|merged| {
+                let back = toml::Table::try_from(merged).unwrap_or_default();
+                let known = known || back.contains_key(key);
+                !known || back.get(key) == Some(item)
+            });
+            match applied {
+                Some(merged) => {
+                    *value = merged;
+                    self.set.push(format!("{name}.{key}"));
+                }
+                None => self.warnings.push(t_fmt(
+                    "config_warn_invalid",
+                    &[
+                        ("path", &self.path.display()),
+                        ("key", &format!("{name}.{key}")),
+                    ],
+                )),
             }
         }
     }
@@ -653,10 +661,37 @@ mod tests {
     fn a_value_of_the_wrong_type_keeps_the_previous_one() {
         let mut config = AppConfig::default();
         let mut warnings = Vec::new();
-        let file = parse("[editor]\ntab_size = \"two\"\n");
-        config.apply_file(Path::new("config.toml"), &file, Trust::User, &mut warnings);
-        assert_eq!(config.editor, EditorConfig::default());
-        assert!(config.sources.is_empty());
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let user = parse(
+            "[preferences]\nfont_size = \"large\"\nselected_accent = \"teal\"\n\
+             [editor]\ntab_size = 2\n",
+        );
+        config.apply_file(Path::new("config.toml"), &user, Trust::User, &mut warnings);
+        let profile = parse(
+            "[preferences]\nfont_size = 3\nselected_accent = 5\nanimations = false\n\
+             [editor]\ntab_size = \"two\"\nminimap = true\n",
+        );
+        config.apply_file(
+            Path::new("profiles/work.toml"),
+            &profile,
+            Trust::User,
+            &mut warnings,
+        );
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+
+        // The bad keys keep the user's values, the good ones beside them apply.
+        assert_eq!(config.editor.tab_size, 2);
+        assert!(config.editor.minimap);
+        assert_eq!(config.preferences.font_size, colony_ui::FontSize::Large);
+        assert_eq!(config.preferences.selected_accent.as_deref(), Some("teal"));
+        assert!(!config.preferences.animations);
+
+        let source = |key: &str| config.sources.get(key).map(|source| source.path.clone());
+        assert_eq!(source("editor.tab_size"), Some("config.toml".into()));
+        assert_eq!(source("editor.minimap"), Some("profiles/work.toml".into()));
+        assert_eq!(source("preferences.font_size"), Some("config.toml".into()));
+        assert_eq!(
+            source("preferences.animations"),
+            Some("profiles/work.toml".into())
+        );
     }
 }
