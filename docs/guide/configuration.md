@@ -36,12 +36,15 @@ marked as done, and the next start tries again.
 
 ## Order
 
-Each layer overrides the one before:
+Each layer overrides the one before, key by key:
 
 1. Built-in defaults.
 2. Your `config.toml`.
 3. The profile it selects, if any.
 4. The project's `.roxanne.toml`, then the profile it selects.
+
+A file sets only the keys it names. A project's `[editor]` with `tab_size = 2`
+changes the tab size and keeps your line numbers, word wrap and minimap.
 
 A project file never changes your theme, your other preferences or the
 interface language, and it never loads code: `[preferences]`, `[theme]` and
@@ -55,11 +58,14 @@ to the editor. The page has the three categories every Colony program starts
 with (General, Appearance, Accessibility), then Editor, Language server and
 Plugins, and About last.
 
-There is no Save button. A change applies at once and is written into your
-`config.toml`. Roxanne edits the file rather than rewriting it, so your
-comments, the order of your keys and the keys it does not know all stay. A
-`config.toml` that does not parse is left alone: the change still applies until
-you quit, and the status bar says it could not be saved.
+There is no Save button. A change applies at once, and only the key that
+changed is written: into your profile when the profile sets that key, else into
+your `config.toml`. A key the project sets is never written into your files:
+its row in Preferences names the project file, the change lasts until the
+settings reload, and the status bar says it was not saved. Roxanne edits a file
+rather than rewriting it, so your comments, the order of your keys and the keys
+it does not know all stay. A file that does not parse is left alone: the change
+still applies until you quit, and the status bar says it could not be saved.
 
 ## Live reload
 
@@ -134,8 +140,9 @@ dynamic = ["/opt/roxanne/plugins/libsample_plugin.so"]
 - `config_version`: the schema version, currently `1`. A file without it, or
   with an older one, is migrated in memory when it loads.
 - `profile`: the profile to load from `profiles/<profile>.toml`.
-- `language`: `"en"` or `"fr"`. Without it, Roxanne follows `LC_ALL`,
-  `LC_MESSAGES` or `LANG`, and falls back to English.
+- `language`: `"en"` or `"fr"`. Without it, Roxanne follows the system
+  language (`LANGUAGE`, `LC_ALL`, `LC_MESSAGES` or `LANG` on Linux, the user's
+  language on Windows and macOS), and falls back to English.
 - `keymap_profile`: the profile from `[keymap_profiles]` to use.
 
 ### `[preferences]`

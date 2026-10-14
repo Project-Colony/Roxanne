@@ -27,9 +27,9 @@ its messages without opening a window. The ones worth knowing about:
 - `editor/buffer.rs`: positions on large texts, insertion and deletion, undo
   and redo.
 - `keymap.rs`: shortcut parsing and matching, `cmd` and `ctrl` included.
-- `config/`: layering, the one-time copy from `~/.config/roxanne`, and
-  writing Preferences changes without losing comments or touching a file that
-  does not parse.
+- `config/`: layering key by key, the one-time copy from `~/.config/roxanne`,
+  and writing Preferences changes into the right file without losing comments,
+  touching a file that does not parse or copying a project's settings.
 - `lsp.rs`: the client against a fake server on a thread, so the tests need no
   rust-analyzer.
 - `watch.rs`: only the watched files are reported, a removed or recreated
@@ -48,7 +48,7 @@ binary:
 |---|---|
 | `atomic_write.rs` | a save keeps the file mode and writes through a symlink |
 | `cli.rs` | `--version` prints the version without opening a window |
-| `config_loading.rs` | profiles, workspace overrides, editor defaults, refused native plugins in a project, the watched paths |
+| `config_loading.rs` | profiles, workspace overrides, editor defaults, refused native plugins in a project, the watched paths, a saved toggle that survives a project `[editor]` |
 | `config_migration.rs` | old `[keybindings]` sections become `[keymap]` |
 | `native_plugin.rs` | the sample plugin loads and its status reaches the status bar |
 

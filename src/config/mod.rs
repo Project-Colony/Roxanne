@@ -1,10 +1,14 @@
 //! The configuration: the user's `config.toml`, the profile it selects and the
 //! project's `.roxanne.toml`, applied in that order.
 //!
+//! Each file sets only the keys it names: a project's `[editor]` with
+//! `tab_size = 2` changes the tab size and keeps the user's other editor
+//! settings. [`AppConfig::sources`] remembers which file set each key.
+//!
 //! The user's files live in `Colony/Roxanne/` under the platform's config
-//! directory (see [`user_config_dir`]). The Preferences page writes the user's
-//! `config.toml` back through [`store`], keeping its comments and every key it
-//! does not set.
+//! directory (see [`user_config_dir`]). The Preferences page writes a change
+//! back through [`store`] into the user's file that sets the key, else
+//! `config.toml`, keeping comments and every other key.
 
 mod migrate;
 pub mod store;
@@ -13,13 +17,14 @@ use crate::i18n::{t, t_fmt};
 use crate::keymap::{Keymap, KeymapConfig};
 use crate::plugins::PluginConfig;
 use colony_ui::preferences::StandardPreferences;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use toml::Value;
 
-pub use migrate::migrate_legacy_config;
+pub use migrate::{Migrated, migrate_legacy_config};
 
 /// The program's name in `Colony/<Program>/`.
 pub const PROGRAM: &str = "Roxanne";
@@ -41,10 +46,22 @@ pub struct AppConfig {
     pub editor: EditorConfig,
     pub lsp: LspConfig,
     pub load_warnings: Vec<String>,
+    /// The file that set each key the Preferences page edits, by its dotted
+    /// name (`language`, `editor.minimap`), when a file set it.
+    pub sources: HashMap<String, Source>,
+}
+
+/// The config file a setting came from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Source {
+    pub path: PathBuf,
+    /// A project's `.roxanne.toml` or a profile it selects. The Preferences
+    /// page never writes into a project's files.
+    pub project: bool,
 }
 
 impl PartialEq for AppConfig {
-    /// Equal when every setting is: the warnings are not settings.
+    /// Equal when every setting is: the warnings and sources are not settings.
     fn eq(&self, other: &Self) -> bool {
         self.preferences == other.preferences
             && self.language == other.language
@@ -134,18 +151,45 @@ impl AppConfig {
         config
     }
 
+    /// The settings the Preferences page changes, by dotted key. A save
+    /// compares them before and after a change and writes only what differs.
+    pub fn page_settings(&self) -> BTreeMap<String, Value> {
+        let mut settings = BTreeMap::new();
+        for (name, table) in [
+            ("preferences", toml::Table::try_from(&self.preferences)),
+            ("editor", toml::Table::try_from(&self.editor)),
+            ("lsp", toml::Table::try_from(&self.lsp)),
+        ] {
+            for (key, value) in table.unwrap_or_default() {
+                settings.insert(format!("{name}.{key}"), value);
+            }
+        }
+        if let Some(language) = &self.language {
+            settings.insert("language".to_string(), language.as_str().into());
+        }
+        if let Some(profile) = &self.keymap_profile {
+            settings.insert("keymap_profile".to_string(), profile.as_str().into());
+        }
+        let enabled = self.plugins.enabled.iter().map(|name| name.as_str().into());
+        settings.insert(
+            "plugins.enabled".to_string(),
+            Value::Array(enabled.collect()),
+        );
+        settings
+    }
+
     /// Applies a config file, then the profile it selects, if any.
     fn apply_layer(&mut self, path: &Path, trust: Trust, warnings: &mut Vec<String>) {
         let Some(file) = load_file(path, warnings) else {
             return;
         };
-        self.apply_file(&file, trust, warnings);
+        self.apply_file(path, &file, trust, warnings);
         if let Some(profile) = &file.profile
             && let Some(profile_path) = profile_config_path(profile)
         {
             if profile_path.exists() {
                 if let Some(profile_file) = load_file(&profile_path, warnings) {
-                    self.apply_file(&profile_file, trust, warnings);
+                    self.apply_file(&profile_path, &profile_file, trust, warnings);
                 }
             } else {
                 warnings.push(t_fmt(
@@ -156,92 +200,179 @@ impl AppConfig {
         }
     }
 
-    fn apply_file(&mut self, file: &ConfigFile, trust: Trust, warnings: &mut Vec<String>) {
+    fn apply_file(
+        &mut self,
+        path: &Path,
+        file: &ConfigFile,
+        trust: Trust,
+        warnings: &mut Vec<String>,
+    ) {
+        // The dotted keys this file sets, for `sources`.
+        let mut set = Vec::new();
+        let mut layer = Layer {
+            path,
+            set: &mut set,
+            warnings,
+        };
         match trust {
             Trust::User => {
-                if let Some(preferences) = &file.preferences {
-                    self.preferences = preferences.clone();
-                } else if let Some(theme) = &file.theme {
-                    apply_legacy_theme(theme, &mut self.preferences, warnings);
+                if let Some(theme) = &file.theme {
+                    // Read before `[preferences]`, which wins key by key. Once
+                    // the file has `[preferences]`, the old table is left
+                    // alone without a word.
+                    let mut theme_warnings = Vec::new();
+                    if apply_legacy_theme(theme, &mut self.preferences, &mut theme_warnings) {
+                        layer.set.push("preferences.selected_variant".to_string());
+                    }
+                    if file.preferences.is_none() {
+                        layer.warnings.extend(theme_warnings);
+                    }
                 }
-                if file.language.is_some() {
-                    self.language = file.language.clone();
+                if let Some(preferences) = &file.preferences {
+                    layer.overlay(&mut self.preferences, "preferences", preferences);
+                }
+                if let Some(language) = &file.language {
+                    self.language = Some(language.clone());
+                    layer.set.push("language".to_string());
                 }
                 if let Some(lsp) = &file.lsp {
-                    self.lsp = lsp.clone();
+                    layer.overlay(&mut self.lsp, "lsp", lsp);
                 }
             }
             Trust::Project => {
                 if file.preferences.is_some() || file.theme.is_some() || file.language.is_some() {
-                    warnings.push(t("config_warn_project_appearance").to_string());
+                    layer
+                        .warnings
+                        .push(t("config_warn_project_appearance").to_string());
                 }
                 if file.lsp.is_some() {
-                    warnings.push(t("config_warn_project_lsp").to_string());
+                    layer
+                        .warnings
+                        .push(t("config_warn_project_lsp").to_string());
                 }
             }
         }
         if let Some(keymap) = &file.keymap {
-            warnings.extend(self.keymap.apply_config(keymap));
+            layer.warnings.extend(self.keymap.apply_config(keymap));
         }
         if let Some(keymap) = &file.keybindings {
-            warnings.push(t("config_warn_keybindings").to_string());
-            warnings.extend(self.keymap.apply_config(keymap));
+            layer
+                .warnings
+                .push(t("config_warn_keybindings").to_string());
+            layer.warnings.extend(self.keymap.apply_config(keymap));
         }
         if let Some(profiles) = &file.keymap_profiles {
             self.keymap_profiles.extend(profiles.keys().cloned());
         }
         if let Some(profile_name) = file.keymap_profile.as_deref() {
             self.keymap_profile = Some(profile_name.to_string());
+            layer.set.push("keymap_profile".to_string());
             match file.keymap_profiles.as_ref() {
                 Some(profiles) => match profiles.get(profile_name) {
-                    Some(profile) => warnings.extend(self.keymap.apply_config(profile)),
-                    None => warnings.push(t_fmt(
+                    Some(profile) => layer.warnings.extend(self.keymap.apply_config(profile)),
+                    None => layer.warnings.push(t_fmt(
                         "config_warn_keymap_profile_missing",
                         &[("profile", &profile_name)],
                     )),
                 },
-                None => warnings.push(t_fmt(
+                None => layer.warnings.push(t_fmt(
                     "config_warn_keymap_profiles_missing",
                     &[("profile", &profile_name)],
                 )),
             }
         }
         if let Some(plugins) = &file.plugins {
-            warnings.extend(plugins.warnings());
-            match trust {
-                Trust::User => self.plugins = plugins.clone(),
-                Trust::Project => {
-                    self.plugins.enabled = plugins.enabled.clone();
-                    if !plugins.dynamic.is_empty() {
-                        warnings.push(t("config_warn_project_dynamic").to_string());
-                    }
-                }
+            let mut plugins = plugins.clone();
+            if matches!(trust, Trust::Project)
+                && plugins
+                    .remove("dynamic")
+                    .and_then(|dynamic| dynamic.as_array().map(|list| !list.is_empty()))
+                    .unwrap_or(false)
+            {
+                layer
+                    .warnings
+                    .push(t("config_warn_project_dynamic").to_string());
+            }
+            if layer.overlay(&mut self.plugins, "plugins", &plugins)
+                && plugins.contains_key("enabled")
+            {
+                layer.warnings.extend(self.plugins.warnings());
             }
         }
         if let Some(editor) = &file.editor {
-            self.editor = editor.clone();
+            layer.overlay(&mut self.editor, "editor", editor);
+        }
+
+        let source = Source {
+            path: path.to_path_buf(),
+            project: matches!(trust, Trust::Project),
+        };
+        for key in set {
+            self.sources.insert(key, source.clone());
+        }
+    }
+}
+
+/// The file being applied, what it set and what went wrong.
+struct Layer<'a> {
+    path: &'a Path,
+    set: &'a mut Vec<String>,
+    warnings: &'a mut Vec<String>,
+}
+
+impl Layer<'_> {
+    /// Sets the keys `table` names on `value`, keeping the others, and notes
+    /// them as `name.key`. A value of the wrong type leaves `value` as it was.
+    fn overlay<T: Serialize + DeserializeOwned>(
+        &mut self,
+        value: &mut T,
+        name: &str,
+        table: &toml::Table,
+    ) -> bool {
+        let mut merged = toml::Table::try_from(&*value).unwrap_or_default();
+        merged.extend(table.clone());
+        match merged.try_into() {
+            Ok(merged) => {
+                *value = merged;
+                self.set
+                    .extend(table.keys().map(|key| format!("{name}.{key}")));
+                true
+            }
+            Err(err) => {
+                self.warnings.push(t_fmt(
+                    "config_warn_file",
+                    &[("path", &self.path.display()), ("error", &err)],
+                ));
+                false
+            }
         }
     }
 }
 
 /// A `[theme]` table from before the Colony themes: `name = "light"` picks the
 /// light variant of the default family, colour overrides are gone.
+/// Returns whether it set the variant.
 fn apply_legacy_theme(
     theme: &Value,
     preferences: &mut StandardPreferences,
     warnings: &mut Vec<String>,
-) {
+) -> bool {
+    if theme.get("palette").is_some() || theme.get("syntax").is_some() {
+        warnings.push(t("config_warn_theme_colors").to_string());
+    }
     match theme.get("name").and_then(Value::as_str) {
         Some(name) if name.eq_ignore_ascii_case("light") => {
             preferences.selected_variant = "light".to_string();
+            true
         }
         Some(name) if name.eq_ignore_ascii_case("dark") || name.eq_ignore_ascii_case("default") => {
+            false
         }
-        Some(name) => warnings.push(t_fmt("config_warn_theme_unknown", &[("name", &name)])),
-        None => {}
-    }
-    if theme.get("palette").is_some() || theme.get("syntax").is_some() {
-        warnings.push(t("config_warn_theme_colors").to_string());
+        Some(name) => {
+            warnings.push(t_fmt("config_warn_theme_unknown", &[("name", &name)]));
+            false
+        }
+        None => false,
     }
 }
 
@@ -266,15 +397,16 @@ struct ConfigFile {
     profile: Option<String>,
     /// Before the Colony themes. Read once to keep a light theme light.
     theme: Option<Value>,
-    preferences: Option<StandardPreferences>,
+    // Tables that set only the keys they name, see `Layer::overlay`.
+    preferences: Option<toml::Table>,
     language: Option<String>,
     keymap: Option<KeymapConfig>,
     keybindings: Option<KeymapConfig>,
     keymap_profile: Option<String>,
     keymap_profiles: Option<HashMap<String, KeymapConfig>>,
-    plugins: Option<PluginConfig>,
-    editor: Option<EditorConfig>,
-    lsp: Option<LspConfig>,
+    plugins: Option<toml::Table>,
+    editor: Option<toml::Table>,
+    lsp: Option<toml::Table>,
 }
 
 fn load_file(path: &Path, warnings: &mut Vec<String>) -> Option<ConfigFile> {
@@ -436,7 +568,7 @@ mod tests {
         let mut config = AppConfig::default();
         let mut warnings = Vec::new();
         let file = parse("[theme]\nname = \"light\"\n[theme.palette]\nmenu_bar = \"#000000\"\n");
-        config.apply_file(&file, Trust::User, &mut warnings);
+        config.apply_file(Path::new("config.toml"), &file, Trust::User, &mut warnings);
         assert_eq!(config.preferences.selected_variant, "light");
         assert_eq!(warnings.len(), 1, "{warnings:?}");
     }
@@ -449,11 +581,17 @@ mod tests {
             "language = \"fr\"\n[preferences]\nselected_theme = \"nord\"\n\
              [lsp]\nrust_analyzer = \"./evil\"\n",
         );
-        config.apply_file(&file, Trust::Project, &mut warnings);
+        config.apply_file(
+            Path::new(".roxanne.toml"),
+            &file,
+            Trust::Project,
+            &mut warnings,
+        );
         assert_eq!(config, AppConfig::default());
+        assert!(config.sources.is_empty());
         assert_eq!(warnings.len(), 2, "{warnings:?}");
 
-        config.apply_file(&file, Trust::User, &mut warnings);
+        config.apply_file(Path::new("config.toml"), &file, Trust::User, &mut warnings);
         assert_eq!(config.language.as_deref(), Some("fr"));
         assert_eq!(config.preferences.selected_theme, "nord");
         assert_eq!(config.lsp.rust_analyzer, "./evil");
@@ -462,10 +600,63 @@ mod tests {
     #[test]
     fn an_unknown_theme_falls_back_to_the_default_palette() {
         let file = parse("[preferences]\nselected_theme = \"no-such-family\"\n");
-        let preferences = file.preferences.expect("preferences");
+        let preferences: StandardPreferences = file
+            .preferences
+            .expect("preferences")
+            .try_into()
+            .expect("lenient");
         assert_eq!(
             colony_ui::resolve(&preferences.selected_theme, &preferences.selected_variant),
             colony_ui::FALLBACK_PALETTE
         );
+    }
+
+    #[test]
+    fn each_file_sets_only_the_keys_it_names() {
+        let mut config = AppConfig::default();
+        let mut warnings = Vec::new();
+        let user = parse(
+            "[editor]\nminimap = true\n[preferences]\nfont_size = \"large\"\n\
+             [theme]\nname = \"light\"\n[plugins]\nenabled = [\"word_count\"]\n",
+        );
+        config.apply_file(Path::new("config.toml"), &user, Trust::User, &mut warnings);
+        let project = parse("[editor]\ntab_size = 2\n[plugins]\ndynamic = [\"/tmp/evil.so\"]\n");
+        config.apply_file(
+            Path::new(".roxanne.toml"),
+            &project,
+            Trust::Project,
+            &mut warnings,
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+
+        assert_eq!(config.editor.tab_size, 2);
+        assert!(
+            config.editor.minimap,
+            "the project reset the user's minimap"
+        );
+        // A `[preferences]` table keeps the variant of the old `[theme]`.
+        assert_eq!(config.preferences.selected_variant, "light");
+        assert_eq!(config.preferences.font_size, colony_ui::FontSize::Large);
+        assert_eq!(config.plugins.enabled, ["word_count"]);
+        assert!(config.plugins.dynamic.is_empty());
+
+        let source = |key: &str| config.sources.get(key).map(|source| source.project);
+        assert_eq!(source("editor.tab_size"), Some(true));
+        assert_eq!(source("editor.minimap"), Some(false));
+        assert_eq!(source("preferences.selected_variant"), Some(false));
+        assert_eq!(source("plugins.enabled"), Some(false));
+        assert_eq!(source("plugins.dynamic"), None);
+        assert_eq!(source("editor.word_wrap"), None);
+    }
+
+    #[test]
+    fn a_value_of_the_wrong_type_keeps_the_previous_one() {
+        let mut config = AppConfig::default();
+        let mut warnings = Vec::new();
+        let file = parse("[editor]\ntab_size = \"two\"\n");
+        config.apply_file(Path::new("config.toml"), &file, Trust::User, &mut warnings);
+        assert_eq!(config.editor, EditorConfig::default());
+        assert!(config.sources.is_empty());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
     }
 }

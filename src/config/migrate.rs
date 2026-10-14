@@ -14,24 +14,42 @@ use std::path::{Path, PathBuf};
 /// Written in the new directory once the old one has been copied.
 const MARKER: &str = ".migrated-from-legacy-config";
 
-/// Copies `config.toml` and `profiles/` from the legacy directory into
-/// `Colony/Roxanne` when that has no `config.toml` yet. Returns a message for
-/// the status bar when something was copied or the copy failed.
-pub fn migrate_legacy_config() -> Option<String> {
-    let legacy =
-        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config/roxanne"))?;
-    let new = user_config_dir()?;
-    match migrate(&legacy, &new) {
-        Ok(false) => None,
-        Ok(true) => Some(t_fmt(
-            "status_config_migrated",
-            &[("from", &legacy.display()), ("to", &new.display())],
-        )),
-        Err(err) => Some(t_fmt(
-            "status_config_migration_failed",
-            &[("from", &legacy.display()), ("error", &err)],
-        )),
+/// What the copy did, for the status bar.
+#[derive(Debug, Clone)]
+pub struct Migrated {
+    from: PathBuf,
+    to: PathBuf,
+    error: Option<String>,
+}
+
+impl Migrated {
+    /// The status bar message, in the active language.
+    pub fn message(&self) -> String {
+        match &self.error {
+            None => t_fmt(
+                "status_config_migrated",
+                &[("from", &self.from.display()), ("to", &self.to.display())],
+            ),
+            Some(error) => t_fmt(
+                "status_config_migration_failed",
+                &[("from", &self.from.display()), ("error", error)],
+            ),
+        }
     }
+}
+
+/// Copies `config.toml` and `profiles/` from the legacy directory into
+/// `Colony/Roxanne` when that has no `config.toml` yet. Returns what happened
+/// when files were copied or the copy failed.
+pub fn migrate_legacy_config() -> Option<Migrated> {
+    let from = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config/roxanne"))?;
+    let to = user_config_dir()?;
+    let error = match migrate(&from, &to) {
+        Ok(false) => return None,
+        Ok(true) => None,
+        Err(err) => Some(err.to_string()),
+    };
+    Some(Migrated { from, to, error })
 }
 
 /// Copies `legacy` into `new` unless the marker says it was done, the legacy
@@ -47,26 +65,29 @@ fn migrate(legacy: &Path, new: &Path) -> io::Result<bool> {
         write_marker(new)?;
         return Ok(false);
     }
-    fs::create_dir_all(new)?;
+    let mut copied = false;
     // Profiles first: config.toml appearing in the new directory is what ends
     // the migration, so it is copied last.
     let profiles = legacy.join("profiles");
     if profiles.is_dir() {
         let target = new.join("profiles");
-        fs::create_dir_all(&target)?;
         for entry in fs::read_dir(&profiles)? {
             let entry = entry?;
             if entry.file_type()?.is_file() {
+                fs::create_dir_all(&target)?;
                 fs::copy(entry.path(), target.join(entry.file_name()))?;
+                copied = true;
             }
         }
     }
     let config = legacy.join("config.toml");
     if config.is_file() {
+        fs::create_dir_all(new)?;
         fs::copy(&config, new.join("config.toml"))?;
+        copied = true;
     }
     write_marker(new)?;
-    Ok(true)
+    Ok(copied)
 }
 
 fn write_marker(dir: &Path) -> io::Result<()> {
@@ -136,6 +157,17 @@ mod tests {
             fs::read_to_string(new.join("config.toml")).expect("config"),
             "language = \"en\"\n"
         );
+        assert!(!new.join("profiles").exists());
+    }
+
+    #[test]
+    fn an_empty_legacy_directory_copies_nothing() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let legacy = root.path().join("legacy");
+        fs::create_dir_all(legacy.join("profiles")).expect("legacy");
+        let new = root.path().join("Colony/Roxanne");
+        assert!(!migrate(&legacy, &new).expect("migrate"));
+        assert!(new.join(MARKER).is_file());
         assert!(!new.join("profiles").exists());
     }
 

@@ -259,3 +259,40 @@ fn watch_paths_cover_profiles_and_files_not_yet_created() {
         assert_eq!(roxanne::config::watch_paths().len(), 2);
     }
 }
+
+#[test]
+fn a_saved_toggle_survives_a_project_editor_table() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    let _guard = EnvGuard::new(&home, &workspace);
+
+    let project = workspace.join(".roxanne.toml");
+    write_file(&project, "[editor]\ntab_size = 2\nword_wrap = true\n");
+    let user = config_dir().join("config.toml");
+
+    // View > Toggle Line Numbers: only that key reaches the user's file.
+    let mut config = AppConfig::load();
+    let before = config.page_settings();
+    config.editor.line_numbers = false;
+    let skipped = roxanne::config::store::save_changes(&config, &before, &user).expect("save");
+    assert!(skipped.is_empty(), "{skipped:?}");
+    assert_eq!(
+        fs::read_to_string(&user).expect("user config"),
+        "[editor]\nline_numbers = false\n"
+    );
+    assert_eq!(AppConfig::load(), config, "the reload reverted the toggle");
+
+    // The project's word wrap is not written anywhere.
+    let before = config.page_settings();
+    config.editor.word_wrap = false;
+    let skipped = roxanne::config::store::save_changes(&config, &before, &user).expect("save");
+    assert_eq!(skipped, std::slice::from_ref(&project));
+    assert!(
+        !fs::read_to_string(&user)
+            .expect("user config")
+            .contains("word_wrap")
+    );
+    assert!(AppConfig::load().editor.word_wrap);
+}

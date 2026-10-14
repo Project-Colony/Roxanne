@@ -53,7 +53,8 @@ asks rust-analyzer about Rust code only when you use an LSP action.
 - Preferences, opened by clicking **Roxanne** in the top-left corner: the
   Colony themes and accents, text size, high contrast, the OpenDyslexic font,
   reduced motion, English or French, and the editor's own options. A change
-  applies at once and is saved in your `config.toml`.
+  applies at once and is saved in your `config.toml`, or in the profile that
+  sets it.
 - TOML configuration with keymap profiles and live reload, and built-in and
   native plugins for the status bar.
 - Safe saving: the text goes to a temporary file next to the real one, which
@@ -142,7 +143,7 @@ network connection of its own.
 
 | Data | Stored or sent | Where, and why |
 |---|---|---|
-| Settings | stored | `config.toml` and the profiles in `profiles/`, in `Colony/Roxanne/` under your config directory (`~/.config/Colony/Roxanne/` on Linux). Roxanne reads them, and the Preferences page writes the settings you change into `config.toml`. |
+| Settings | stored | `config.toml` and the profiles in `profiles/`, in `Colony/Roxanne/` under your config directory (`~/.config/Colony/Roxanne/` on Linux). Roxanne reads them, and the Preferences page writes each setting you change into `config.toml`, or into the profile that sets it. |
 | Older settings | read, copied | `config.toml` and `profiles/` from `~/.config/roxanne/`, copied once into `Colony/Roxanne/` when that has no `config.toml` yet. A `.migrated-from-legacy-config` file there marks the copy as done. The old folder is never changed. |
 | Project settings | read | the first `.roxanne.toml` found in the working directory or one of its parents |
 | Your files | stored | where you save them. A save writes a temporary file next to the file and renames it over the file, which keeps its permissions, and a symlink stays a link. |

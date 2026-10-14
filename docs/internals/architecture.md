@@ -62,13 +62,17 @@ Plugins are the exception: their callbacks run on the interface thread.
 
 `AppConfig::load` reads the built-in defaults, the user's `config.toml`, the
 profile it selects, then the project's `.roxanne.toml` and its profile, each
-layer over the one before. A project file is filtered before it is applied: it
-cannot set the preferences or the language, and its `plugins.dynamic` and
-`[lsp]` are dropped, so opening a folder never loads or runs code from it.
+layer over the one before, key by key: a table such as `[editor]` sets only the
+keys it names. `AppConfig::sources` records which file set each key. A project
+file is filtered before it is applied: it cannot set the preferences or the
+language, and its `plugins.dynamic` and `[lsp]` are dropped, so opening a
+folder never loads or runs code from it.
 
-The Preferences page changes the setting in memory, applies it, and writes it
-into the user's `config.toml` with `toml_edit`, which keeps comments, key order
-and unknown keys. A watched config file that changes on disk triggers a reload;
+The Preferences page changes the setting in memory and applies it. Then
+`store::save_changes` compares the settings before and after and writes only
+the keys that changed, each into the user's file that sets it (the profile or
+`config.toml`), else into `config.toml`, with `toml_edit`, which keeps
+comments, key order and unknown keys. A key a project file sets is not written. A watched config file that changes on disk triggers a reload;
 a reload that finds the settings already in effect does nothing.
 
 The user's files live in `Colony/Roxanne/` under the platform's config

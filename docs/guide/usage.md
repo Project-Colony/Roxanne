@@ -105,14 +105,16 @@ than 5 MiB and files that are not valid UTF-8.
   filter, click to run.
 - **View → Toggle Line Numbers**, **Toggle Word Wrap** and **Toggle Minimap**
   turn these on and off, and save the choice like Preferences → Editor does.
+  While Preferences is open, the keyboard shortcuts do nothing.
 - **Tools → Reload Config** reads the settings files again.
 - **Tools → Performance Report** shows in the status bar how long the last
   start, open, save, search and viewport refresh took.
 
 ## Preferences
 
-Click **Roxanne** in the top-left corner, or choose **Help → Preferences**. The
-page covers the Colony theme and accent, text size, high contrast, the
-OpenDyslexic font, reduced motion, the interface language, the editor display,
-the keymap profile, rust-analyzer and the plugins. A change applies at once and
-is written into your `config.toml`. See [configuration.md](configuration.md).
+Click **Roxanne** in the top-left corner; the command palette also lists
+Preferences. The page covers the Colony theme and accent, text size, high
+contrast, the OpenDyslexic font, reduced motion, the interface language, the
+editor display, the keymap profile, rust-analyzer and the plugins. A change
+applies at once and is written into your own settings files. See
+[configuration.md](configuration.md#the-preferences-page).
