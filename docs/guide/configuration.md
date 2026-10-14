@@ -45,6 +45,9 @@ Each layer overrides the one before, key by key:
 
 A file sets only the keys it names. A project's `[editor]` with `tab_size = 2`
 changes the tab size and keeps your line numbers, word wrap and minimap.
+A key with an invalid value, such as `tab_size = "two"`, is skipped with a
+warning and keeps the value the layer before gave it; the other keys of that
+file still apply.
 
 A project file never changes your theme, your other preferences or the
 interface language, and it never loads code: `[preferences]`, `[theme]` and
