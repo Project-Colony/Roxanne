@@ -67,6 +67,7 @@ pub fn save_changes(
     for (path, edits) in files {
         save_to(&path, &edits)?;
     }
+    skipped.sort();
     skipped.dedup();
     Ok(skipped)
 }
@@ -300,6 +301,32 @@ mod tests {
         assert!(!reloaded.editor.line_numbers);
         assert!(reloaded.editor.word_wrap);
         assert_eq!(reloaded.editor.tab_size, 2);
+    }
+
+    #[test]
+    fn a_removed_key_leaves_the_profile_and_config_toml() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let user = dir.path().join("config.toml");
+        let profile = dir.path().join("profiles/work.toml");
+        fs::create_dir_all(profile.parent().expect("dir")).expect("profiles");
+        let accent = "[preferences]\nselected_accent = \"violet\"\n";
+        fs::write(&user, accent).expect("user");
+        fs::write(&profile, accent).expect("profile");
+        let files = [
+            (user.as_path(), Trust::User),
+            (profile.as_path(), Trust::User),
+        ];
+        let mut config = load(&files);
+
+        let before = config.page_settings();
+        config.preferences.selected_accent = None;
+        save_changes(&config, &before, &user).expect("save");
+
+        for path in [&user, &profile] {
+            let text = fs::read_to_string(path).expect("read");
+            assert!(!text.contains("selected_accent"), "{path:?}:\n{text}");
+        }
+        assert_eq!(load(&files).preferences.selected_accent, None);
     }
 
     #[test]

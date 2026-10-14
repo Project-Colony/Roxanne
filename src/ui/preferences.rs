@@ -137,9 +137,12 @@ impl RoxanneApp {
                     self.status_message = Some(set_by_project(path));
                     return Task::none();
                 }
-                self.config.keymap_profile = profile;
+                let previous = std::mem::replace(&mut self.config.keymap_profile, profile);
                 if self.save(&before) {
                     self.reload_config(false);
+                } else {
+                    // The bindings stay the old profile's: so does the choice.
+                    self.config.keymap_profile = previous;
                 }
                 return Task::none();
             }
@@ -174,6 +177,10 @@ impl RoxanneApp {
     /// reported, never retried behind the user's back. Returns whether every
     /// change was written.
     fn save(&mut self, before: &BTreeMap<String, toml::Value>) -> bool {
+        if self.config.page_settings() == *before {
+            // Opening the page or a section changes no setting.
+            return true;
+        }
         let result = crate::config::user_config_path()
             .ok_or_else(|| t("preferences_about_no_config_dir").to_string())
             .and_then(|user| store::save_changes(&self.config, before, &user));
