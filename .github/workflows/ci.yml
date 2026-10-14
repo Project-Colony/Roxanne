@@ -48,3 +48,22 @@ jobs:
 
       - name: Cargo check
         run: cargo check --all-targets
+
+  i18n:
+    name: translations up to date
+    runs-on: ubuntu-latest
+    steps:
+      # No `fetch-depth` needed: the check compares the blob hash of each
+      # English source with the stamp its translation carries, which the
+      # working tree alone gives. `git log` on the depth-1 clone Actions makes
+      # would report one commit and pass forever while translations rot.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check every translation against its English source
+        run: ./scripts/i18n-check.sh
+
+      - name: Check every link and anchor resolves
+        run: ./scripts/i18n-links.py

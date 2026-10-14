@@ -3,6 +3,16 @@
 Two tools keep an eye on speed: the Performance Report inside the editor, and
 Criterion benchmarks with limits that CI enforces.
 
+## Targets
+
+What Roxanne aims for, not what it has been measured to do: no check enforces
+these numbers yet.
+
+- Startup in under 200 ms on a modest machine.
+- Smooth scrolling and editing on files of 1 to 5 MB. Larger files are refused
+  for now (the limit is 5 MiB).
+- Memory use that stays stable while the editor sits idle.
+
 ## The Performance Report
 
 **Tools → Performance Report** shows in the status bar how long these took the

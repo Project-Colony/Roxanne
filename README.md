@@ -102,6 +102,19 @@ Requires Rust 1.90 or newer, from [rustup](https://rustup.rs).
 Full documentation is in [docs/](docs/). Start at
 [docs/README.md](docs/README.md).
 
+## Language
+
+The documentation is also available in French. **English is canonical**: when a
+translation disagrees with it, the English file is right.
+
+- **Français** - [README](docs/i18n/fr/README.md) · [index](docs/i18n/fr/docs/README.md) · [installation](docs/i18n/fr/docs/guide/installation.md) · [usage](docs/i18n/fr/docs/guide/usage.md) · [configuration](docs/i18n/fr/docs/guide/configuration.md) · [plugins](docs/i18n/fr/docs/guide/plugins.md) · [troubleshooting](docs/i18n/fr/docs/guide/troubleshooting.md) · [overview](docs/i18n/fr/docs/project/overview.md) · [architecture](docs/i18n/fr/docs/internals/architecture.md) · [editor core](docs/i18n/fr/docs/internals/editor-core.md) · [rendering](docs/i18n/fr/docs/internals/rendering.md) · [performance](docs/i18n/fr/docs/internals/performance.md) · [testing](docs/i18n/fr/docs/internals/testing.md) · [contributing](docs/i18n/fr/CONTRIBUTING.md) · [code of conduct](docs/i18n/fr/.github/CODE_OF_CONDUCT.md)
+
+Each translation carries the hash of the English file it was made from, and CI
+fails when the English moves ahead; see [`scripts/i18n-check.sh`](scripts/i18n-check.sh).
+`docs/i18n/fr/` mirrors the repository root, so `docs/i18n/fr/docs/guide/usage.md`
+is the French `docs/guide/usage.md`, and a link between two translated pages is
+the same as the link between their English originals.
+
 ## Code signing policy
 
 Every release asset is signed by the Project Colony organisation in CI, never on

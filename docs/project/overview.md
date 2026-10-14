@@ -27,6 +27,27 @@ project, colours the code, and brings in a language server only when asked.
   organisation, installs and updates through
   [Colony](https://github.com/Project-Colony/Colony), and ships signed releases.
 
+## Goals
+
+These are targets Roxanne aims for, not measurements: nothing checks them yet.
+The benchmarks in [../internals/performance.md](../internals/performance.md)
+guard the editor core against regressions, which is not the same thing.
+
+- Start in under one second on a mid-sized project, with a modest memory
+  footprint on a modest machine.
+- Scroll and edit a file of 50,000 lines with no visible latency.
+
+## Risks
+
+- Fast text rendering on Linux, Windows and macOS is hard. Roxanne leaves it to
+  iced's text editor widget, so its limits are Roxanne's limits.
+- The window and the text model can grow coupled if the line between `ui` and
+  `editor` blurs, which makes both harder to test and to change. The module
+  rules in [CONTRIBUTING.md](../../CONTRIBUTING.md#module-structure) are there
+  to prevent it.
+- Keyboard ergonomics take more work than they seem to: shortcuts, modes and
+  the way focus moves between panels need care to stay predictable.
+
 ## Who it is for
 
 - Developers who want a quick editor for code and configuration files beside,

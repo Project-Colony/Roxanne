@@ -54,10 +54,32 @@ python scripts/check_benchmarks.py
 ## Code style
 
 - Format with `cargo fmt` (default rustfmt settings).
+- Follow Rust's naming conventions: `snake_case` for functions, variables and
+  modules, `CamelCase` for types and traits, `SCREAMING_SNAKE_CASE` for
+  constants and statics.
 - No `unwrap()` outside tests: return an error or show it in the status bar.
 - Add tests for any logic that is not trivial.
 - Code, comments, documentation, commit messages and pull requests are written
-  in English.
+  in English. The French translations in `docs/i18n/fr/` are the only
+  exception. When you change an English page that has one, update the
+  translation in the same pull request, then run `scripts/i18n-check.sh --fix`
+  to restamp it: CI fails when a translation is older than its English source.
+
+## Module structure
+
+- Keep each module short and focused on one job, and split one that starts
+  doing several.
+- No dependency cycles between modules. The text model in `editor` knows
+  nothing of the window, and nothing outside `ui` depends on `ui`: the window
+  uses `editor`, `config`, `plugins` and the rest, never the other way round.
+  Keep it that way, so the editor core, its rendering, the interface and the
+  plugins stay decoupled.
+- Modules talk through small, explicit public types and functions (`struct`,
+  `enum`, `trait`); keep everything else private.
+- Avoid singletons and shared global state: state lives in the struct that owns
+  it, such as `RoxanneApp` or a tab, and is passed where it is needed. The few
+  statics in the code are read-only tables built once, such as the tree-sitter
+  language definitions, or a counter that keeps temporary file names unique.
 
 ## Security
 
