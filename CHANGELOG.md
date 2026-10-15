@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/Project-Colony/Roxanne/compare/v0.1.0...v0.1.1) (2026-10-15)
+
+
+### Documentation
+
+* bring back the French documentation and the standards, goals and risks the rewrite dropped ([#15](https://github.com/Project-Colony/Roxanne/issues/15)) ([2bfe6d5](https://github.com/Project-Colony/Roxanne/commit/2bfe6d55f66e7f7fba3d30e7a0efdb395c5ae989))
+
 ## [0.1.0](https://github.com/Project-Colony/Roxanne/compare/v0.1.0...v0.1.0) (2026-10-14)
 
 
