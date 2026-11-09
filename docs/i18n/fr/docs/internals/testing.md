@@ -1,4 +1,4 @@
-<!-- roxanne-i18n: source=docs/internals/testing.md sha=bfb2e25f267c8a3eb66022830f61d7183b0c46e6 -->
+<!-- roxanne-i18n: source=docs/internals/testing.md sha=87659f6dca698d1ec135880d27011045cb3ebf3b -->
 
 # Tests
 
@@ -18,7 +18,7 @@ cargo test --all
 modification de l'API des extensions ou de leur chargement qui casse l'exemple
 fait échouer les tests. Ce test a besoin de l'exemple compilé : lancez-le via
 `cargo test`, pas `cargo test --test native_plugin` seul. Un second job de CI
-exécute `cargo check --all-targets` avec Rust 1.90, la `rust-version` de
+exécute `cargo check --all-targets` avec Rust 1.99, la `rust-version` de
 `Cargo.toml`.
 
 Pour les benchmarks et leurs limites, voir [performance.md](performance.md).

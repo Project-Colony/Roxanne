@@ -1,4 +1,4 @@
-<!-- roxanne-i18n: source=README.md sha=1df07e140380ddc71c686e128e5b25e4ea169e3a -->
+<!-- roxanne-i18n: source=README.md sha=552b5f4b7f2bbb9d033df2e67c6552daf16a9b48 -->
 
 <div align="center">
 
@@ -21,7 +21,7 @@ Rust que lorsque vous utilisez une action LSP.
 
 > **État :** développement précoce, pas encore prêt pour un usage quotidien. La
 > CI compile et teste Roxanne sous Linux à chaque modification et le vérifie avec
-> Rust 1.90 ; le workflow de publication produit les binaires Linux, Windows et
+> Rust 1.99 ; le workflow de publication produit les binaires Linux, Windows et
 > macOS, qui n'ont pas encore servi au quotidien. La prise en charge des serveurs
 > de langage est expérimentale et ne couvre que Rust, via rust-analyzer : survol
 > et aller à la définition.
@@ -105,7 +105,7 @@ cargo build --release
 ./target/release/roxanne
 ```
 
-Nécessite Rust 1.90 ou plus récent, installé avec [rustup](https://rustup.rs).
+Nécessite Rust 1.99 ou plus récent, installé avec [rustup](https://rustup.rs).
 
 ## Documentation
 

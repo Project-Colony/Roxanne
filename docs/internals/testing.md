@@ -14,7 +14,7 @@ cargo test --all
 loads the library it produces, so a change to the plugin API or to plugin
 loading that breaks the example fails the tests. That test needs the example
 built: run it through `cargo test`, not `cargo test --test native_plugin` alone. A second CI job runs
-`cargo check --all-targets` with Rust 1.90, the `rust-version` in `Cargo.toml`.
+`cargo check --all-targets` with Rust 1.99, the `rust-version` in `Cargo.toml`.
 
 For the benchmarks and their limits, see [performance.md](performance.md).
 

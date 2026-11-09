@@ -17,7 +17,7 @@ any file without a project, highlights eight languages with tree-sitter, and
 asks rust-analyzer about Rust code only when you use an LSP action.
 
 > **Status:** early development, not ready for everyday use. CI builds and
-> tests Roxanne on Linux at every change and checks it against Rust 1.90; the
+> tests Roxanne on Linux at every change and checks it against Rust 1.99; the
 > release workflow builds the Linux, Windows and macOS binaries, which have not
 > seen daily use yet. Language server support is experimental and covers Rust
 > only, through rust-analyzer: hover and go to definition.
@@ -95,7 +95,7 @@ cargo build --release
 ./target/release/roxanne
 ```
 
-Requires Rust 1.90 or newer, from [rustup](https://rustup.rs).
+Requires Rust 1.99 or newer, from [rustup](https://rustup.rs).
 
 ## Documentation
 
