@@ -1,4 +1,4 @@
-<!-- roxanne-i18n: source=CONTRIBUTING.md sha=3ae214809c3a62e658229fc1ff299bbf47d03f3e -->
+<!-- roxanne-i18n: source=CONTRIBUTING.md sha=e66f15199e2ec1022dc52d955199c7afd9b484d1 -->
 
 # Contribuer à Roxanne
 
@@ -11,7 +11,7 @@ ressemble une bonne pull request.
 
 - Rust stable, installé avec [rustup](https://rustup.rs).
 - La version minimale de Rust prise en charge (MSRV) est la `rust-version` de
-  `Cargo.toml`, actuellement 1.90. La CI la vérifie : n'utilisez donc pas de
+  `Cargo.toml`, actuellement 1.99. La CI la vérifie : n'utilisez donc pas de
   fonctionnalités du langage ou de la bibliothèque standard plus récentes.
 
 ## Compiler et lancer

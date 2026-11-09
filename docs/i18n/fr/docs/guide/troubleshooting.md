@@ -1,10 +1,10 @@
-<!-- roxanne-i18n: source=docs/guide/troubleshooting.md sha=ee0335936c3e3bad50592cd05b1dd61bbad63bb7 -->
+<!-- roxanne-i18n: source=docs/guide/troubleshooting.md sha=ed9fd7772b97d0d5fcd19ab3f46483a576202257 -->
 
 # Dépannage
 
 ## La compilation échoue
 
-Roxanne nécessite Rust 1.90 ou plus récent. Vérifiez la version et mettez à
+Roxanne nécessite Rust 1.99 ou plus récent. Vérifiez la version et mettez à
 jour la chaîne d'outils :
 
 ```bash

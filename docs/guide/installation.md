@@ -35,7 +35,7 @@ chmod +x roxanne-linux
 
 ## From source
 
-You need Rust 1.90 or newer, installed with [rustup](https://rustup.rs).
+You need Rust 1.99 or newer, installed with [rustup](https://rustup.rs).
 
 ```bash
 git clone https://github.com/Project-Colony/Roxanne.git

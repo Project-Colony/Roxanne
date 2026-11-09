@@ -40,11 +40,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust 1.90
+      - name: Install Rust 1.99
         shell: bash
         run: |
-          rustup toolchain install 1.90 --profile minimal --no-self-update
-          rustup default 1.90
+          rustup toolchain install 1.99 --profile minimal --no-self-update
+          rustup default 1.99
 
       - name: Cargo check
         run: cargo check --all-targets
