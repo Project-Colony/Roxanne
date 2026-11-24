@@ -1,4 +1,4 @@
-<!-- roxanne-i18n: source=docs/guide/installation.md sha=2f50e8e5c0dc5c264b789a6a4a3883e7ac8fff38 -->
+<!-- roxanne-i18n: source=docs/guide/installation.md sha=e98296938f87f78db16d78def455749d39eb65a6 -->
 
 # Installation
 
@@ -38,7 +38,7 @@ chmod +x roxanne-linux
 
 ## Depuis les sources
 
-Il vous faut Rust 1.99 ou plus récent, installé avec [rustup](https://rustup.rs).
+Il vous faut Rust 1.100 ou plus récent, installé avec [rustup](https://rustup.rs).
 
 ```bash
 git clone https://github.com/Project-Colony/Roxanne.git
