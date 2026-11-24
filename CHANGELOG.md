@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/Project-Colony/Roxanne/compare/v0.1.1...v0.1.2) (2026-11-24)
+
+
+### Fixes
+
+* **deps:** update dependencies and raise the minimum Rust version to 1.100 ([#28](https://github.com/Project-Colony/Roxanne/issues/28)) ([8048307](https://github.com/Project-Colony/Roxanne/commit/804830775a1cc877dd471fa51f633625c9b75c14))
+
 ## [0.1.1](https://github.com/Project-Colony/Roxanne/compare/v0.1.0...v0.1.1) (2026-11-09)
 
 
